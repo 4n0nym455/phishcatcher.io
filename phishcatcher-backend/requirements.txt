@@ -1,0 +1,64 @@
+# FastAPI and Web Framework
+fastapi
+uvicorn[standard]
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+
+# Database
+sqlalchemy[asyncio]
+asyncpg
+alembic
+motor
+redis
+
+# ML and Data Science
+xgboost
+scikit-learn
+numpy
+pandas
+joblib
+
+# Gmail Integration
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# Email Processing
+mail-parser
+python-dateutil
+sendgrid
+jinja2
+
+# HTTP Client
+httpx
+aiohttp
+
+# Task Queue
+celery
+
+# Security
+pyotp
+cryptography
+slowapi
+qrcode[pil]
+
+# Validation and Settings
+pydantic
+pydantic-settings
+email-validator
+
+# Utilities
+python-dotenv
+structlog
+tenacity
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+
+# Documentation
+mkdocs
+mkdocs-material

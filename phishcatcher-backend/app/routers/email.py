@@ -1,0 +1,315 @@
+"""
+Email Router for Comprehensive Email Services
+
+This router handles all email-related endpoints including:
+- OTP verification
+- Welcome/onboarding emails
+- Password reset
+- Account notifications
+- Security alerts
+"""
+
+import logging
+from fastapi import APIRouter, HTTPException, status, Depends, Request
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+from app.models.user import User
+from app.services.email_service import email_service
+from app.services.security_service import security_service
+from app.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["Email"])
+
+# Pydantic models for requests
+class OTPRequest(BaseModel):
+    email: EmailStr
+    action: Optional[str] = "verify your account"
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+class PasswordResetConfirm(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str
+
+class WelcomeEmailRequest(BaseModel):
+    email: EmailStr
+    user_name: Optional[str] = "User"
+    dashboard_url: Optional[str] = None
+
+class SecurityAlertRequest(BaseModel):
+    email: EmailStr
+    action: str
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+
+class CustomEmailRequest(BaseModel):
+    to_email: EmailStr
+    subject: str
+    html_content: str
+
+
+@router.post("/email/send-otp")
+async def send_otp_verification(request: OTPRequest):
+    """Send OTP verification code to user email."""
+    try:
+        # Generate OTP code
+        code = security_service.generate_email_code(request.email)
+        
+        # Send email
+        success = await email_service.send_otp_verification(
+            to_email=request.email,
+            user_name="User",  # You might want to fetch user name from DB
+            code=code,
+            action=request.action or "verify your account"
+        )
+        
+        if success:
+            return {
+                "message": "OTP code sent successfully",
+                "email": request.email,
+                "expires_in": "10 minutes"
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP code"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error sending OTP: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send OTP code"
+        )
+
+
+@router.post("/email/send-welcome")
+async def send_welcome_email(request: WelcomeEmailRequest):
+    """Send welcome/onboarding email to new user."""
+    try:
+        success = await email_service.send_welcome_email(
+            to_email=request.email,
+            user_name=request.user_name,
+            dashboard_url=request.dashboard_url
+        )
+        
+        if success:
+            return {
+                "message": "Welcome email sent successfully",
+                "email": request.email
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send welcome email"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error sending welcome email: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send welcome email"
+        )
+
+
+@router.post("/email/request-password-reset")
+async def request_password_reset(request: PasswordResetRequest):
+    """Request password reset email."""
+    try:
+        # Generate reset code
+        code = security_service.generate_email_code(request.email)
+        reset_url = f"http://localhost:5173/reset-password?email={request.email}&code={code}"
+        
+        # Send email
+        success = await email_service.send_password_reset(
+            to_email=request.email,
+            user_name="User",
+            reset_code=code,
+            reset_url=reset_url
+        )
+        
+        if success:
+            return {
+                "message": "Password reset email sent successfully",
+                "email": request.email,
+                "expires_in": "1 hour"
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send password reset email"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error sending password reset: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send password reset email"
+        )
+
+
+@router.post("/email/confirm-password-reset")
+async def confirm_password_reset(request: PasswordResetConfirm):
+    """Confirm password reset with code."""
+    try:
+        # Verify the reset code
+        is_valid = security_service.verify_email_code(request.email, request.code)
+        
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired reset code"
+            )
+        
+        # Here you would typically update the user's password in the database
+        # For now, we'll just return success
+        
+        return {
+            "message": "Password reset verified successfully",
+            "email": request.email
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error confirming password reset: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to confirm password reset"
+        )
+
+
+@router.post("/email/send-security-alert")
+async def send_security_alert(request: SecurityAlertRequest):
+    """Send security alert email."""
+    try:
+        success = await email_service.send_security_alert(
+            to_email=request.email,
+            user_name="User",
+            action=request.action,
+            ip_address=request.ip_address,
+            user_agent=request.user_agent
+        )
+        
+        if success:
+            return {
+                "message": "Security alert sent successfully",
+                "email": request.email,
+                "action": request.action
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send security alert"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error sending security alert: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send security alert"
+        )
+
+
+@router.post("/email/send-account-suspended")
+async def send_account_suspended(
+    request: dict  # Using dict for flexibility
+):
+    """Send account suspension email (admin only)."""
+    try:
+        # For now, skip admin check - in production, this would require admin authentication
+        email = request.get("email")
+        user_name = request.get("user_name", "User")
+        status = request.get("status", "Suspended")
+        reason = request.get("reason", "Account action required")
+        actions = request.get("actions", [])
+        
+        success = await email_service.send_account_suspended(
+            to_email=email,
+            user_name=user_name,
+            status=status,
+            reason=reason,
+            actions=actions
+        )
+        
+        if success:
+            return {
+                "message": "Account notification sent successfully",
+                "email": email,
+                "status": status
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send account notification"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending account notification: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send account notification"
+        )
+
+
+@router.post("/email/send-custom")
+async def send_custom_email(
+    request: CustomEmailRequest
+):
+    """Send custom email content (admin/authorized users only)."""
+    try:
+        # For now, skip admin check - in production, this would require admin authentication
+        success = await email_service.send_custom_email(
+            to_email=request.to_email,
+            subject=request.subject,
+            html_content=request.html_content
+        )
+        
+        if success:
+            return {
+                "message": "Custom email sent successfully",
+                "to_email": request.to_email,
+                "subject": request.subject
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send custom email"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending custom email: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send custom email"
+        )
+
+
+@router.get("/email/verify-otp/{email}/{code}")
+async def verify_otp_code(email: str, code: str):
+    """Verify OTP code (for testing purposes)."""
+    try:
+        is_valid = security_service.verify_email_code(email, code)
+        
+        return {
+            "email": email,
+            "code": code,
+            "valid": is_valid,
+            "message": "Code is valid" if is_valid else "Code is invalid or expired"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error verifying OTP: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify OTP code"
+        )
