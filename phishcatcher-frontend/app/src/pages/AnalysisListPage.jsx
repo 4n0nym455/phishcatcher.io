@@ -16,75 +16,69 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { createAnalysisUrl, createSearchUrl, createBreadcrumb } from '@/utils/semanticUrls';
+import { generateUUIDs } from '@/lib/uuid';
 
-// Mock data for analyses
+// Mock data for analyses with UUIDs
 const mockAnalyses = [
   {
-    id: '2024-03-22-10-30-analysis-phishing-attempt-2024-03-22',
+    id: generateUUIDs(1)[0],
     subject: 'Urgent: Account Verification Required',
     sender: 'security@paypal.com',
     status: 'danger',
     score: 92,
     type: 'eml',
     date: '2024-03-22T10:30:00Z',
-    category: 'phishing',
-    analyzedAt: '2024-03-22T10:32:19Z'
+    threatType: 'phishing'
   },
   {
-    id: '2024-03-22-09-15-analysis-team-meeting-2024-03-22',
+    id: generateUUIDs(1)[0], 
     subject: 'Weekly Team Meeting Notes',
     sender: 'manager@company.com',
     status: 'safe',
     score: 15,
     type: 'eml',
     date: '2024-03-22T09:15:00Z',
-    category: 'internal',
-    analyzedAt: '2024-03-22T09:16:00Z'
+    threatType: 'none'
   },
   {
-    id: '2024-03-22-08-45-analysis-suspicious-login-2024-03-22',
+    id: generateUUIDs(1)[0],
     subject: 'Suspicious Login Attempt Detected',
     sender: 'alerts@github.com',
     status: 'warning',
     score: 67,
     type: 'txt',
     date: '2024-03-22T08:45:00Z',
-    category: 'suspicious',
-    analyzedAt: '2024-03-22T08:47:00Z'
+    threatType: 'suspicious'
   },
   {
-    id: '2024-03-21-14-10-analysis-invoice-2024-03-21',
+    id: generateUUIDs(1)[0],
     subject: 'Invoice #12345 - Payment Due',
     sender: 'billing@fake-invoice.com',
     status: 'danger',
     score: 88,
     type: 'msg',
-    date: '2024-03-21T14:10:00Z',
-    category: 'phishing',
-    analyzedAt: '2024-03-21T14:12:00Z'
+    date: '2024-03-22T07:20:00Z',
+    threatType: 'phishing'
   },
   {
-    id: '2024-03-21-16-30-analysis-project-update-2024-03-21',
+    id: generateUUIDs(1)[0],
     subject: 'Project Update - Q1 Review',
     sender: 'team@company.com',
     status: 'safe',
     score: 8,
     type: 'eml',
     date: '2024-03-21T16:30:00Z',
-    category: 'internal',
-    analyzedAt: '2024-03-21T16:31:00Z'
+    threatType: 'none'
   },
   {
-    id: '2024-03-21-14-10-analysis-delivery-notification-2024-03-21',
+    id: generateUUIDs(1)[0],
     subject: 'Your Package Has Been Delivered',
     sender: 'delivery@tracking-service.com',
     status: 'warning',
     score: 45,
     type: 'eml',
     date: '2024-03-21T14:10:00Z',
-    category: 'suspicious',
-    analyzedAt: '2024-03-21T14:25:00Z'
+    threatType: 'suspicious'
   }
 ];
 
@@ -320,7 +314,7 @@ export default function AnalysisListPage() {
               {filteredAnalyses.map((analysis) => (
                 <Link
                   key={analysis.id}
-                  to={createAnalysisUrl(analysis)}
+                  to={`/analysis/${analysis.id}`}
                   className="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 hover:bg-violet-500/5 transition-colors group"
                 >
                   <div className={`w-9 sm:w-10 h-9 sm:h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${

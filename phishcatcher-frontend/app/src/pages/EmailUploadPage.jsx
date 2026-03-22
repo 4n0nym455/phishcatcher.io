@@ -8,7 +8,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { createUploadUrl } from '@/utils/semanticUrls';
+import { generateUUID } from '@/lib/uuid';
+import { uploadApi, utils } from '@/lib/api';
 
 export default function EmailUploadPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -16,8 +17,28 @@ export default function EmailUploadPage() {
   const [uploadedFiles, setUploadedFiles] = useState([]);
 
   useEffect(() => {
-    // Component mounted
+    // Load user's existing files on component mount
+    loadUserFiles();
   }, []);
+
+  const loadUserFiles = async () => {
+    try {
+      const response = await uploadApi.getUserFiles();
+      if (response.items) {
+        setUploadedFiles(response.items.map(file => ({
+          id: file.id,
+          name: file.file_name,
+          size: file.file_size || 0,
+          status: file.status,
+          riskScore: file.risk_score,
+          threatCategory: file.threat_category,
+          createdAt: file.created_at,
+        })));
+      }
+    } catch (error) {
+      console.error('Failed to load user files:', error);
+    }
+  };
 
   const handleDrag = useCallback((e) => {
     e.preventDefault();
@@ -45,42 +66,134 @@ export default function EmailUploadPage() {
     }
   };
 
-  const handleFiles = (files) => {
+  const handleFiles = async (files) => {
     const validFiles = Array.from(files).filter(file => {
-      const ext = file.name.split('.').pop().toLowerCase();
-      return ['eml', 'txt', 'msg'].includes(ext);
+      if (!utils.isValidEmailFile(file.name)) {
+        toast.error(`Invalid file type: ${file.name}. Please upload .eml, .txt, or .msg files only`);
+        return false;
+      }
+      return true;
     });
 
     if (validFiles.length === 0) {
-      toast.error('Please upload .eml, .txt, or .msg files only');
       return;
     }
 
-    validFiles.forEach(file => {
-      setUploadedFiles(prev => [...prev, { name: file.name, size: file.size, status: 'pending' }]);
-      analyzeFile(file);
-    });
+    // Upload files one by one
+    for (const file of validFiles) {
+      await uploadFile(file);
+    }
   };
 
-  const analyzeFile = (file) => {
-    setIsAnalyzing(true);
-    
-    // Simulate analysis - in real implementation, this would call your API
-    setTimeout(() => {
-      setIsAnalyzing(false);
+  const uploadFile = async (file) => {
+    try {
+      // Add file to UI with pending status
+      const tempFile = {
+        id: generateUUID(),
+        name: file.name,
+        size: file.size,
+        status: 'pending',
+        isUploading: true
+      };
+      
+      setUploadedFiles(prev => [...prev, tempFile]);
+      
+      // Upload to backend
+      const response = await uploadApi.uploadEmail(file);
+      
+      // Update file with backend response
       setUploadedFiles(prev => 
-        prev.map(f => f.name === file.name ? { ...f, status: 'analyzed' } : f)
+        prev.map(f => f.id === tempFile.id ? { 
+          ...f, 
+          id: response.id,
+          status: response.status || 'processing',
+          isUploading: false
+        } : f)
       );
-      toast.success(`Analysis complete for ${file.name}`);
-    }, 2000);
+      
+      // Start polling for status
+      if (response.id) {
+        pollAnalysisStatus(response.id);
+      }
+      
+      toast.success(`File "${file.name}" uploaded successfully`);
+      
+    } catch (error) {
+      console.error('Upload failed:', error);
+      
+      // Remove temporary file and show error
+      setUploadedFiles(prev => prev.filter(f => f.id !== tempFile.id));
+      toast.error(`Failed to upload "${file.name}": ${error.message}`);
+    }
   };
 
-  const removeFile = (fileName) => {
-    setUploadedFiles(prev => prev.filter(f => f.name !== fileName));
+  const pollAnalysisStatus = async (analysisId) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const status = await uploadApi.getAnalysisStatus(analysisId);
+        
+        setUploadedFiles(prev => 
+          prev.map(f => f.id === analysisId ? { 
+            ...f, 
+            status: status.status,
+            riskScore: status.risk_score,
+            threatCategory: status.threat_category,
+            progress: status.progress_percent
+          } : f)
+        );
+        
+        // Stop polling if analysis is complete or failed
+        if (status.status === 'completed' || status.status === 'failed') {
+          clearInterval(pollInterval);
+          
+          if (status.status === 'completed') {
+            toast.success(`Analysis completed for analysis ${analysisId}`);
+          } else {
+            toast.error(`Analysis failed for analysis ${analysisId}`);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to get analysis status:', error);
+        clearInterval(pollInterval);
+      }
+    }, 2000); // Poll every 2 seconds
+    
+    // Stop polling after 5 minutes max
+    setTimeout(() => {
+      clearInterval(pollInterval);
+    }, 300000);
   };
 
-  const clearAllFiles = () => {
-    setUploadedFiles([]);
+  const removeFile = async (fileId) => {
+    try {
+      // Delete from backend
+      await uploadApi.deleteFile(fileId);
+      
+      // Remove from UI
+      setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+      
+      toast.success('File deleted successfully');
+    } catch (error) {
+      console.error('Failed to delete file:', error);
+      toast.error(`Failed to delete file: ${error.message}`);
+    }
+  };
+
+  const clearAllFiles = async () => {
+    try {
+      // Delete all files from backend
+      await Promise.all(
+        uploadedFiles.map(file => uploadApi.deleteFile(file.id))
+      );
+      
+      // Clear UI
+      setUploadedFiles([]);
+      
+      toast.success('All files deleted successfully');
+    } catch (error) {
+      console.error('Failed to clear files:', error);
+      toast.error('Failed to clear some files');
+    }
   };
 
   return (
@@ -155,9 +268,9 @@ export default function EmailUploadPage() {
             </div>
 
             <div className="space-y-3 sm:space-y-4">
-              {uploadedFiles.map((file, index) => (
+              {uploadedFiles.map((file) => (
                 <div 
-                  key={index}
+                  key={file.id}
                   className="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl bg-secondary-30/50 border border-violet-500/15"
                 >
                   <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-violet-500/15 flex items-center justify-center flex-shrink-0">
@@ -186,7 +299,7 @@ export default function EmailUploadPage() {
                     )}
                   </div>
                   <button
-                    onClick={() => removeFile(file.name)}
+                    onClick={() => removeFile(file.id)}
                     className="p-2 rounded-lg hover:bg-pink-500/15 text-muted-foreground hover:text-pink-400 transition-colors"
                   >
                     <X className="w-4 h-4" />

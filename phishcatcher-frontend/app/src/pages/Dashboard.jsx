@@ -28,6 +28,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
+import { generateUUIDs } from '@/lib/uuid';
 
 // Mock data for charts
 const emailTrendData = [
@@ -47,16 +48,16 @@ const threatTypeData = [
   { name: 'Spam', value: 10, color: '#27D3C7' },
 ];
 
-// Mock recent analyses
+// Mock recent analyses with UUIDs
 const recentAnalyses = [
-  { id: 1, subject: 'Reset your password immediately', sender: 'security@fake-bank.com', time: '2 min ago', status: 'danger', score: 92, type: 'email' },
-  { id: 2, subject: 'Invoice #9921 from Acme Corp', sender: 'billing@acmecorp.com', time: '5 min ago', status: 'safe', score: 12, type: 'email' },
-  { id: 3, subject: 'Urgent: Verify your account', sender: 'support@amaz0n-security.com', time: '12 min ago', status: 'danger', score: 88, type: 'txt' },
-  { id: 4, subject: 'Team meeting notes', sender: 'sarah@company.com', time: '18 min ago', status: 'safe', score: 5, type: 'email' },
-  { id: 5, subject: 'Your package delivery failed', sender: 'shipping@dhl-express.net', time: '25 min ago', status: 'warning', score: 67, type: 'eml' },
-  { id: 6, subject: 'Shared document: Q3 Review', sender: 'mike@company.com', time: '32 min ago', status: 'safe', score: 8, type: 'email' },
-  { id: 7, subject: 'Action required: Tax statement', sender: 'irs@gov-tax.org', time: '45 min ago', status: 'danger', score: 95, type: 'txt' },
-  { id: 8, subject: 'IT: Scheduled maintenance', sender: 'it@company.com', time: '1 hour ago', status: 'safe', score: 3, type: 'email' },
+  { id: generateUUIDs(1)[0], subject: 'Reset your password immediately', sender: 'security@fake-bank.com', time: '2 min ago', status: 'danger', score: 92, type: 'email' },
+  { id: generateUUIDs(1)[0], subject: 'Invoice #9921 from Acme Corp', sender: 'billing@acmecorp.com', time: '5 min ago', status: 'safe', score: 12, type: 'email' },
+  { id: generateUUIDs(1)[0], subject: 'Urgent: Verify your account', sender: 'support@amaz0n-security.com', time: '12 min ago', status: 'danger', score: 88, type: 'txt' },
+  { id: generateUUIDs(1)[0], subject: 'Weekly Team Meeting Notes', sender: 'manager@company.com', time: '1 hour ago', status: 'safe', score: 8, type: 'email' },
+  { id: generateUUIDs(1)[0], subject: 'Suspicious Login Attempt', sender: 'alerts@github.com', time: '2 hours ago', status: 'warning', score: 67, type: 'txt' },
+  { id: generateUUIDs(1)[0], subject: 'Your Package Has Been Delivered', sender: 'delivery@service.com', time: '3 hours ago', status: 'warning', score: 45, type: 'email' },
+  { id: generateUUIDs(1)[0], subject: 'Action required: Tax statement', sender: 'irs@gov-tax.org', time: '45 min ago', status: 'danger', score: 95, type: 'txt' },
+  { id: generateUUIDs(1)[0], subject: 'IT: Scheduled maintenance', sender: 'it@company.com', time: '1 hour ago', status: 'safe', score: 3, type: 'email' },
 ];
 
 // Stats cards data
@@ -361,7 +362,7 @@ export default function Dashboard() {
           className="w-full mt-4 sm:mt-6 text-violet-400 hover:text-violet-300 hover:bg-violet-500/10 text-sm sm:text-base"
           asChild
         >
-          <Link to="/analysis" className="w-full mt-4 sm:mt-6 text-violet-400 hover:text-violet-300 hover:bg-violet-500/10 text-sm sm:text-base transition-colors" asChild>
+          <Link to="/analysis">
             View all analyses
             <ArrowRight className="w-4 h-4 ml-2" />
           </Link>

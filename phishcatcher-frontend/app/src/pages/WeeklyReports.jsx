@@ -18,6 +18,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { generateUUIDs } from '@/lib/uuid';
 import {
   BarChart,
   Bar,
@@ -53,7 +54,7 @@ const threatCategories = [
 
 const topThreats = [
   { 
-    id: 1, 
+    id: generateUUIDs(1)[0], 
     subject: 'Urgent: Verify your bank account', 
     sender: 'security@fake-bank-secure.com', 
     count: 47,
@@ -61,7 +62,7 @@ const topThreats = [
     riskScore: 94 
   },
   { 
-    id: 2, 
+    id: generateUUIDs(1)[0], 
     subject: 'Invoice payment required', 
     sender: 'billing@fake-invoice.net', 
     count: 32,
@@ -69,7 +70,7 @@ const topThreats = [
     riskScore: 88 
   },
   { 
-    id: 3, 
+    id: generateUUIDs(1)[0], 
     subject: 'Your package delivery failed', 
     sender: 'shipping@fake-delivery.com', 
     count: 28,
@@ -77,7 +78,7 @@ const topThreats = [
     riskScore: 76 
   },
   { 
-    id: 4, 
+    id: generateUUIDs(1)[0], 
     subject: 'Action required: Tax refund', 
     sender: 'refunds@fake-tax.gov', 
     count: 21,
@@ -85,13 +86,13 @@ const topThreats = [
     riskScore: 91 
   },
   { 
-    id: 5, 
+    id: generateUUIDs(1)[0], 
     subject: 'Free gift card claim', 
     sender: 'rewards@fake-gifts.com', 
     count: 19,
-    trend: 'stable',
+    trend: 'down',
     riskScore: 82 
-  },
+  }
 ];
 
 const weeklyStats = [
