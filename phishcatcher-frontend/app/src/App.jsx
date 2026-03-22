@@ -29,6 +29,8 @@ import MFAVerificationPage from './pages/MFAVerificationPage';
 import ActivationPendingPage from './pages/ActivationPendingPage';
 import ActivateAccountPage from './pages/ActivateAccountPage';
 import OAuthSuccessPage from './pages/OAuthSuccessPage';
+import EmailUploadPage from './pages/EmailUploadPage';
+import AnalysisListPage from './pages/AnalysisListPage';
 import Layout from './components/Layout';
 import PrivateRoute from './pages/PrivateRoute';
 import { getTokens, authApi, clearTokens } from './lib/api'; // Import API utilities
@@ -287,6 +289,28 @@ function App() {
               <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <MFASettings />
+                </Layout>
+              </PrivateRoute>
+            } 
+          />
+          
+          <Route 
+            path="/upload" 
+            element={
+              <PrivateRoute>
+                <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
+                  <EmailUploadPage />
+                </Layout>
+              </PrivateRoute>
+            } 
+          />
+          
+          <Route 
+            path="/analysis" 
+            element={
+              <PrivateRoute>
+                <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
+                  <AnalysisListPage />
                 </Layout>
               </PrivateRoute>
             } 

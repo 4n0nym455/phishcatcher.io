@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   Mail, 
@@ -11,16 +11,12 @@ import {
   Clock,
   ArrowRight,
   Search,
-  File,
-  X,
   Shield,
-  Link as LinkIcon,
-  Paperclip
+  Link as LinkIcon
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
 import {
   AreaChart,
   Area,
@@ -101,75 +97,12 @@ const statsCards = [
 ];
 
 export default function Dashboard() {
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [mounted, setMounted] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState([]);
 
   useEffect(() => {
     setMounted(true);
   }, []);
-
-  const handleDrag = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setDragActive(false);
-    }
-  }, []);
-
-  const handleDrop = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFiles(e.dataTransfer.files);
-    }
-  }, []);
-
-  const handleFileInput = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      handleFiles(e.target.files);
-    }
-  };
-
-  const handleFiles = (files) => {
-    const validFiles = Array.from(files).filter(file => {
-      const ext = file.name.split('.').pop().toLowerCase();
-      return ['eml', 'txt', 'msg'].includes(ext);
-    });
-
-    if (validFiles.length === 0) {
-      toast.error('Please upload .eml, .txt, or .msg files only');
-      return;
-    }
-
-    validFiles.forEach(file => {
-      setUploadedFiles(prev => [...prev, { name: file.name, size: file.size, status: 'pending' }]);
-      analyzeFile(file);
-    });
-  };
-
-  const analyzeFile = (file) => {
-    setIsAnalyzing(true);
-    
-    // Simulate analysis
-    setTimeout(() => {
-      setIsAnalyzing(false);
-      setUploadedFiles(prev => 
-        prev.map(f => f.name === file.name ? { ...f, status: 'analyzed' } : f)
-      );
-      toast.success(`Analysis complete for ${file.name}`);
-    }, 2000);
-  };
-
-  const removeFile = (fileName) => {
-    setUploadedFiles(prev => prev.filter(f => f.name !== fileName));
-  };
 
   const getStatusBadge = (status) => {
     switch (status) {
@@ -215,85 +148,14 @@ export default function Dashboard() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-heading font-bold text-white">Dashboard</h1>
-          <p className="text-sm text-muted-foreground mt-1">Upload and analyze emails for threats</p>
+          <p className="text-sm text-muted-foreground mt-1">Monitor your email security and analysis results</p>
         </div>
-      </div>
-
-      {/* File Upload Section */}
-      <div className="glass-card rounded-2xl p-4 sm:p-6">
-        <h2 className="text-lg font-heading font-semibold text-white mb-4">Upload Email for Analysis</h2>
-        
-        <div 
-          className={`file-upload-zone ${dragActive ? 'dragover' : ''}`}
-          onDragEnter={handleDrag}
-          onDragLeave={handleDrag}
-          onDragOver={handleDrag}
-          onDrop={handleDrop}
-        >
-          <input
-            type="file"
-            id="file-upload"
-            multiple
-            accept=".eml,.txt,.msg"
-            onChange={handleFileInput}
-            className="hidden"
-          />
-          <label htmlFor="file-upload" className="cursor-pointer block">
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-violet-500/15 flex items-center justify-center">
-                <Upload className="w-7 h-7 sm:w-8 sm:h-8 text-violet-400" />
-              </div>
-              <div className="text-center">
-                <p className="text-white font-medium text-sm sm:text-base">
-                  Drop your email files here, or <span className="text-violet-400">click to browse</span>
-                </p>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-                  Supports .eml, .txt, and .msg files
-                </p>
-              </div>
-            </div>
-          </label>
-        </div>
-
-        {/* Uploaded Files List */}
-        {uploadedFiles.length > 0 && (
-          <div className="mt-4 space-y-2">
-            {uploadedFiles.map((file, index) => (
-              <div 
-                key={index}
-                className="flex items-center gap-3 p-3 rounded-xl bg-secondary-30/50 border border-violet-500/15"
-              >
-                <div className="w-10 h-10 rounded-lg bg-violet-500/15 flex items-center justify-center flex-shrink-0">
-                  <File className="w-5 h-5 text-violet-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">{file.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {(file.size / 1024).toFixed(1)} KB
-                  </p>
-                </div>
-                {file.status === 'analyzing' ? (
-                  <div className="w-5 h-5 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
-                ) : file.status === 'analyzed' ? (
-                  <CheckCircle className="w-5 h-5 text-teal-400" />
-                ) : null}
-                <button
-                  onClick={() => removeFile(file.name)}
-                  className="p-1.5 rounded-lg hover:bg-pink-500/15 text-muted-foreground hover:text-pink-400 transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {isAnalyzing && (
-          <div className="mt-4 flex items-center gap-3 p-4 rounded-xl bg-violet-500/10 border border-violet-500/25">
-            <div className="w-5 h-5 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
-            <span className="text-sm text-violet-400">Analyzing email content...</span>
-          </div>
-        )}
+        <Link to="/upload">
+          <Button className="bg-violet-500 hover:bg-violet-600">
+            <Upload className="w-4 h-4 mr-2" />
+            Upload Email
+          </Button>
+        </Link>
       </div>
 
       {/* Stats Grid */}

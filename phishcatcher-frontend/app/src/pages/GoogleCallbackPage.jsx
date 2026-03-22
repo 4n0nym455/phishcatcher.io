@@ -7,17 +7,17 @@ import { oauthService } from "@/lib/oauthService";
 export default function GoogleCallbackPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  
+
   // Get URL parameters safely - handle special characters in authorization code
   const code = searchParams.get("code");
   const state = searchParams.get("state");
   const error = searchParams.get("error");
-  
+
   // State to store the OAuth state from parent window
   const [oauthState, setOauthState] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processedCode, setProcessedCode] = useState(null);
-  
+
   // Immediate synchronous guard to prevent double processing
   const processedRef = useRef(false);
 
@@ -26,21 +26,24 @@ export default function GoogleCallbackPage() {
     const messageHandler = (event) => {
       // Verify origin for security
       if (event.origin !== window.location.origin) return;
-      
-      if (event.data.type === 'OAUTH_STATE') {
+
+      if (event.data.type === "OAUTH_STATE") {
         setOauthState(event.data.state);
       }
     };
 
-    window.addEventListener('message', messageHandler);
+    window.addEventListener("message", messageHandler);
 
     // Request OAuth state from parent window
     if (window.opener && !window.opener.closed) {
-      window.opener.postMessage({ type: 'REQUEST_OAUTH_STATE' }, window.location.origin);
+      window.opener.postMessage(
+        { type: "REQUEST_OAUTH_STATE" },
+        window.location.origin,
+      );
     }
 
     return () => {
-      window.removeEventListener('message', messageHandler);
+      window.removeEventListener("message", messageHandler);
     };
   }, []);
 
@@ -48,69 +51,87 @@ export default function GoogleCallbackPage() {
     // Process OAuth callback IMMEDIATELY - no delays, no waiting
     // Add multiple layers of protection against duplicate processing
     if (code && !processedRef.current && code !== processedCode) {
-      console.log('🚀 Processing OAuth callback IMMEDIATELY...');
-      console.log('🔍 Code exists:', !!code);
-      console.log('🔍 processedRef.current:', processedRef.current);
-      console.log('🔍 code !== processedCode:', code !== processedCode);
-      
+      console.log("🚀 Processing OAuth callback IMMEDIATELY...");
+      console.log("🔍 Code exists:", !!code);
+      console.log("🔍 processedRef.current:", processedRef.current);
+      console.log("🔍 code !== processedCode:", code !== processedCode);
+
       // Set all protection flags immediately
       processedRef.current = true;
       setIsProcessing(true);
       setProcessedCode(code);
-      
+
       // Process RIGHT NOW - no async delays
       (async () => {
         try {
-          console.log('⏰ Immediate processing start:', new Date().toISOString());
-          
+          console.log(
+            "⏰ Immediate processing start:",
+            new Date().toISOString(),
+          );
+
           // Use URL state directly - no waiting for parent window
           const response = await oauthService.handleOAuthCallback(code, state);
-          
-          console.log('✅ OAuth callback response:', response);
-          
+
+          console.log("✅ OAuth callback response:", response);
+
           if (response.mfa_required) {
-            localStorage.setItem('mfa_session_token', response.mfa_session_token);
-            localStorage.setItem('mfa_user', JSON.stringify(response.user));
-            oauthService.closePopup('google-auth-mfa-required');
+            localStorage.setItem(
+              "mfa_session_token",
+              response.mfa_session_token,
+            );
+            localStorage.setItem("mfa_user", JSON.stringify(response.user));
+            oauthService.closePopup("google-auth-mfa-required");
             return;
           }
-          
+
           if (response.activation_required) {
             // New user - activation required
             // Store activation info for the activation pending page
             const activationInfo = {
               email: response.email,
               full_name: response.full_name,
-              message: response.message || "Please check your email for activation instructions"
+              message:
+                response.message ||
+                "Please check your email for activation instructions",
             };
-            
+
             // Store activation info temporarily
-            localStorage.setItem('pending_activation', JSON.stringify(activationInfo));
-            
+            localStorage.setItem(
+              "pending_activation",
+              JSON.stringify(activationInfo),
+            );
+
             // Close popup and notify parent to redirect to activation pending
-            oauthService.closePopup('google-auth-activation-required');
+            oauthService.closePopup("google-auth-activation-required");
             return;
           }
-          
+
           if (response.access_token) {
             // Existing active user - direct login
             setTokens(response);
             if (response.user) {
-              localStorage.setItem('phishcatcher_email', response.user.email);
-              localStorage.setItem('phishcatcher_role', response.user.role || 'user');
-              localStorage.setItem('phishcatcher_name', response.user.full_name || '');
+              localStorage.setItem("phishcatcher_email", response.user.email);
+              localStorage.setItem(
+                "phishcatcher_role",
+                response.user.role || "user",
+              );
+              localStorage.setItem(
+                "phishcatcher_name",
+                response.user.full_name || "",
+              );
               // Store login method for MFA detection
-              localStorage.setItem('login_method', 'oauth');
+              localStorage.setItem("login_method", "oauth");
             }
-            oauthService.closePopup('google-auth-success');
+            oauthService.closePopup("google-auth-success");
             return;
           }
-          
-          throw new Error('Failed to authenticate with Google - no valid response received');
-          
+
+          throw new Error(
+            "Failed to authenticate with Google - no valid response received",
+          );
         } catch (error) {
-          console.error('❌ OAuth callback error:', error);
-          
+          console.error("❌ OAuth callback error:", error);
+
           // Show error in popup and notify parent
           document.body.innerHTML = `
             <div style="padding: 20px; font-family: Arial, sans-serif; text-align: center; max-width: 400px;">
@@ -119,15 +140,15 @@ export default function GoogleCallbackPage() {
               <p>This window will close in 5 seconds...</p>
             </div>
           `;
-          
-          oauthService.closePopup('google-auth-error', 5000);
+
+          oauthService.closePopup("google-auth-error", 5000);
         }
       })();
     } else {
-      console.log('🔄 Skipping OAuth processing:');
-      console.log('🔍 Code exists:', !!code);
-      console.log('🔍 processedRef.current:', processedRef.current);
-      console.log('🔍 code !== processedCode:', code !== processedCode);
+      console.log("🔄 Skipping OAuth processing:");
+      console.log("🔍 Code exists:", !!code);
+      console.log("🔍 processedRef.current:", processedRef.current);
+      console.log("🔍 code !== processedCode:", code !== processedCode);
     }
   }, [code, state, oauthState, navigate]);
 
@@ -137,35 +158,22 @@ export default function GoogleCallbackPage() {
         <div className="w-12 h-12 bg-violet-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
           <div className="w-6 h-6 bg-violet-500 rounded-full animate-pulse"></div>
         </div>
-        
+
         <h1 className="text-2xl font-bold text-white mb-4">
-          {error ? 'Authentication Error' : 'Processing Authentication'}
+          {error ? "Authentication Error" : "Processing Authentication"}
         </h1>
-        
+
         <p className="text-gray-300 mb-6">
-          {isProcessing ? 'Processing your authentication...' : 'Please wait...'}
+          {isProcessing
+            ? "Processing your authentication..."
+            : "Please wait..."}
         </p>
-        
+
         {error && (
           <div className="bg-red-500/20 border border-red-500/30 rounded-lg p-4 mb-6">
-            <p className="text-red-300 text-sm">
-              Error: {error}
-            </p>
+            <p className="text-red-300 text-sm">Error: {error}</p>
           </div>
         )}
-        
-        <div className="flex flex-col space-y-3">
-          <div className="text-gray-400 text-sm">
-            This window will close automatically once authentication is complete.
-          </div>
-          
-          <button
-            onClick={() => navigate('/login')}
-            className="w-full h-12 bg-violet-500 hover:bg-violet-600 text-white rounded-xl font-medium transition-all duration-200"
-          >
-            Back to Login
-          </button>
-        </div>
       </div>
     </div>
   );
