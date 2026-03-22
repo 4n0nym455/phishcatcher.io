@@ -8,6 +8,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { createUploadUrl } from '@/utils/semanticUrls';
 
 export default function EmailUploadPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);

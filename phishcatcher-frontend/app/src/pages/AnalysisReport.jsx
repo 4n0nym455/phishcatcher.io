@@ -36,6 +36,7 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
+import { createAnalysisUrl, isValidAnalysisUrl, extractAnalysisId } from '@/utils/semanticUrls';
 
 // Mock analysis data
 const analysisData = {
@@ -147,6 +148,27 @@ export default function AnalysisReport() {
   const [showHeaders, setShowHeaders] = useState(false);
   const [blurSensitive, setBlurSensitive] = useState(true);
 
+  // Validate and handle semantic URL
+  const isValidUrl = id && isValidAnalysisUrl(`/analysis/${id}`);
+  const analysisId = extractAnalysisId(`/analysis/${id}`);
+  
+  // In a real app, fetch analysis data based on the semantic ID
+  const [analysisData, setAnalysisData] = useState({
+    id: analysisId || id,
+    subject: 'Reset your password immediately',
+    sender: 'security-notice@service-alerts.com',
+    displayName: 'Security Team',
+    recipient: 'john@company.com',
+    receivedAt: '2024-01-15 14:32:18',
+    analyzedAt: '2024-01-15 14:32:19',
+    fileType: 'eml',
+    fileSize: '12.4 KB',
+    riskScore: 92,
+    status: 'danger',
+    category: 'Phishing',
+    // ... rest of the data
+  });
+
   const riskColors = getRiskColor(analysisData.riskScore);
 
   const handleExport = () => {
@@ -155,7 +177,7 @@ export default function AnalysisReport() {
 PHISHCATCHER ANALYSIS REPORT
 ============================
 
-Report ID: ${id}
+Report ID: ${analysisData.id}
 Generated: ${new Date().toISOString()}
 
 EMAIL DETAILS
@@ -189,7 +211,7 @@ Results should be reviewed by security professionals before taking action.
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `phishcatcher-report-${id}.txt`;
+    a.download = `phishcatcher-report-${analysisData.id}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -203,7 +225,8 @@ Results should be reviewed by security professionals before taking action.
   };
 
   const handleShare = () => {
-    navigator.clipboard.writeText(window.location.href);
+    const currentUrl = createAnalysisUrl(analysisData);
+    navigator.clipboard.writeText(`${window.location.origin}${currentUrl}`);
     toast.success('Link copied to clipboard');
   };
 

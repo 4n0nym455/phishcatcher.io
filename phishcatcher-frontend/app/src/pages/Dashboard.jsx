@@ -361,7 +361,7 @@ export default function Dashboard() {
           className="w-full mt-4 sm:mt-6 text-violet-400 hover:text-violet-300 hover:bg-violet-500/10 text-sm sm:text-base"
           asChild
         >
-          <Link to="/analysis">
+          <Link to="/analysis" className="w-full mt-4 sm:mt-6 text-violet-400 hover:text-violet-300 hover:bg-violet-500/10 text-sm sm:text-base transition-colors" asChild>
             View all analyses
             <ArrowRight className="w-4 h-4 ml-2" />
           </Link>

@@ -34,17 +34,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { authApi } from "@/lib/api";
+import { createSettingsUrl, createAdminUrl } from '@/utils/semanticUrls';
 
 const userNavItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { path: "/upload", label: "Email Upload", icon: Upload },
   { path: "/analysis", label: "Analysis History", icon: FileText },
   { path: "/weekly-reports", label: "Weekly Reports", icon: FileBarChart },
-  { path: "/settings", label: "Settings", icon: Settings },
+  { path: createSettingsUrl(), label: "Settings", icon: Settings },
 ];
 
 const adminNavItems = [
-  { path: "/admin", label: "Admin Panel", icon: ShieldAlert },
+  { path: createAdminUrl(), label: "Admin Panel", icon: ShieldAlert },
 ];
 
 export default function Layout({ children, onLogout, userRole = "user", userData = {} }) {
