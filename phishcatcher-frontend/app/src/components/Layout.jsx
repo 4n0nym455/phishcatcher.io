@@ -19,6 +19,7 @@ import {
   BarChart3,
   LayoutDashboard,
   Upload,
+  FileText,
 } from "lucide-react";
 import { useNotifications } from './NotificationProvider';
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +38,7 @@ import { authApi } from "@/lib/api";
 const userNavItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { path: "/upload", label: "Email Upload", icon: Upload },
+  { path: "/analysis", label: "Analysis History", icon: FileText },
   { path: "/weekly-reports", label: "Weekly Reports", icon: FileBarChart },
   { path: "/settings", label: "Settings", icon: Settings },
 ];

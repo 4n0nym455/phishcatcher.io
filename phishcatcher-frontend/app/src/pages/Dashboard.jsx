@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import {
   AreaChart,
   Area,
@@ -107,20 +106,20 @@ export default function Dashboard() {
   const getStatusBadge = (status) => {
     switch (status) {
       case 'safe':
-        return <Badge className="status-safe">Safe</Badge>;
+        return <span className="status-safe">Safe</span>;
       case 'warning':
-        return <Badge className="status-warning">Suspicious</Badge>;
+        return <span className="status-warning">Suspicious</span>;
       case 'danger':
-        return <Badge className="status-danger">Threat Detected</Badge>;
+        return <span className="status-danger">Threat Detected</span>;
       default:
         return null;
     }
   };
 
   const getScoreColor = (score) => {
-    if (score < 30) return 'text-teal-400';
-    if (score < 70) return 'text-amber-400';
-    return 'text-pink-400';
+    if (score >= 70) return 'text-pink-400';
+    if (score >= 40) return 'text-amber-400';
+    return 'text-teal-400';
   };
 
   const getFileIcon = (type) => {
@@ -151,8 +150,8 @@ export default function Dashboard() {
           <p className="text-sm text-muted-foreground mt-1">Monitor your email security and analysis results</p>
         </div>
         <Link to="/upload">
-          <Button className="bg-violet-500 hover:bg-violet-600">
-            <Upload className="w-4 h-4 mr-2" />
+          <Button className="btn btn-primary">
+            <Upload className="w-4 h-4" />
             Upload Email
           </Button>
         </Link>
@@ -167,7 +166,7 @@ export default function Dashboard() {
           return (
             <div 
               key={index}
-              className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors"
+              className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6"
             >
               <div className="flex items-start justify-between">
                 <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-violet-500/15 flex items-center justify-center">
@@ -180,7 +179,7 @@ export default function Dashboard() {
               </div>
               <div className="mt-3 sm:mt-4">
                 <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stat.value}</p>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">{stat.title}</p>
+                <p className="text-xs sm:text-sm text-muted-foreground">{stat.label}</p>
               </div>
             </div>
           );

@@ -178,67 +178,67 @@ export default function AnalysisListPage() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          <div className="glass-card rounded-xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-400 mb-1">Total Analyses</p>
-                <p className="text-2xl font-bold text-white">{stats.total}</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+            <div className="flex items-start justify-between">
+              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-violet-500/15 flex items-center justify-center">
+                <FileText className="w-4 sm:w-6 h-4 sm:h-6 text-violet-400" />
               </div>
-              <div className="w-12 h-12 rounded-lg bg-violet-500/15 flex items-center justify-center">
-                <FileText className="w-6 h-6 text-violet-400" />
-              </div>
+            </div>
+            <div className="mt-3 sm:mt-4">
+              <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.total}</p>
+              <p className="text-xs sm:text-sm text-muted-foreground">Total Analyses</p>
             </div>
           </div>
 
-          <div className="glass-card rounded-xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-400 mb-1">Safe</p>
-                <p className="text-2xl font-bold text-teal-400">{stats.safe}</p>
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+            <div className="flex items-start justify-between">
+              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-teal-500/15 flex items-center justify-center">
+                <CheckCircle className="w-4 sm:w-6 h-4 sm:h-6 text-teal-400" />
               </div>
-              <div className="w-12 h-12 rounded-lg bg-teal-500/15 flex items-center justify-center">
-                <CheckCircle className="w-6 h-6 text-teal-400" />
-              </div>
+            </div>
+            <div className="mt-3 sm:mt-4">
+              <p className="text-xl sm:text-3xl font-mono font-medium text-teal-400">{stats.safe}</p>
+              <p className="text-xs sm:text-sm text-muted-foreground">Safe Emails</p>
             </div>
           </div>
 
-          <div className="glass-card rounded-xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-400 mb-1">Suspicious</p>
-                <p className="text-2xl font-bold text-amber-400">{stats.warning}</p>
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+            <div className="flex items-start justify-between">
+              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-amber-500/15 flex items-center justify-center">
+                <AlertTriangle className="w-4 sm:w-6 h-4 sm:h-6 text-amber-400" />
               </div>
-              <div className="w-12 h-12 rounded-lg bg-amber-500/15 flex items-center justify-center">
-                <AlertTriangle className="w-6 h-6 text-amber-400" />
-              </div>
+            </div>
+            <div className="mt-3 sm:mt-4">
+              <p className="text-xl sm:text-3xl font-mono font-medium text-amber-400">{stats.warning}</p>
+              <p className="text-xs sm:text-sm text-muted-foreground">Suspicious</p>
             </div>
           </div>
 
-          <div className="glass-card rounded-xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-400 mb-1">Threats</p>
-                <p className="text-2xl font-bold text-pink-400">{stats.danger}</p>
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+            <div className="flex items-start justify-between">
+              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-pink-500/15 flex items-center justify-center">
+                <Shield className="w-4 sm:w-6 h-4 sm:h-6 text-pink-400" />
               </div>
-              <div className="w-12 h-12 rounded-lg bg-pink-500/15 flex items-center justify-center">
-                <Shield className="w-6 h-6 text-pink-400" />
-              </div>
+            </div>
+            <div className="mt-3 sm:mt-4">
+              <p className="text-xl sm:text-3xl font-mono font-medium text-pink-400">{stats.danger}</p>
+              <p className="text-xs sm:text-sm text-muted-foreground">Threats Detected</p>
             </div>
           </div>
         </div>
 
         {/* Filters */}
-        <div className="glass-card rounded-xl p-6 mb-6">
+        <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 mb-6">
           <div className="flex flex-col lg:flex-row gap-4">
             <div className="flex-1">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-5 h-5" />
                 <Input
                   placeholder="Search by subject or sender..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 bg-slate-800/50 border-violet-500/30 text-white placeholder-gray-400"
+                  className="pl-10 bg-slate-800/50 border-violet-500/30 text-white placeholder-muted-foreground"
                 />
               </div>
             </div>
@@ -277,11 +277,11 @@ export default function AnalysisListPage() {
         </div>
 
         {/* Analyses List */}
-        <div className="glass-card rounded-xl">
+        <div className="glass-card rounded-xl sm:rounded-2xl">
           {isLoading ? (
             <div className="p-12 text-center">
               <div className="w-8 h-8 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin mx-auto mb-4"></div>
-              <p className="text-gray-400">Loading analyses...</p>
+              <p className="text-muted-foreground">Loading analyses...</p>
             </div>
           ) : filteredAnalyses.length === 0 ? (
             <div className="p-12 text-center">
@@ -289,7 +289,7 @@ export default function AnalysisListPage() {
                 <FileText className="w-8 h-8 text-violet-400" />
               </div>
               <h3 className="text-lg font-semibold text-white mb-2">No analyses found</h3>
-              <p className="text-gray-400 mb-6">
+              <p className="text-muted-foreground mb-6">
                 {searchQuery || filterStatus !== 'all' 
                   ? 'Try adjusting your search or filters' 
                   : 'Upload your first email to start analyzing'
@@ -314,31 +314,35 @@ export default function AnalysisListPage() {
                 <Link
                   key={analysis.id}
                   to={`/analysis/${analysis.id}`}
-                  className="flex items-center gap-4 p-6 hover:bg-violet-500/5 transition-colors group"
+                  className="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 hover:bg-violet-500/5 transition-colors group"
                 >
-                  <div className="flex-shrink-0">
+                  <div className={`w-9 sm:w-10 h-9 sm:h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                    analysis.status === 'safe' ? 'bg-teal-500/15' :
+                    analysis.status === 'warning' ? 'bg-amber-500/15' :
+                    'bg-pink-500/15'
+                  }`}>
                     {getStatusIcon(analysis.status)}
                   </div>
                   
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start justify-between gap-3 sm:gap-4">
                       <div className="flex-1 min-w-0">
-                        <p className="text-white font-medium truncate group-hover:text-violet-400 transition-colors mb-1">
+                        <p className="text-sm font-medium text-white truncate group-hover:text-violet-400 transition-colors mb-1">
                           {analysis.subject}
                         </p>
-                        <div className="flex items-center gap-4 text-sm text-gray-400">
+                        <div className="flex items-center gap-3 sm:gap-4 text-xs sm:text-sm text-muted-foreground">
                           <span>{analysis.sender}</span>
                           <span>•</span>
                           <span>{formatDate(analysis.date)}</span>
                         </div>
                       </div>
                       
-                      <div className="flex items-center gap-3 flex-shrink-0">
+                      <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
                         {getStatusBadge(analysis.status)}
                         <span className={`text-sm font-mono font-medium ${getScoreColor(analysis.score)}`}>
                           {analysis.score}%
                         </span>
-                        <ArrowRight className="w-4 h-4 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <ArrowRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block" />
                       </div>
                     </div>
                   </div>

@@ -92,8 +92,8 @@ export default function EmailUploadPage() {
         </div>
 
         {/* Upload Section */}
-        <div className="glass-card rounded-2xl p-6 mb-6">
-          <h2 className="text-xl font-semibold text-white mb-6">Upload Email Files</h2>
+        <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 mb-6">
+          <h2 className="text-lg sm:text-xl font-heading font-semibold text-white mb-6">Upload Email Files</h2>
           
           <div 
             className={`file-upload-zone ${dragActive ? 'dragover' : ''}`}
@@ -111,15 +111,15 @@ export default function EmailUploadPage() {
               className="hidden"
             />
             <label htmlFor="file-upload" className="cursor-pointer block">
-              <div className="flex flex-col items-center gap-4">
-                <div className="w-20 h-20 rounded-2xl bg-violet-500/15 flex items-center justify-center">
-                  <Upload className="w-10 h-10 text-violet-400" />
+              <div className="flex flex-col items-center gap-4 sm:gap-6">
+                <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-violet-500/15 flex items-center justify-center">
+                  <Upload className="w-8 h-8 sm:w-10 sm:h-10 text-violet-400" />
                 </div>
                 <div className="text-center">
-                  <p className="text-white font-medium text-lg mb-2">
+                  <p className="text-white font-medium text-lg sm:text-xl mb-2">
                     Drop your email files here, or <span className="text-violet-400">click to browse</span>
                   </p>
-                  <p className="text-sm text-gray-400">
+                  <p className="text-sm sm:text-base text-muted-foreground">
                     Supports .eml, .txt, and .msg files up to 10MB
                   </p>
                 </div>
@@ -138,9 +138,9 @@ export default function EmailUploadPage() {
 
         {/* Uploaded Files */}
         {uploadedFiles.length > 0 && (
-          <div className="glass-card rounded-2xl p-6">
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-white">
+              <h2 className="text-lg sm:text-xl font-heading font-semibold text-white">
                 Uploaded Files ({uploadedFiles.length})
               </h2>
               <Button
@@ -153,22 +153,22 @@ export default function EmailUploadPage() {
               </Button>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-3 sm:space-y-4">
               {uploadedFiles.map((file, index) => (
                 <div 
                   key={index}
-                  className="flex items-center gap-4 p-4 rounded-xl bg-secondary-30/50 border border-violet-500/15"
+                  className="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl bg-secondary-30/50 border border-violet-500/15"
                 >
-                  <div className="w-12 h-12 rounded-lg bg-violet-500/15 flex items-center justify-center flex-shrink-0">
-                    <File className="w-6 h-6 text-violet-400" />
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-violet-500/15 flex items-center justify-center flex-shrink-0">
+                    <File className="w-5 h-5 sm:w-6 sm:h-6 text-violet-400" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-white font-medium truncate">{file.name}</p>
-                    <p className="text-xs text-gray-400">
+                    <p className="text-xs text-muted-foreground">
                       {(file.size / 1024).toFixed(1)} KB
                     </p>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-shrink-0">
                     {file.status === 'analyzing' ? (
                       <div className="w-5 h-5 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
                     ) : file.status === 'analyzed' ? (
@@ -183,13 +183,13 @@ export default function EmailUploadPage() {
                         Pending
                       </Badge>
                     )}
-                    <button
-                      onClick={() => removeFile(file.name)}
-                      className="p-2 rounded-lg hover:bg-pink-500/15 text-gray-400 hover:text-pink-400 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
                   </div>
+                  <button
+                    onClick={() => removeFile(file.name)}
+                    className="p-2 rounded-lg hover:bg-pink-500/15 text-muted-foreground hover:text-pink-400 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -198,12 +198,12 @@ export default function EmailUploadPage() {
 
         {/* Empty State */}
         {uploadedFiles.length === 0 && !isAnalyzing && (
-          <div className="glass-card rounded-2xl p-12 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-violet-500/15 flex items-center justify-center mx-auto mb-4">
-              <File className="w-8 h-8 text-violet-400" />
+          <div className="glass-card rounded-xl sm:rounded-2xl p-8 sm:p-12 text-center">
+            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-violet-500/15 flex items-center justify-center mx-auto mb-4">
+              <File className="w-8 h-8 sm:w-10 sm:h-10 text-violet-400" />
             </div>
-            <h3 className="text-lg font-semibold text-white mb-2">No files uploaded yet</h3>
-            <p className="text-gray-400 mb-6">
+            <h3 className="text-lg sm:text-xl font-semibold text-white mb-2">No files uploaded yet</h3>
+            <p className="text-sm sm:text-base text-muted-foreground mb-6">
               Upload your first email file to start analyzing for phishing threats
             </p>
             <label htmlFor="file-upload-empty" className="cursor-pointer">
