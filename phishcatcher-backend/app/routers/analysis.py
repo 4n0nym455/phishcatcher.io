@@ -30,6 +30,7 @@ from app.schemas.analysis import (
 )
 from app.routers.auth import get_current_active_user
 from app.tasks.analysis import analyze_email_task
+from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,7 +42,7 @@ async def upload_email(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Upload an email file for analysis."""
+    """Upload an email file for analysis with MinIO storage."""
     settings = get_settings()
     
     # Validate file type
@@ -65,6 +66,37 @@ async def upload_email(
             detail=f"File too large. Max size: {settings.MAX_FILE_SIZE_MB}MB"
         )
     
+    storage_result = None
+    try:
+        # Upload file to MinIO storage
+        storage_result = await storage_service.upload_bytes(
+            data=content,
+            filename=file.filename,
+            folder=f"emails/{current_user.id}",
+            is_public=False,
+            metadata={
+                "user_id": str(current_user.id),
+                "user_email": current_user.email,
+                "upload_source": "web_upload"
+            }
+        )
+        
+        logger.info(f"File uploaded to MinIO: {storage_result['object_name']}")
+        
+    except RuntimeError as e:
+        if "MinIO storage service is not available" in str(e):
+            logger.warning(f"MinIO not available, proceeding without storage: {e}")
+            # Continue without MinIO storage - file will be passed directly to analysis
+            storage_result = None
+        else:
+            raise
+    except Exception as e:
+        logger.error(f"Failed to upload file to MinIO: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to store file. Please try again."
+        )
+    
     # Create analysis job
     job = AnalysisJob(
         user_id=current_user.id,
@@ -72,7 +104,9 @@ async def upload_email(
         file_name=file.filename,
         file_size=len(content),
         file_type=file_ext.lstrip('.'),
-        status="pending"
+        status="pending",
+        storage_object_name=storage_result["object_name"] if storage_result else None,
+        storage_bucket=storage_result["bucket"] if storage_result else None
     )
     
     db.add(job)
@@ -86,12 +120,17 @@ async def upload_email(
         resource_type="analysis",
         resource_id=job.id,
         status="success",
-        details={"file_name": file.filename, "file_size": len(content)}
+        details={
+            "file_name": file.filename, 
+            "file_size": len(content),
+            "storage_object": storage_result["object_name"] if storage_result else None,
+            "storage_available": storage_result is not None
+        }
     )
     db.add(audit_log)
     await db.commit()
     
-    # Queue analysis task
+    # Queue analysis task with file from MinIO
     analyze_email_task.delay(str(job.id), content, str(current_user.id))
     
     logger.info(f"Analysis job {job.id} created for user {current_user.email}")

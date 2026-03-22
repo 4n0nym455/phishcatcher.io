@@ -37,7 +37,11 @@ class AnalysisJob(Base):
     file_size = Column(Integer, nullable=True)  # in bytes
     file_type = Column(String(50), nullable=True)  # eml, msg, txt
     file_hash = Column(String(64), nullable=True)  # SHA-256 hash
-    s3_key = Column(String(500), nullable=True)
+    s3_key = Column(String(500), nullable=True)  # Legacy S3 key
+    
+    # MinIO storage fields
+    storage_object_name = Column(String(500), nullable=True)  # MinIO object name
+    storage_bucket = Column(String(100), nullable=True)  # MinIO bucket name
     
     # Job status
     status = Column(String(50), default="pending", nullable=False)  # pending, processing, completed, failed, cancelled

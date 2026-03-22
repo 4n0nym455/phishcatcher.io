@@ -12,7 +12,7 @@ from typing import Optional, BinaryIO, List, Dict, Any, Union
 from pathlib import Path
 
 from minio import Minio
-from minio.error import MinioError
+from minio.error import MinioException
 from minio.helpers import ObjectWriteResult
 
 from app.config import get_settings
@@ -25,6 +25,8 @@ class StorageService:
     
     _instance = None
     _client: Optional[Minio] = None
+    _initialized = False
+    _available = False
     
     def __new__(cls):
         if cls._instance is None:
@@ -32,8 +34,20 @@ class StorageService:
         return cls._instance
     
     def __init__(self):
-        if self._client is None:
-            self._initialize_client()
+        if not self._initialized:
+            self._initialized = True
+            try:
+                self._initialize_client()
+                self._available = True
+                logger.info("MinIO storage service initialized successfully")
+            except Exception as e:
+                logger.warning(f"MinIO storage service unavailable: {e}")
+                self._available = False
+    
+    @property
+    def is_available(self) -> bool:
+        """Check if MinIO storage is available."""
+        return self._available and self._client is not None
     
     def _initialize_client(self):
         """Initialize MinIO client."""
@@ -93,7 +107,7 @@ class StorageService:
                     ]
                 }
                 self._client.set_bucket_policy(self.bucket_name, policy)
-        except Exception as e:
+        except MinioException as e:
             logger.error(f"MinIO error ensuring bucket exists: {e}")
             raise
     
@@ -120,6 +134,9 @@ class StorageService:
         Returns:
             Dict with file info: object_name, url, size, etag
         """
+        if not self.is_available:
+            raise RuntimeError("MinIO storage service is not available")
+        
         settings = get_settings()
         
         # Validate file extension
@@ -195,7 +212,7 @@ class StorageService:
                 "is_public": is_public
             }
             
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to upload file {filename}: {e}")
             raise
         except Exception as e:
@@ -229,7 +246,7 @@ class StorageService:
             response.close()
             response.release_conn()
             return data
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to get file {object_name}: {e}")
             raise
     
@@ -241,7 +258,7 @@ class StorageService:
                 yield chunk
             response.close()
             response.release_conn()
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to stream file {object_name}: {e}")
             raise
     
@@ -260,7 +277,7 @@ class StorageService:
                 response_headers=response_headers
             )
             return url
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to generate presigned URL for {object_name}: {e}")
             raise
     
@@ -299,7 +316,7 @@ class StorageService:
                 expires=expires
             )
             return policy
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to generate presigned upload URL: {e}")
             raise
     
@@ -309,7 +326,7 @@ class StorageService:
             self._client.remove_object(self.bucket_name, object_name)
             logger.info(f"Deleted file: {object_name}")
             return True
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to delete file {object_name}: {e}")
             return False
     
@@ -337,7 +354,7 @@ class StorageService:
                 })
             
             return files
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to list files: {e}")
             raise
     
@@ -353,8 +370,11 @@ class StorageService:
                 "content_type": stat.content_type,
                 "metadata": stat.metadata
             }
-        except MinioError as e:
-            if e.code == "NoSuchKey":
+        except MinioException as e:
+            # Check if it's a "not found" error
+            if hasattr(e, 'code') and e.code == "NoSuchKey":
+                return None
+            elif "NoSuchKey" in str(e):
                 return None
             logger.error(f"Failed to get file info for {object_name}: {e}")
             raise
@@ -370,7 +390,7 @@ class StorageService:
             )
             logger.info(f"Copied {source_object} to {dest_object}")
             return True
-        except MinioError as e:
+        except MinioException as e:
             logger.error(f"Failed to copy file: {e}")
             return False
     

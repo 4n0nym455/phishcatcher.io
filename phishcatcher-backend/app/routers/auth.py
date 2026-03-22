@@ -32,7 +32,7 @@ from app.services.gmail_service import GmailService
 from app.routers.security import router as security_router
 from app.services.google_oauth import google_oauth_service
 from app.services.security import (
-    verify_password, get_password_hash, generate_totp_secret, generate_totp_uri,
+    verify_password, get_password_hash, validate_password_strength, generate_totp_secret, generate_totp_uri,
     generate_qr_code, verify_totp_token, encrypt_mfa_secret, decrypt_mfa_secret,
     create_access_token, create_refresh_token, verify_token, get_token_expiry,
     generate_otp, verify_otp, check_mfa_rate_limit, clear_mfa_rate_limit,

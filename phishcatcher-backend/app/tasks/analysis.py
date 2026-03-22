@@ -13,6 +13,7 @@ from app.ml.email_parser import EmailParser
 from app.ml.risk_scorer import get_risk_scorer
 from app.database import get_mongodb_database
 from app.config import get_settings
+from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 

@@ -33,6 +33,12 @@ export function NotificationProvider({ children }) {
   const initializeNotifications = async () => {
     if (!notificationService.isSupported) return;
     
+    // Prevent duplicate service worker registration
+    if (navigator.serviceWorker.controller) {
+      console.log('Service Worker already registered');
+      return;
+    }
+    
     try {
       const registration = await notificationService.registerServiceWorker();
       if (registration) {

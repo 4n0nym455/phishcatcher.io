@@ -16,8 +16,16 @@ self.addEventListener('install', (event) => {
 
 // Fetch event - serve from cache when offline
 self.addEventListener('fetch', (event) => {
-  // Don't intercept API requests or non-GET requests
-  if (event.request.url.includes('/api/') || event.request.method !== 'GET') {
+  // Only intercept specific assets, not all requests
+  const url = new URL(event.request.url);
+  
+  // Don't intercept API requests, non-GET requests, or module requests
+  if (url.pathname.includes('/api/') || 
+      event.request.method !== 'GET' ||
+      url.pathname.includes('.js') ||
+      url.pathname.includes('.css') ||
+      url.pathname.includes('.jsx') ||
+      event.request.url.includes('localhost:5173')) {
     return;
   }
   
@@ -29,7 +37,7 @@ self.addEventListener('fetch', (event) => {
           return response;
         }
         return fetch(event.request);
-      }
+      })
     )
   );
 });
