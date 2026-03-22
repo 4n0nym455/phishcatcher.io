@@ -1,7 +1,7 @@
 """
-MinIO/S3 Storage Service for PhishCatcher
+MinIO Storage Service for PhishCatcher
 
-Handles file uploads, downloads, and management using MinIO S3-compatible storage.
+Handles file uploads, downloads, and management using MinIO object storage.
 """
 
 import io
@@ -12,7 +12,7 @@ from typing import Optional, BinaryIO, List, Dict, Any, Union
 from pathlib import Path
 
 from minio import Minio
-from minio.error import S3Error
+from minio.error import MinioError
 from minio.helpers import ObjectWriteResult
 
 from app.config import get_settings
@@ -21,7 +21,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class StorageService:
-    """MinIO/S3 storage service for file operations."""
+    """MinIO storage service for file operations."""
     
     _instance = None
     _client: Optional[Minio] = None
@@ -36,18 +36,21 @@ class StorageService:
             self._initialize_client()
     
     def _initialize_client(self):
-        """Initialize MinIO/S3 client."""
+        """Initialize MinIO client."""
         settings = get_settings()
-        config = settings.storage_config
         
-        if not config:
-            raise ValueError("No storage configuration found. Set MINIO_ENDPOINT or S3_ENDPOINT.")
+        # Get MinIO configuration
+        endpoint = settings.MINIO_ENDPOINT
+        access_key = settings.MINIO_ACCESS_KEY
+        secret_key = settings.MINIO_SECRET_KEY
+        bucket_name = settings.MINIO_BUCKET_NAME
+        secure = settings.MINIO_SECURE
+        region = settings.MINIO_REGION
+        
+        if not all([endpoint, access_key, secret_key]):
+            raise ValueError("Incomplete MinIO configuration. Set MINIO_ENDPOINT, MINIO_ACCESS_KEY, and MINIO_SECRET_KEY")
         
         try:
-            # Determine if we should use HTTPS
-            secure = config.get("secure", False)
-            endpoint = config["endpoint"]
-            
             # Remove protocol if present in endpoint
             if endpoint.startswith("http://"):
                 endpoint = endpoint[7:]
@@ -58,16 +61,16 @@ class StorageService:
             
             self._client = Minio(
                 endpoint,
-                access_key=config["access_key"],
-                secret_key=config["secret_key"],
+                access_key=access_key,
+                secret_key=secret_key,
                 secure=secure,
-                region=config.get("region", "us-east-1")
+                region=region
             )
-            self.bucket_name = config["bucket"]
+            self.bucket_name = bucket_name
             self._ensure_bucket_exists()
-            logger.info(f"Storage client initialized: {endpoint} (bucket: {self.bucket_name})")
+            logger.info(f"MinIO client initialized: {endpoint} (bucket: {self.bucket_name})")
         except Exception as e:
-            logger.error(f"Failed to initialize storage client: {e}")
+            logger.error(f"Failed to initialize MinIO client: {e}")
             raise
     
     def _ensure_bucket_exists(self):
@@ -90,8 +93,8 @@ class StorageService:
                     ]
                 }
                 self._client.set_bucket_policy(self.bucket_name, policy)
-        except S3Error as e:
-            logger.error(f"S3 error ensuring bucket exists: {e}")
+        except Exception as e:
+            logger.error(f"MinIO error ensuring bucket exists: {e}")
             raise
     
     async def upload_file(
@@ -192,7 +195,7 @@ class StorageService:
                 "is_public": is_public
             }
             
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to upload file {filename}: {e}")
             raise
         except Exception as e:
@@ -226,7 +229,7 @@ class StorageService:
             response.close()
             response.release_conn()
             return data
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to get file {object_name}: {e}")
             raise
     
@@ -238,7 +241,7 @@ class StorageService:
                 yield chunk
             response.close()
             response.release_conn()
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to stream file {object_name}: {e}")
             raise
     
@@ -257,7 +260,7 @@ class StorageService:
                 response_headers=response_headers
             )
             return url
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to generate presigned URL for {object_name}: {e}")
             raise
     
@@ -265,10 +268,16 @@ class StorageService:
         """Get public URL for public objects."""
         # Build public URL based on endpoint
         settings = get_settings()
-        config = settings.storage_config
+        endpoint = settings.MINIO_ENDPOINT
+        secure = settings.MINIO_SECURE
         
-        protocol = "https" if config.get("secure") else "http"
-        endpoint = config["endpoint"].replace("http://", "").replace("https://", "")
+        protocol = "https" if secure else "http"
+        
+        # Remove protocol if present in endpoint
+        if endpoint.startswith("http://"):
+            endpoint = endpoint[7:]
+        elif endpoint.startswith("https://"):
+            endpoint = endpoint[8:]
         
         return f"{protocol}://{endpoint}/{self.bucket_name}/{object_name}"
     
@@ -290,7 +299,7 @@ class StorageService:
                 expires=expires
             )
             return policy
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to generate presigned upload URL: {e}")
             raise
     
@@ -300,7 +309,7 @@ class StorageService:
             self._client.remove_object(self.bucket_name, object_name)
             logger.info(f"Deleted file: {object_name}")
             return True
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to delete file {object_name}: {e}")
             return False
     
@@ -328,7 +337,7 @@ class StorageService:
                 })
             
             return files
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to list files: {e}")
             raise
     
@@ -344,7 +353,7 @@ class StorageService:
                 "content_type": stat.content_type,
                 "metadata": stat.metadata
             }
-        except S3Error as e:
+        except MinioError as e:
             if e.code == "NoSuchKey":
                 return None
             logger.error(f"Failed to get file info for {object_name}: {e}")
@@ -361,7 +370,7 @@ class StorageService:
             )
             logger.info(f"Copied {source_object} to {dest_object}")
             return True
-        except S3Error as e:
+        except MinioError as e:
             logger.error(f"Failed to copy file: {e}")
             return False
     

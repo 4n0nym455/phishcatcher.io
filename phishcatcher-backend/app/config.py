@@ -81,21 +81,19 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = Field(default=100, description="Rate limit per minute")
     RATE_LIMIT_AUTH_REQUESTS_PER_MINUTE: int = Field(default=5, description="Auth rate limit per minute")
     
-    # File Storage (MinIO/S3) - Updated for MinIO
-    S3_ENDPOINT: Optional[str] = Field(default=None, description="S3/MinIO endpoint")
-    S3_ACCESS_KEY: Optional[str] = Field(default=None, description="S3 access key")
-    S3_SECRET_KEY: Optional[str] = Field(default=None, description="S3 secret key")
-    S3_BUCKET_NAME: str = Field(default="phishcatcher", description="S3 bucket name")
-    S3_REGION: str = Field(default="us-east-1", description="S3 region")
-    S3_USE_SSL: bool = Field(default=True, description="Use SSL for S3")
-    
-    # MinIO Specific Settings
+    # File Storage (MinIO Only)
     MINIO_ENDPOINT: Optional[str] = Field(default=None, description="MinIO endpoint (e.g., minio:9000)")
     MINIO_ACCESS_KEY: Optional[str] = Field(default=None, description="MinIO access key")
     MINIO_SECRET_KEY: Optional[str] = Field(default=None, description="MinIO secret key")
     MINIO_BUCKET_NAME: str = Field(default="phishcatcher", description="MinIO bucket name")
     MINIO_SECURE: bool = Field(default=False, description="Use HTTPS for MinIO")
     MINIO_REGION: str = Field(default="us-east-1", description="MinIO region")
+    MINIO_PORT: int = Field(default=9000, description="MinIO port")
+    MINIO_CONSOLE_PORT: int = Field(default=9001, description="MinIO console port")
+    
+    # JWT Configuration
+    JWT_SECRET_KEY: str = Field(description="JWT secret key")
+    JWT_REFRESH_SECRET_KEY: str = Field(description="JWT refresh secret key")
     
     # File Upload Settings
     MAX_FILE_SIZE_MB: int = Field(default=50, description="Maximum file upload size in MB")
@@ -275,27 +273,16 @@ class Settings(BaseSettings):
     
     @property
     def storage_config(self) -> dict:
-        """Get active storage configuration (MinIO or S3)."""
-        # Prefer MinIO settings if available
+        """Get MinIO storage configuration."""
         if self.MINIO_ENDPOINT:
             return {
                 "endpoint": self.MINIO_ENDPOINT,
-                "access_key": self.MINIO_ACCESS_KEY or self.S3_ACCESS_KEY,
-                "secret_key": self.MINIO_SECRET_KEY or self.S3_SECRET_KEY,
-                "bucket": self.MINIO_BUCKET_NAME or self.S3_BUCKET_NAME,
+                "access_key": self.MINIO_ACCESS_KEY,
+                "secret_key": self.MINIO_SECRET_KEY,
+                "bucket": self.MINIO_BUCKET_NAME,
                 "secure": self.MINIO_SECURE,
                 "region": self.MINIO_REGION,
                 "type": "minio"
-            }
-        elif self.S3_ENDPOINT:
-            return {
-                "endpoint": self.S3_ENDPOINT,
-                "access_key": self.S3_ACCESS_KEY,
-                "secret_key": self.S3_SECRET_KEY,
-                "bucket": self.S3_BUCKET_NAME,
-                "secure": self.S3_USE_SSL,
-                "region": self.S3_REGION,
-                "type": "s3"
             }
         return None
 

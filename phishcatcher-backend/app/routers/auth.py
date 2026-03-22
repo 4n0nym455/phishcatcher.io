@@ -198,27 +198,22 @@ async def register(
     db: AsyncSession = Depends(get_db)
 ):
     """Register a new user."""
-    # Normalize the email for checking
+
+    # Normalize the email once — reused for both duplicate check and storage
     normalized_email = normalize_email(user_data.email)
-    
-    # Check if user already exists (exact match)
-    result = await db.execute(select(User).where(User.email == user_data.email))
+
+    # FIX: replaced full-table scan + Python loop with a single indexed query.
+    # normalized_email has an index (ix_users_normalized_email) so this is O(log n)
+    # instead of O(n). Also catches the exact-match case — no separate query needed.
+    result = await db.execute(
+        select(User).where(User.normalized_email == normalized_email)
+    )
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            detail="This email address or an alias of it is already registered."
         )
-    
-    # Check for email aliases (prevent abuse) - use proper alias detection
-    existing_users = await db.execute(select(User).where(User.deleted_at.is_(None)))
-    for existing_user in existing_users.scalars().all():
-        if is_email_alias(user_data.email, existing_user.email):
-            logger.warning(f"Email alias registration attempt: {user_data.email} -> {existing_user.email}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This email address or an alias of it is already registered. Please use a different email address."
-            )
-    
+
     # Validate password strength
     is_valid, error_msg = validate_password_strength(user_data.password)
     if not is_valid:
@@ -226,35 +221,57 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=error_msg
         )
-    
-    # Create user
+
+    # Create user — account_status defaults to 'pending' until activation
     user = User(
         email=user_data.email,
         normalized_email=normalized_email,
         password_hash=get_password_hash(user_data.password),
         full_name=user_data.full_name,
-        company=user_data.company
+        company=user_data.company,
+        account_status="pending",
     )
-    
+
     db.add(user)
-    await db.flush()
-    
-    # Create audit log
+    await db.flush()  # get user.id before committing
+
+    # Audit log
     audit_log = AuditLog(
         user_id=user.id,
         user_email=user.email,
         action=AuditAction.USER_REGISTERED,
         resource_type="user",
-        resource_id=str(user.id),  # Convert UUID to string
+        resource_id=str(user.id),
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
         status="success"
     )
     db.add(audit_log)
     await db.commit()
-    
+
     logger.info(f"User registered: {user.email}")
-    
+
+    # FIX: send activation email so the user can actually activate their account.
+    # Without this the user stays in 'pending' forever with no way forward.
+    # Done after commit so user.id is guaranteed persisted before the email goes out.
+    from app.services.activation_service import activation_service
+    try:
+        activation_token = activation_service.generate_activation_token(str(user.id))
+        activation_code = activation_service.generate_activation_code(str(user.id))
+        email_sent = await activation_service.send_activation_email(
+            user_email=user.email,
+            user_name=user.full_name or user.email.split("@")[0],
+            user_id=str(user.id),
+            activation_token=activation_token,
+            activation_code=activation_code,
+        )
+        if not email_sent:
+            logger.warning(f"Activation email failed to send for {user.email} — user created but not notified")
+    except Exception as e:
+        # Non-fatal: user is created, email just didn't go out.
+        # Log it and continue — don't roll back the registration.
+        logger.error(f"Error sending activation email for {user.email}: {e}")
+
     return user
 
 

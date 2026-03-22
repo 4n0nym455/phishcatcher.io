@@ -1,0 +1,175 @@
+services:
+  # Infrastructure services (keep your existing postgres, redis, mongodb, minio)
+
+  api:
+    image: python:3.11-slim
+    container_name: phishcatcher-api
+    command:
+      - bash
+      - -c
+      - |
+        if [ ! -f "/root/.local/lib/python3.11/site-packages/fastapi/__init__.py" ]; then
+          echo 'Installing dependencies...'
+          pip install --no-cache-dir -r requirements.txt
+        else
+          echo 'Dependencies already installed, skipping...'
+        fi
+        echo 'Starting API...'
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+      - /app/.venv  # Exclude virtual environment from volume mount
+    working_dir: /app
+    network_mode: "host"
+    environment:
+      - PYTHONPATH=/app
+      - PATH=/root/.local/bin:$PATH
+      - APP_NAME=PhishCatcher API
+      - APP_VERSION=1.0.0
+      - DEBUG=true
+      - ENVIRONMENT=development
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-phishcatcher}:${POSTGRES_PASSWORD:-changeme}@localhost:5432/${POSTGRES_DB:-phishcatcher}
+      - MONGODB_URL=mongodb://${MONGO_USER:-phishcatcher}:${MONGO_PASSWORD:-changeme}@localhost:27017/${MONGO_DB:-phishcatcher}?authSource=admin
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secret}@localhost:6379/0
+      - MINIO_ENDPOINT=localhost:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME:-phishcatcher}
+      - MINIO_SECURE=false
+      - FRONTEND_URL=http://localhost:5173
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-redis_secret}@localhost:6379/0
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - mongodb
+      - minio
+    restart: unless-stopped
+
+  worker:
+    image: python:3.11-slim
+    container_name: phishcatcher-worker
+    command:
+      - bash
+      - -c
+      - |
+        if [ ! -f "/root/.local/lib/python3.11/site-packages/celery/__init__.py" ]; then
+          pip install --no-cache-dir -r requirements.txt
+        else
+          echo 'Dependencies already installed, skipping...'
+        fi
+        celery -A app.tasks worker --loglevel=info
+    volumes:
+      - .:/app
+      - /app/.venv  # Exclude virtual environment from volume mount
+    working_dir: /app
+    network_mode: "host"
+    environment:
+      - PYTHONPATH=/app
+      - PATH=/root/.local/bin:$PATH
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-phishcatcher}:${POSTGRES_PASSWORD:-changeme}@localhost:5432/${POSTGRES_DB:-phishcatcher}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secret}@localhost:6379/0
+      - MONGODB_URL=mongodb://${MONGO_USER:-phishcatcher}:${MONGO_PASSWORD:-changeme}@localhost:27017/${MONGO_DB:-phishcatcher}?authSource=admin
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  beat:
+    image: python:3.11-slim
+    container_name: phishcatcher-beat
+    command:
+      - bash
+      - -c
+      - |
+        if [ ! -f "/root/.local/lib/python3.11/site-packages/celery/__init__.py" ]; then
+          pip install --no-cache-dir -r requirements.txt
+        else
+          echo 'Dependencies already installed, skipping...'
+        fi
+        celery -A app.tasks beat --loglevel=info
+    volumes:
+      - .:/app
+      - /app/.venv  # Exclude virtual environment from volume mount
+    working_dir: /app
+    network_mode: "host"
+    environment:
+      - PYTHONPATH=/app
+      - PATH=/root/.local/bin:$PATH
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-redis_secret}@localhost:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Keep your postgres, redis, mongodb, minio services as they were
+  postgres:
+    image: postgres:15-alpine
+    container_name: phishcatcher-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-phishcatcher}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-phishcatcher}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - phishcatcher-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: phishcatcher-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secret}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - phishcatcher-network
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:6-jammy
+    container_name: phishcatcher-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-phishcatcher}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-changeme}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-phishcatcher}
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports:
+      - "127.0.0.1:27017:27017"
+    networks:
+      - phishcatcher-network
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: phishcatcher-minio
+    command: server /data --address ":9000" --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - phishcatcher-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongodb_data:
+  minio_data:
+
+networks:
+  phishcatcher-network:
+    driver: bridge

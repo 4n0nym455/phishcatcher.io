@@ -1,327 +1,220 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Mail, Shield, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
-import { authApi, setTokens } from '@/lib/api';
+import { storeTokens, getTokens } from '../lib/api';
 
-export default function ActivateAccountPage() {
-  const navigate = useNavigate();
+/**
+ * ActivateAccountPage
+ *
+ * Fixed:
+ *  - Calls onLogin() after storing tokens so App.jsx updates isAuthenticated
+ *    and fetches fresh user data via authApi.getMe() — same path as login/OTP.
+ *  - Uses storeTokens() from lib/api (not raw localStorage) to match getTokens()
+ *    used in App.jsx's checkAuth().
+ *  - account_status is now 'active' from backend so no gate blocks the dashboard.
+ */
+export default function ActivateAccountPage({ onLogin }) {
   const [searchParams] = useSearchParams();
-  
-  // Get URL parameters
-  const token = searchParams.get('token');
-  const email = searchParams.get('email');
-  
-  // Form state
-  const [activationCode, setActivationCode] = useState(['', '', '', '', '', '']);
+  const navigate = useNavigate();
+
+  const email = searchParams.get('email') || '';
+  const token = searchParams.get('token') || '';
+
+  const [code, setCode] = useState('');
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [tokenValid, setTokenValid] = useState(null);
-  const [userInfo, setUserInfo] = useState(null);
-  const [isActivating, setIsActivating] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendMessage, setResendMessage] = useState('');
 
-  // Verify token on mount
+  // Already authenticated — skip to dashboard
   useEffect(() => {
-    if (!token || !email) {
-      toast.error('Invalid activation link');
-      navigate('/login');
+    const { accessToken } = getTokens();
+    if (accessToken) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [navigate]);
+
+  const handleActivation = async (e) => {
+    e.preventDefault();
+    setError('');
+
+    if (!code.trim()) {
+      setError('Please enter the activation code from your email.');
+      return;
+    }
+    if (!termsAccepted || !privacyAccepted) {
+      setError('You must accept both the Terms & Conditions and Privacy Policy.');
       return;
     }
 
-    verifyToken();
-  }, [token, email, navigate]);
-
-  const verifyToken = async () => {
+    setLoading(true);
     try {
-      const response = await authApi.verifyActivationToken(token, email);
-      
-      if (response.already_activated) {
-        toast.success('Your account is already activated!');
-        navigate('/login');
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/auth/activate/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          email,
+          code: code.trim(),
+          terms_accepted: termsAccepted,
+          privacy_accepted: privacyAccepted,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.detail || 'Activation failed. Please check your code and try again.');
         return;
       }
-      
-      setTokenValid(true);
-      setUserInfo(response.user);
-    } catch (error) {
-      setTokenValid(false);
-      toast.error(error.message || 'Invalid or expired activation link');
-    }
-  };
 
-  const handleCodeChange = (index, value) => {
-    // Only allow numbers
-    if (value && !/^\d$/.test(value)) return;
-    
-    const newCode = [...activationCode];
-    newCode[index] = value;
-    setActivationCode(newCode);
-    
-    // Auto-focus next input
-    if (value && index < 5) {
-      const nextInput = document.getElementById(`code-${index + 1}`);
-      if (nextInput) nextInput.focus();
-    }
-  };
-
-  const handleKeyDown = (index, e) => {
-    // Handle backspace
-    if (e.key === 'Backspace' && !activationCode[index] && index > 0) {
-      const prevInput = document.getElementById(`code-${index - 1}`);
-      if (prevInput) prevInput.focus();
-    }
-  };
-
-  const handlePaste = (e) => {
-    e.preventDefault();
-    const pastedData = e.clipboardData.getData('text').trim();
-    
-    // Only allow 6-digit numbers
-    if (/^\d{6}$/.test(pastedData)) {
-      const newCode = pastedData.split('');
-      setActivationCode(newCode);
-      
-      // Focus last input
-      const lastInput = document.getElementById('code-5');
-      if (lastInput) lastInput.focus();
-    }
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    // Validation
-    if (!termsAccepted || !privacyAccepted) {
-      toast.error('You must accept both Terms & Conditions and Privacy Policy');
-      return;
-    }
-    
-    const code = activationCode.join('');
-    if (code.length !== 6) {
-      toast.error('Please enter the complete 6-digit activation code');
-      return;
-    }
-    
-    setIsActivating(true);
-    
-    try {
-      const response = await authApi.completeActivation({
-        token,
-        email,
-        code,
-        terms_accepted: termsAccepted,
-        privacy_accepted: privacyAccepted
-      });
-      
-      if (response.already_activated) {
-        toast.success('Your account is already activated!');
-        navigate('/login');
-      } else if (response.access_token) {
-        // Auto-login after activation
-        setTokens(response);
-        
-        // Store user info in localStorage
-        if (response.user) {
-          localStorage.setItem('phishcatcher_email', response.user.email);
-          localStorage.setItem('phishcatcher_role', response.user.role || 'user');
-          localStorage.setItem('phishcatcher_name', response.user.full_name || '');
-          // Store login method for MFA detection
-          localStorage.setItem('login_method', 'oauth');
-        }
-        
-        toast.success('Account activated successfully! Redirecting to dashboard...');
-        
-        // Redirect to dashboard after a short delay
-        setTimeout(() => {
-          navigate('/dashboard');
-        }, 1500);
-      } else {
-        toast.success('Account activated successfully! You can now login.');
-        navigate('/login');
+      if (data.already_activated) {
+        navigate('/login?message=already_activated', { replace: true });
+        return;
       }
-    } catch (error) {
-      toast.error(error.message || 'Failed to activate account');
+
+      if (data.access_token) {
+        // Store tokens using the same helper getTokens() reads from
+        storeTokens(data.access_token, data.refresh_token);
+
+        // Store user data for immediate display
+        if (data.user) {
+          const role = data.user.role === 'admin' ? 'admin' : 'user';
+          localStorage.setItem('phishcatcher_role', role);
+          localStorage.setItem('phishcatcher_email', data.user.email);
+          localStorage.setItem('phishcatcher_name', data.user.full_name || '');
+        }
+
+        // Fire the auth-success event so App.jsx's listener picks it up,
+        // then call onLogin() which sets isAuthenticated + fetches fresh user data
+        window.dispatchEvent(new Event('auth-success'));
+        if (onLogin) await onLogin();
+
+        navigate('/dashboard', { replace: true });
+      } else {
+        // Unexpected — backend succeeded but no token; send to login
+        navigate('/login?message=activation_complete', { replace: true });
+      }
+    } catch (err) {
+      setError('Network error. Please try again.');
     } finally {
-      setIsActivating(false);
+      setLoading(false);
     }
   };
 
-  if (tokenValid === null) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 text-violet-500 animate-spin mx-auto mb-4" />
-          <p className="text-white">Verifying activation link...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (tokenValid === false) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-slate-800/50 backdrop-blur-xl border border-violet-500/20 rounded-2xl p-8 text-center">
-          <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold text-white mb-4">Invalid Activation Link</h1>
-          <p className="text-gray-300 mb-6">
-            This activation link is invalid or has expired. Please request a new activation email.
-          </p>
-          <button
-            onClick={() => navigate('/login')}
-            className="w-full h-12 bg-violet-500 hover:bg-violet-600 text-white rounded-xl font-medium transition-all duration-200"
-          >
-            Back to Login
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const handleResend = async () => {
+    setResendLoading(true);
+    setResendMessage('');
+    setError('');
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/auth/activate/resend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.detail || 'Failed to resend activation email.');
+      } else {
+        setResendMessage('A new activation email has been sent. Please check your inbox.');
+      }
+    } catch {
+      setError('Network error. Please try again.');
+    } finally {
+      setResendLoading(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Background Effects */}
-      <div className="absolute inset-0 opacity-50" style={{
-        background: 'radial-gradient(circle at 50% 40%, rgba(123, 97, 255, 0.08) 0%, #0f172a 70%)'
-      }} />
-      <div className="absolute top-1/4 left-1/4 w-72 sm:w-96 h-72 sm:h-96 bg-violet-500/8 rounded-full blur-3xl" />
-      <div className="absolute bottom-1/4 right-1/4 w-72 sm:w-96 h-72 sm:h-96 bg-violet-600/8 rounded-full blur-3xl" />
-
-      {/* Grid Pattern */}
-      <div
-        className="absolute inset-0 opacity-[0.02]"
-        style={{
-          backgroundImage: `linear-gradient(rgba(123, 97, 255, 0.5) 1px, transparent 1px),
-                           linear-gradient(90deg, rgba(123, 97, 255, 0.5) 1px, transparent 1px)`,
-          backgroundSize: "50px 50px",
-        }}
-      />
-
-      <div className="w-full max-w-md relative z-10">
-        {/* Logo */}
-        <div className="flex items-center justify-center gap-3 mb-6 sm:mb-8">
-          <div className="w-10 h-10 bg-violet-500 rounded-xl flex items-center justify-center">
-            <span className="text-white font-bold text-xl">🎯</span>
-          </div>
-          <span className="text-white font-bold text-xl">PhishCatcher</span>
+    <div className="min-h-screen flex items-center justify-center bg-slate-900 px-4">
+      <div className="max-w-md w-full bg-slate-800 rounded-2xl shadow-lg p-8 border border-slate-700">
+        <div className="text-center mb-6">
+          <h1 className="text-2xl font-bold text-white">Activate your account</h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Enter the 6-digit code sent to <strong className="text-slate-200">{email}</strong>
+          </p>
         </div>
 
-        {/* Main Card */}
-        <div className="bg-slate-800/50 backdrop-blur-xl border border-violet-500/20 rounded-2xl p-6 sm:p-8 shadow-2xl">
-          {/* Shield Icon */}
-          <div className="flex justify-center mb-6">
-            <div className="w-16 h-16 bg-violet-500/20 rounded-full flex items-center justify-center">
-              <Shield className="w-8 h-8 text-violet-400" />
-            </div>
+        {error && (
+          <div className="mb-4 p-3 bg-red-900/40 border border-red-700 rounded-lg text-red-300 text-sm">
+            {error}
+          </div>
+        )}
+        {resendMessage && (
+          <div className="mb-4 p-3 bg-green-900/40 border border-green-700 rounded-lg text-green-300 text-sm">
+            {resendMessage}
+          </div>
+        )}
+
+        <form onSubmit={handleActivation} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1">
+              Activation Code
+            </label>
+            <input
+              type="text"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="Enter 6-digit code"
+              maxLength={6}
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
           </div>
 
-          {/* Title */}
-          <h1 className="text-2xl font-bold text-white text-center mb-2">
-            Activate Your Account
-          </h1>
-          
-          {/* User Info */}
-          {userInfo && (
-            <p className="text-gray-300 text-center mb-6">
-              Welcome, {userInfo.full_name || userInfo.email.split('@')[0]}!
-            </p>
-          )}
+          <div className="space-y-2">
+            <label className="flex items-start gap-2 text-sm text-slate-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={termsAccepted}
+                onChange={(e) => setTermsAccepted(e.target.checked)}
+                className="mt-0.5 accent-blue-500"
+              />
+              <span>
+                I agree to the{' '}
+                <a href="/terms" className="text-blue-400 underline" target="_blank" rel="noreferrer">
+                  Terms &amp; Conditions
+                </a>
+              </span>
+            </label>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Activation Code */}
-            <div>
-              <label className="block text-gray-300 text-sm font-medium mb-3">
-                Enter 6-Digit Activation Code
-              </label>
-              <div className="flex gap-2 justify-center">
-                {activationCode.map((digit, index) => (
-                  <input
-                    key={index}
-                    id={`code-${index}`}
-                    type="text"
-                    maxLength={1}
-                    value={digit}
-                    onChange={(e) => handleCodeChange(index, e.target.value)}
-                    onKeyDown={(e) => handleKeyDown(index, e)}
-                    onPaste={index === 0 ? handlePaste : undefined}
-                    className="w-12 h-12 bg-slate-700/50 border border-violet-500/20 rounded-lg text-center text-white text-xl font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent"
-                    required
-                  />
-                ))}
-              </div>
-            </div>
+            <label className="flex items-start gap-2 text-sm text-slate-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={privacyAccepted}
+                onChange={(e) => setPrivacyAccepted(e.target.checked)}
+                className="mt-0.5 accent-blue-500"
+              />
+              <span>
+                I agree to the{' '}
+                <a href="/privacy" className="text-blue-400 underline" target="_blank" rel="noreferrer">
+                  Privacy Policy
+                </a>
+              </span>
+            </label>
+          </div>
 
-            {/* Terms and Privacy */}
-            <div className="space-y-3">
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={termsAccepted}
-                  onChange={(e) => setTermsAccepted(e.target.checked)}
-                  className="w-4 h-4 mt-0.5 rounded border-violet-500/30 bg-slate-800/50 text-violet-500 focus:ring-violet-500/20"
-                  required
-                />
-                <span className="text-gray-300 text-sm">
-                  I have read and agree to the{' '}
-                  <a 
-                    href="/terms-of-service" 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="text-violet-400 hover:text-violet-300 underline"
-                  >
-                    Terms & Conditions
-                  </a>
-                </span>
-              </label>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+          >
+            {loading ? 'Activating…' : 'Activate Account'}
+          </button>
+        </form>
 
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={privacyAccepted}
-                  onChange={(e) => setPrivacyAccepted(e.target.checked)}
-                  className="w-4 h-4 mt-0.5 rounded border-violet-500/30 bg-slate-800/50 text-violet-500 focus:ring-violet-500/20"
-                  required
-                />
-                <span className="text-gray-300 text-sm">
-                  I have read and agree to the{' '}
-                  <a 
-                    href="/privacy-policy" 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="text-violet-400 hover:text-violet-300 underline"
-                  >
-                    Privacy Policy
-                  </a>
-                </span>
-              </label>
-            </div>
-
-            {/* Submit Button */}
+        <div className="mt-4 text-center">
+          <p className="text-sm text-slate-400">
+            Didn't receive a code?{' '}
             <button
-              type="submit"
-              disabled={isActivating || !termsAccepted || !privacyAccepted}
-              className="w-full h-12 bg-violet-500 hover:bg-violet-600 disabled:bg-violet-500/50 disabled:cursor-not-allowed text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
+              onClick={handleResend}
+              disabled={resendLoading}
+              className="text-blue-400 hover:underline disabled:opacity-50"
             >
-              {isActivating ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Activating...
-                </>
-              ) : (
-                <>
-                  <CheckCircle className="w-4 h-4" />
-                  Activate Account
-                </>
-              )}
+              {resendLoading ? 'Sending…' : 'Resend email'}
             </button>
-          </form>
-
-          {/* Help Text */}
-          <div className="mt-6 text-center">
-            <p className="text-gray-400 text-sm">
-              Need help? Check your email for the activation code or contact support.
-            </p>
-          </div>
+          </p>
         </div>
       </div>
     </div>

@@ -30,6 +30,7 @@ import ActivationPendingPage from './pages/ActivationPendingPage';
 import ActivateAccountPage from './pages/ActivateAccountPage';
 import OAuthSuccessPage from './pages/OAuthSuccessPage';
 import Layout from './components/Layout';
+import PrivateRoute from './pages/PrivateRoute';
 import { getTokens, authApi, clearTokens } from './lib/api'; // Import API utilities
 
 // Admin layout component
@@ -241,63 +242,53 @@ function App() {
           <Route 
             path="/dashboard" 
             element={
-              isAuthenticated ? (
+              <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <Dashboard />
                 </Layout>
-              ) : (
-                <Navigate to="/login" replace />
-              )
+              </PrivateRoute>
             } 
           />
           <Route 
             path="/analysis/:id" 
             element={
-              isAuthenticated ? (
+              <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <AnalysisReport />
                 </Layout>
-              ) : (
-                <Navigate to="/login" replace />
-              )
+              </PrivateRoute>
             } 
           />
           <Route 
             path="/weekly-reports" 
             element={
-              isAuthenticated ? (
+              <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <WeeklyReports />
                 </Layout>
-              ) : (
-                <Navigate to="/login" replace />
-              )
+              </PrivateRoute>
             } 
           />
           
           <Route 
             path="/settings" 
             element={
-              isAuthenticated ? (
+              <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <AccountSettings />
                 </Layout>
-              ) : (
-                <Navigate to="/login" replace />
-              )
+              </PrivateRoute>
             } 
           />
           
           <Route 
             path="/settings/mfa" 
             element={
-              isAuthenticated ? (
+              <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <MFASettings />
                 </Layout>
-              ) : (
-                <Navigate to="/login" replace />
-              )
+              </PrivateRoute>
             } 
           />
           
@@ -354,25 +345,21 @@ function App() {
           <Route 
             path="/settings/notifications" 
             element={
-              isAuthenticated ? (
+              <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <NotificationSettings />
                 </Layout>
-              ) : (
-                <Navigate to="/login" replace />
-              )
+              </PrivateRoute>
             } 
           />
           <Route 
             path="/test-notifications" 
             element={
-              isAuthenticated ? (
+              <PrivateRoute>
                 <Layout onLogout={handleLogout} userRole={userRole} userData={userData}>
                   <NotificationTest />
                 </Layout>
-              ) : (
-                <Navigate to="/login" replace />
-              )
+              </PrivateRoute>
             } 
           />
           <Route path="*" element={<Navigate to="/" replace />} />

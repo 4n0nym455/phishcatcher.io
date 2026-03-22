@@ -1,0 +1,120 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: phishcatcher-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-phishcatcher}
+      POSTGRES_USER: ${POSTGRES_USER:-phishcatcher}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - phishcatcher-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-phishcatcher} -d ${POSTGRES_DB:-phishcatcher}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # MongoDB Database
+  mongodb:
+    image: mongo:6.0
+    container_name: phishcatcher-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-phishcatcher}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-phishcatcher}
+    volumes:
+      - mongodb_data:/data/db
+      - ./phishcatcher-backend/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports:
+      - "27017:27017"
+    networks:
+      - phishcatcher-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache and Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: phishcatcher-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - phishcatcher-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # MinIO Object Storage
+  minio:
+    image: minio/minio:latest
+    container_name: phishcatcher-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    networks:
+      - phishcatcher-network
+    command: server /data --console-address ":${MINIO_CONSOLE_PORT:-9001}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${MINIO_PORT:-9000}/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+
+  # MinIO Client for bucket creation
+  minio-init:
+    image: minio/mc:latest
+    container_name: phishcatcher-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - phishcatcher-network
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10;
+      /usr/bin/mc alias set myminio http://minio:9000 phishcatcher minio_password;
+      /usr/bin/mc mb myminio/phishcatcher-emails 2>/dev/null || true;
+      /usr/bin/mc mb myminio/phishcatcher-reports 2>/dev/null || true;
+      /usr/bin/mc mb myminio/phishcatcher-models 2>/dev/null || true;
+      /usr/bin/mc policy set public myminio/phishcatcher-emails;
+      /usr/bin/mc policy set public myminio/phishcatcher-reports;
+      /usr/bin/mc policy set public myminio/phishcatcher-models;
+      exit 0;
+      "
+    restart: "no"
+
+volumes:
+  postgres_data:
+    driver: local
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  phishcatcher-network:
+    driver: bridge

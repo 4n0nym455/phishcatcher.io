@@ -66,8 +66,12 @@ export default function ActivationPendingPage() {
       <div className="w-full max-w-md relative z-10">
         {/* Logo */}
         <div className="flex items-center justify-center gap-3 mb-6 sm:mb-8">
-          <div className="w-10 h-10 bg-violet-500 rounded-xl flex items-center justify-center">
-            <span className="text-white font-bold text-xl">🎯</span>
+            <div className="w-11 sm:w-12 h-11 sm:h-12 rounded-xl bg-white/90 flex items-center justify-center shadow-glow">
+            <img
+              src="/phishcatcher.png"
+              alt="PhishCatcher Logo"
+              className="w-8 h-8 object-contain"
+            />
           </div>
           <span className="text-white font-bold text-xl">PhishCatcher</span>
         </div>

@@ -4,14 +4,15 @@
 .env.local
 .env.production
 .venv
-.env*
+.env.*
 
-# Script
+Script
 scripts
 mongo-init.js
 setup.sh
 Dockerfile
-docker-compose.yml
+#docker-compose.yml
+
 # Python
 __pycache__/
 *.py[cod]

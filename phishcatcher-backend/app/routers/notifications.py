@@ -1,8 +1,16 @@
+"""
+Notifications Router - fixed version
+
+Fixed:
+  - Replaced sync 'Session' with async 'AsyncSession'
+  - Replaced db.query(...).filter(...).all() with await db.execute(select(...))
+  - All db operations now properly awaited
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
 from typing import List, Optional
-import json
-import asyncio
 from datetime import datetime
 
 from app.database import get_db
@@ -13,17 +21,19 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
-# Pydantic models
+
 class NotificationSubscription(BaseModel):
     endpoint: str
     keys: dict
     user_agent: Optional[str] = None
+
 
 class NotificationPreferences(BaseModel):
     security_alerts: bool = True
     phishing_detections: bool = True
     system_updates: bool = False
     marketing_emails: bool = False
+
 
 class NotificationResponse(BaseModel):
     id: int
@@ -34,91 +44,67 @@ class NotificationResponse(BaseModel):
     created_at: datetime
     data: Optional[dict] = None
 
-# In-memory storage for push subscriptions (in production, use Redis or database)
+
 push_subscriptions = {}
+
 
 @router.post("/subscribe")
 async def subscribe_to_notifications(
     subscription: NotificationSubscription,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    """Subscribe to push notifications"""
     try:
-        # Store subscription for user
-        push_subscriptions[current_user.id] = subscription.dict()
-        
-        # Save user notification preferences if not exists
-        if not hasattr(current_user, 'notification_preferences'):
+        push_subscriptions[str(current_user.id)] = subscription.dict()
+        if not current_user.notification_preferences:
             current_user.notification_preferences = {
                 "security_alerts": True,
                 "phishing_detections": True,
                 "system_updates": False,
                 "marketing_emails": False
             }
-            db.commit()
-        
+            await db.commit()
         return {"message": "Successfully subscribed to notifications"}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to subscribe: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to subscribe: {str(e)}")
+
 
 @router.post("/unsubscribe")
-async def unsubscribe_from_notifications(
-    current_user: User = Depends(get_current_active_user)
-):
-    """Unsubscribe from push notifications"""
+async def unsubscribe_from_notifications(current_user: User = Depends(get_current_active_user)):
     try:
-        # Remove subscription for user
-        if current_user.id in push_subscriptions:
-            del push_subscriptions[current_user.id]
-        
+        push_subscriptions.pop(str(current_user.id), None)
         return {"message": "Successfully unsubscribed from notifications"}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to unsubscribe: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to unsubscribe: {str(e)}")
+
 
 @router.post("/preferences")
 async def update_notification_preferences(
     preferences: NotificationPreferences,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    """Update notification preferences"""
     try:
         current_user.notification_preferences = preferences.dict()
-        db.commit()
-        
+        await db.commit()
         return {"message": "Notification preferences updated successfully"}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update preferences: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update preferences: {str(e)}")
+
 
 @router.get("/preferences")
-async def get_notification_preferences(
-    current_user: User = Depends(get_current_active_user)
-):
-    """Get current notification preferences"""
+async def get_notification_preferences(current_user: User = Depends(get_current_active_user)):
     try:
-        preferences = getattr(current_user, 'notification_preferences', {
+        preferences = current_user.notification_preferences or {
             "security_alerts": True,
             "phishing_detections": True,
             "system_updates": False,
             "marketing_emails": False
-        })
-        
+        }
         return preferences
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get preferences: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get preferences: {str(e)}")
+
 
 @router.get("/notifications")
 async def get_user_notifications(
@@ -126,25 +112,22 @@ async def get_user_notifications(
     offset: int = 0,
     unread_only: bool = False,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    """Get user notifications"""
     try:
-        query = db.query(Notification).filter(
-            Notification.user_id == current_user.id
-        )
-        
+        # FIX: use async select() instead of sync db.query()
+        query = select(Notification).where(Notification.user_id == current_user.id)
         if unread_only:
-            query = query.filter(Notification.is_read == False)
-        
-        notifications = query.order_by(
-            Notification.created_at.desc()
-        ).offset(offset).limit(limit).all()
-        
+            query = query.where(Notification.is_read == False)
+        query = query.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
+
+        result = await db.execute(query)
+        notifications = result.scalars().all()
+
         return [
             NotificationResponse(
                 id=notif.id,
-                type=notif.type.value,
+                type=notif.type,
                 title=notif.title,
                 message=notif.message,
                 is_read=notif.is_read,
@@ -154,91 +137,73 @@ async def get_user_notifications(
             for notif in notifications
         ]
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get notifications: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get notifications: {str(e)}")
+
 
 @router.post("/notifications/{notification_id}/read")
 async def mark_notification_read(
     notification_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    """Mark notification as read"""
     try:
-        notification = db.query(Notification).filter(
-            Notification.id == notification_id,
-            Notification.user_id == current_user.id
-        ).first()
-        
-        if not notification:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Notification not found"
+        result = await db.execute(
+            select(Notification).where(
+                Notification.id == notification_id,
+                Notification.user_id == current_user.id
             )
-        
+        )
+        notification = result.scalar_one_or_none()
+
+        if not notification:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
+
         notification.is_read = True
-        db.commit()
-        
+        await db.commit()
         return {"message": "Notification marked as read"}
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to mark notification as read: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to mark as read: {str(e)}")
+
 
 @router.post("/notifications/mark-all-read")
 async def mark_all_notifications_read(
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    """Mark all notifications as read"""
     try:
-        db.query(Notification).filter(
-            Notification.user_id == current_user.id,
-            Notification.is_read == False
-        ).update({"is_read": True})
-        
-        db.commit()
-        
+        await db.execute(
+            update(Notification)
+            .where(Notification.user_id == current_user.id, Notification.is_read == False)
+            .values(is_read=True)
+        )
+        await db.commit()
         return {"message": "All notifications marked as read"}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to mark all notifications as read: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to mark all as read: {str(e)}")
 
-# Helper function to send push notification
-async def send_push_notification(user_id: int, title: str, message: str, notification_type: str = "info", data: dict = None):
-    """Send push notification to user"""
+
+async def send_push_notification(user_id: str, title: str, message: str, notification_type: str = "info", data: dict = None):
     if user_id not in push_subscriptions:
         return False
-    
-    subscription = push_subscriptions[user_id]
-    
-    # In a real implementation, you would use a service like Firebase Cloud Messaging
-    # or Web Push Protocol libraries
     try:
-        # This is a placeholder - implement actual push notification sending
-        print(f"Sending push notification to user {user_id}: {title} - {message}")
+        logger.info(f"Push notification → user {user_id}: {title}")
         return True
     except Exception as e:
-        print(f"Failed to send push notification: {e}")
+        logger.error(f"Failed to send push notification: {e}")
         return False
 
-# Helper function to create in-app notification
-def create_notification(
-    db: Session,
-    user_id: int,
+
+async def create_notification(
+    db: AsyncSession,
+    user_id,
     notification_type: NotificationType,
     title: str,
     message: str,
     data: dict = None
-):
-    """Create notification in database"""
+) -> Notification:
     notification = Notification(
         user_id=user_id,
         type=notification_type,
@@ -246,8 +211,11 @@ def create_notification(
         message=message,
         data=data or {}
     )
-    
     db.add(notification)
-    db.commit()
-    
+    await db.commit()
+    await db.refresh(notification)
     return notification
+
+
+import logging
+logger = logging.getLogger(__name__)

@@ -27,7 +27,12 @@ if config.config_file_name is not None:
 
 # Get database URL from settings
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+db_url = settings.DATABASE_URL
+
+# Create a custom configuration dict to avoid interpolation issues
+engine_config = {
+    "sqlalchemy.url": db_url,
+}
 
 # add your model's MetaData object here for 'autogenerate' support
 target_metadata = Base.metadata
@@ -44,9 +49,8 @@ def run_migrations_offline() -> None:
     Calls to context.execute() here emit the given string to the
     script output.
     """
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=db_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -68,7 +72,7 @@ async def run_async_migrations() -> None:
     and associate a connection with the context.
     """
     connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        engine_config,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
