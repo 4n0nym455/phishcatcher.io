@@ -85,39 +85,38 @@ const mockAnalyses = [
 export default function AnalysisListPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
-  const [analyses, setAnalyses] = useState(mockAnalyses);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // In a real implementation, this would fetch data from your API
-    setIsLoading(true);
-    setTimeout(() => {
-      setAnalyses(mockAnalyses);
+    // Simulate loading
+    const timer = setTimeout(() => {
       setIsLoading(false);
-    }, 500);
+    }, 1000);
+    
+    return () => clearTimeout(timer);
   }, []);
 
-  const getFileIcon = (type) => {
-    switch (type) {
-      case 'eml':
-        return <FileText className="w-5 h-5" />;
-      case 'txt':
-        return <FileText className="w-5 h-5" />;
-      case 'msg':
-        return <FileText className="w-5 h-5" />;
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'safe':
+        return <CheckCircle className="w-4 h-4 text-teal-400" />;
+      case 'warning':
+        return <AlertTriangle className="w-4 h-4 text-amber-400" />;
+      case 'danger':
+        return <Shield className="w-4 h-4 text-pink-400" />;
       default:
-        return <FileText className="w-5 h-5" />;
+        return <FileText className="w-4 h-4 text-muted-foreground" />;
     }
   };
 
   const getStatusBadge = (status) => {
     switch (status) {
       case 'safe':
-        return <Badge className="bg-teal-500/20 text-teal-400 border-teal-500/30">Safe</Badge>;
+        return <span className="status-safe">Safe</span>;
       case 'warning':
-        return <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30">Suspicious</Badge>;
+        return <span className="status-warning">Suspicious</span>;
       case 'danger':
-        return <Badge className="bg-pink-500/20 text-pink-400 border-pink-500/30">Threat</Badge>;
+        return <span className="status-danger">Threat Detected</span>;
       default:
         return null;
     }
@@ -129,33 +128,18 @@ export default function AnalysisListPage() {
     return 'text-teal-400';
   };
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'safe':
-        return <CheckCircle className="w-5 h-5 text-teal-400" />;
-      case 'warning':
-        return <AlertTriangle className="w-5 h-5 text-amber-400" />;
-      case 'danger':
-        return <Shield className="w-5 h-5 text-pink-400" />;
-      default:
-        return null;
-    }
-  };
-
   const formatDate = (dateString) => {
     const date = new Date(dateString);
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(date);
+    return date.toLocaleDateString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      year: 'numeric' 
+    });
   };
 
-  const filteredAnalyses = analyses.filter(analysis => {
-    const matchesSearch = 
-      analysis.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      analysis.sender.toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredAnalyses = mockAnalyses.filter(analysis => {
+    const matchesSearch = analysis.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         analysis.sender.toLowerCase().includes(searchQuery.toLowerCase());
     
     const matchesFilter = filterStatus === 'all' || analysis.status === filterStatus;
     
@@ -163,10 +147,10 @@ export default function AnalysisListPage() {
   });
 
   const stats = {
-    total: analyses.length,
-    safe: analyses.filter(a => a.status === 'safe').length,
-    warning: analyses.filter(a => a.status === 'warning').length,
-    danger: analyses.filter(a => a.status === 'danger').length
+    total: mockAnalyses.length,
+    safe: mockAnalyses.filter(a => a.status === 'safe').length,
+    warning: mockAnalyses.filter(a => a.status === 'warning').length,
+    danger: mockAnalyses.filter(a => a.status === 'danger').length,
   };
 
   return (
@@ -174,57 +158,57 @@ export default function AnalysisListPage() {
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">Analysis History</h1>
-          <p className="text-gray-400">View and manage all your email analysis results</p>
+          <h1 className="text-3xl font-heading font-bold text-white mb-2">Analysis History</h1>
+          <p className="text-sm text-muted-foreground mb-6">Browse and manage your email analysis results</p>
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
             <div className="flex items-start justify-between">
               <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-violet-500/15 flex items-center justify-center">
                 <FileText className="w-4 sm:w-6 h-4 sm:h-6 text-violet-400" />
               </div>
-            </div>
-            <div className="mt-3 sm:mt-4">
-              <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.total}</p>
-              <p className="text-xs sm:text-sm text-muted-foreground">Total Analyses</p>
+              <div className="mt-3 sm:mt-4">
+                <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.total}</p>
+                <p className="text-xs sm:text-sm text-muted-foreground">Total Analyses</p>
+              </div>
             </div>
           </div>
-
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+          
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
             <div className="flex items-start justify-between">
               <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-teal-500/15 flex items-center justify-center">
                 <CheckCircle className="w-4 sm:w-6 h-4 sm:h-6 text-teal-400" />
               </div>
-            </div>
-            <div className="mt-3 sm:mt-4">
-              <p className="text-xl sm:text-3xl font-mono font-medium text-teal-400">{stats.safe}</p>
-              <p className="text-xs sm:text-sm text-muted-foreground">Safe Emails</p>
+              <div className="mt-3 sm:mt-4">
+                <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.safe}</p>
+                <p className="text-xs sm:text-sm text-muted-foreground">Safe Emails</p>
+              </div>
             </div>
           </div>
-
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+          
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
             <div className="flex items-start justify-between">
               <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-amber-500/15 flex items-center justify-center">
                 <AlertTriangle className="w-4 sm:w-6 h-4 sm:h-6 text-amber-400" />
               </div>
-            </div>
-            <div className="mt-3 sm:mt-4">
-              <p className="text-xl sm:text-3xl font-mono font-medium text-amber-400">{stats.warning}</p>
-              <p className="text-xs sm:text-sm text-muted-foreground">Suspicious</p>
+              <div className="mt-3 sm:mt-4">
+                <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.warning}</p>
+                <p className="text-xs sm:text-sm text-muted-foreground">Suspicious</p>
+              </div>
             </div>
           </div>
-
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 hover:border-violet-500/30 transition-colors">
+          
+          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
             <div className="flex items-start justify-between">
               <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-pink-500/15 flex items-center justify-center">
                 <Shield className="w-4 sm:w-6 h-4 sm:h-6 text-pink-400" />
               </div>
-            </div>
-            <div className="mt-3 sm:mt-4">
-              <p className="text-xl sm:text-3xl font-mono font-medium text-pink-400">{stats.danger}</p>
-              <p className="text-xs sm:text-sm text-muted-foreground">Threats Detected</p>
+              <div className="mt-3 sm:mt-4">
+                <p className="text-xl sm:text-3xl font-mono font-medium text-pink-400">{stats.danger}</p>
+                <p className="text-xs sm:text-sm text-muted-foreground">Threats Detected</p>
+              </div>
             </div>
           </div>
         </div>
@@ -239,7 +223,7 @@ export default function AnalysisListPage() {
                   placeholder="Search by subject or sender..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 bg-slate-800/50 border-violet-500/30 text-white placeholder-muted-foreground"
+                  className="pl-10 bg-slate-800/50 border-violet-500/30 text-white placeholder-gray-400"
                 />
               </div>
             </div>
@@ -282,7 +266,7 @@ export default function AnalysisListPage() {
           {isLoading ? (
             <div className="p-12 text-center">
               <div className="w-8 h-8 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin mx-auto mb-4"></div>
-              <p className="text-muted-foreground">Loading analyses...</p>
+              <p className="text-gray-400">Loading analyses...</p>
             </div>
           ) : filteredAnalyses.length === 0 ? (
             <div className="p-12 text-center">
@@ -290,7 +274,7 @@ export default function AnalysisListPage() {
                 <FileText className="w-8 h-8 text-violet-400" />
               </div>
               <h3 className="text-lg font-semibold text-white mb-2">No analyses found</h3>
-              <p className="text-muted-foreground mb-6">
+              <p className="text-gray-400 mb-6">
                 {searchQuery || filterStatus !== 'all' 
                   ? 'Try adjusting your search or filters' 
                   : 'Upload your first email to start analyzing'
@@ -354,11 +338,12 @@ export default function AnalysisListPage() {
         </div>
       </div>
 
-      <style jsx>{`
+      <style>{`
         .glass-card {
           background: rgba(255, 255, 255, 0.05);
           backdrop-filter: blur(10px);
           border: 1px solid rgba(139, 92, 246, 0.2);
+          border-radius: 1rem;
         }
       `}</style>
     </div>

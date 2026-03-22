@@ -4,12 +4,13 @@ import {
   File, 
   CheckCircle, 
   X,
+  AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { generateUUID } from '@/lib/uuid';
-import { uploadApi, utils } from '@/lib/api';
+import { analysisApi } from '@/lib/api';
 
 export default function EmailUploadPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -17,28 +18,8 @@ export default function EmailUploadPage() {
   const [uploadedFiles, setUploadedFiles] = useState([]);
 
   useEffect(() => {
-    // Load user's existing files on component mount
-    loadUserFiles();
+    // Component mounted
   }, []);
-
-  const loadUserFiles = async () => {
-    try {
-      const response = await uploadApi.getUserFiles();
-      if (response.items) {
-        setUploadedFiles(response.items.map(file => ({
-          id: file.id,
-          name: file.file_name,
-          size: file.file_size || 0,
-          status: file.status,
-          riskScore: file.risk_score,
-          threatCategory: file.threat_category,
-          createdAt: file.created_at,
-        })));
-      }
-    } catch (error) {
-      console.error('Failed to load user files:', error);
-    }
-  };
 
   const handleDrag = useCallback((e) => {
     e.preventDefault();
@@ -66,134 +47,108 @@ export default function EmailUploadPage() {
     }
   };
 
-  const handleFiles = async (files) => {
+  const handleFiles = (files) => {
     const validFiles = Array.from(files).filter(file => {
-      if (!utils.isValidEmailFile(file.name)) {
-        toast.error(`Invalid file type: ${file.name}. Please upload .eml, .txt, or .msg files only`);
-        return false;
-      }
-      return true;
+      const ext = file.name.split('.').pop().toLowerCase();
+      return ['eml', 'txt', 'msg'].includes(ext);
     });
 
     if (validFiles.length === 0) {
+      toast.error('Please upload .eml, .txt, or .msg files only');
       return;
     }
 
-    // Upload files one by one
-    for (const file of validFiles) {
-      await uploadFile(file);
-    }
+    validFiles.forEach(file => {
+      setUploadedFiles(prev => [...prev, { 
+        id: generateUUID(), // Add UUID for each file
+        name: file.name, 
+        size: file.size, 
+        status: 'pending' 
+      }]);
+      analyzeFile(file);
+    });
   };
 
-  const uploadFile = async (file) => {
+  const analyzeFile = async (file) => {
+    setIsAnalyzing(true);
+    
+    // Update file status to analyzing
+    setUploadedFiles(prev => 
+      prev.map(f => f.name === file.name ? { ...f, status: 'analyzing' } : f)
+    );
+    
     try {
-      // Add file to UI with pending status
-      const tempFile = {
-        id: generateUUID(),
-        name: file.name,
-        size: file.size,
-        status: 'pending',
-        isUploading: true
-      };
+      // Upload file to backend for analysis
+      const analysisResult = await analysisApi.uploadEmail(file);
       
-      setUploadedFiles(prev => [...prev, tempFile]);
-      
-      // Upload to backend
-      const response = await uploadApi.uploadEmail(file);
-      
-      // Update file with backend response
+      // Update file status with analysis job info
       setUploadedFiles(prev => 
-        prev.map(f => f.id === tempFile.id ? { 
+        prev.map(f => f.name === file.name ? { 
           ...f, 
-          id: response.id,
-          status: response.status || 'processing',
-          isUploading: false
+          status: 'uploaded',
+          analysisId: analysisResult.id,
+          progress: 0
         } : f)
       );
       
-      // Start polling for status
-      if (response.id) {
-        pollAnalysisStatus(response.id);
-      }
+      toast.success(`File uploaded successfully for analysis`);
       
-      toast.success(`File "${file.name}" uploaded successfully`);
+      // Start polling for analysis status
+      pollAnalysisStatus(analysisResult.id, file.name);
       
     } catch (error) {
       console.error('Upload failed:', error);
-      
-      // Remove temporary file and show error
-      setUploadedFiles(prev => prev.filter(f => f.id !== tempFile.id));
-      toast.error(`Failed to upload "${file.name}": ${error.message}`);
+      setUploadedFiles(prev => 
+        prev.map(f => f.name === file.name ? { ...f, status: 'error', error: error.message } : f)
+      );
+      toast.error(`Failed to upload ${file.name}: ${error.message}`);
+    } finally {
+      setIsAnalyzing(false);
     }
   };
-
-  const pollAnalysisStatus = async (analysisId) => {
+  
+  const pollAnalysisStatus = async (analysisId, fileName) => {
     const pollInterval = setInterval(async () => {
       try {
-        const status = await uploadApi.getAnalysisStatus(analysisId);
+        const status = await analysisApi.getStatus(analysisId);
         
         setUploadedFiles(prev => 
-          prev.map(f => f.id === analysisId ? { 
+          prev.map(f => f.name === fileName ? { 
             ...f, 
-            status: status.status,
+            status: status.status === 'completed' ? 'analyzed' : 'analyzing',
+            progress: status.progress_percent || 0,
+            currentStep: status.current_step,
             riskScore: status.risk_score,
-            threatCategory: status.threat_category,
-            progress: status.progress_percent
+            threatCategory: status.threat_category
           } : f)
         );
         
-        // Stop polling if analysis is complete or failed
-        if (status.status === 'completed' || status.status === 'failed') {
+        if (status.status === 'completed') {
           clearInterval(pollInterval);
-          
-          if (status.status === 'completed') {
-            toast.success(`Analysis completed for analysis ${analysisId}`);
-          } else {
-            toast.error(`Analysis failed for analysis ${analysisId}`);
-          }
+          toast.success(`Analysis complete for ${fileName}`);
+        } else if (status.status === 'failed') {
+          clearInterval(pollInterval);
+          setUploadedFiles(prev => 
+            prev.map(f => f.name === fileName ? { ...f, status: 'error', error: 'Analysis failed' } : f)
+          );
+          toast.error(`Analysis failed for ${fileName}`);
         }
       } catch (error) {
-        console.error('Failed to get analysis status:', error);
+        console.error('Status polling failed:', error);
         clearInterval(pollInterval);
       }
-    }, 2000); // Poll every 2 seconds
+    }, 2000);
     
-    // Stop polling after 5 minutes max
-    setTimeout(() => {
-      clearInterval(pollInterval);
-    }, 300000);
+    // Stop polling after 5 minutes
+    setTimeout(() => clearInterval(pollInterval), 300000);
   };
 
-  const removeFile = async (fileId) => {
-    try {
-      // Delete from backend
-      await uploadApi.deleteFile(fileId);
-      
-      // Remove from UI
-      setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-      
-      toast.success('File deleted successfully');
-    } catch (error) {
-      console.error('Failed to delete file:', error);
-      toast.error(`Failed to delete file: ${error.message}`);
-    }
+  const removeFile = (fileId) => {
+    setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
   };
 
-  const clearAllFiles = async () => {
-    try {
-      // Delete all files from backend
-      await Promise.all(
-        uploadedFiles.map(file => uploadApi.deleteFile(file.id))
-      );
-      
-      // Clear UI
-      setUploadedFiles([]);
-      
-      toast.success('All files deleted successfully');
-    } catch (error) {
-      console.error('Failed to clear files:', error);
-      toast.error('Failed to clear some files');
-    }
+  const clearAllFiles = () => {
+    setUploadedFiles([]);
   };
 
   return (
@@ -233,7 +188,7 @@ export default function EmailUploadPage() {
                   <p className="text-white font-medium text-lg sm:text-xl mb-2">
                     Drop your email files here, or <span className="text-violet-400">click to browse</span>
                   </p>
-                  <p className="text-sm sm:text-base text-muted-foreground">
+                  <p className="text-sm sm:text-base text-gray-400">
                     Supports .eml, .txt, and .msg files up to 10MB
                   </p>
                 </div>
@@ -278,19 +233,53 @@ export default function EmailUploadPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-white font-medium truncate">{file.name}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-gray-400">
                       {(file.size / 1024).toFixed(1)} KB
                     </p>
                   </div>
                   <div className="flex items-center gap-3 flex-shrink-0">
-                    {file.status === 'analyzing' ? (
-                      <div className="w-5 h-5 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
-                    ) : file.status === 'analyzed' ? (
+                    {file.status === 'error' ? (
                       <div className="flex items-center gap-2">
-                        <CheckCircle className="w-5 h-5 text-teal-400" />
-                        <Badge className="bg-teal-500/20 text-teal-400 border-teal-500/30">
-                          Analyzed
+                        <AlertCircle className="w-5 h-5 text-red-400" />
+                        <Badge className="bg-red-500/20 text-red-400 border-red-500/30">
+                          Error
                         </Badge>
+                      </div>
+                    ) : file.status === 'analyzing' || file.status === 'uploaded' ? (
+                      <div className="flex items-center gap-2">
+                        <div className="w-5 h-5 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
+                        <Badge className="bg-violet-500/20 text-violet-400 border-violet-500/30">
+                          {file.currentStep || 'Analyzing...'}
+                        </Badge>
+                        {file.progress !== undefined && (
+                          <span className="text-xs text-gray-400">{file.progress}%</span>
+                        )}
+                      </div>
+                    ) : file.status === 'analyzed' ? (
+                      <div className="flex items-center gap-2 flex-col">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle className="w-5 h-5 text-teal-400" />
+                          <Badge className="bg-teal-500/20 text-teal-400 border-teal-500/30">
+                            Analyzed
+                          </Badge>
+                        </div>
+                        {file.riskScore !== undefined && (
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-gray-400">Risk:</span>
+                            <Badge className={
+                              file.riskScore >= 70 ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+                              file.riskScore >= 40 ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' :
+                              'bg-green-500/20 text-green-400 border-green-500/30'
+                            }>
+                              {file.riskScore}/100
+                            </Badge>
+                            {file.threatCategory && (
+                              <Badge variant="outline" className="text-xs">
+                                {file.threatCategory}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
@@ -300,7 +289,7 @@ export default function EmailUploadPage() {
                   </div>
                   <button
                     onClick={() => removeFile(file.id)}
-                    className="p-2 rounded-lg hover:bg-pink-500/15 text-muted-foreground hover:text-pink-400 transition-colors"
+                    className="p-2 rounded-lg hover:bg-pink-500/15 text-gray-400 hover:text-pink-400 transition-colors"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -317,7 +306,7 @@ export default function EmailUploadPage() {
               <File className="w-8 h-8 sm:w-10 sm:h-10 text-violet-400" />
             </div>
             <h3 className="text-lg sm:text-xl font-semibold text-white mb-2">No files uploaded yet</h3>
-            <p className="text-sm sm:text-base text-muted-foreground mb-6">
+            <p className="text-sm sm:text-base text-gray-400 mb-6">
               Upload your first email file to start analyzing for phishing threats
             </p>
             <label htmlFor="file-upload-empty" className="cursor-pointer">
@@ -338,29 +327,34 @@ export default function EmailUploadPage() {
         )}
       </div>
 
-      <style jsx>{`
+      <style>{`
         .file-upload-zone {
           border: 2px dashed rgba(139, 92, 246, 0.3);
           border-radius: 1rem;
-          padding: 3rem 2rem;
+          padding: 3rem;
           text-align: center;
           transition: all 0.3s ease;
+          cursor: pointer;
           background: rgba(139, 92, 246, 0.05);
         }
-        
+
         .file-upload-zone:hover,
         .file-upload-zone.dragover {
-          border-color: rgba(139, 92, 246, 0.6);
+          border-color: rgba(139, 92, 246, 0.5);
           background: rgba(139, 92, 246, 0.1);
         }
-        
+
+        .file-upload-zone.dragover {
+          transform: scale(1.02);
+        }
+
         .glass-card {
           background: rgba(255, 255, 255, 0.05);
           backdrop-filter: blur(10px);
           border: 1px solid rgba(139, 92, 246, 0.2);
         }
         
-        .secondary-30\/50 {
+        .secondary-30/50 {
           background: rgba(139, 92, 246, 0.15);
         }
       `}</style>
