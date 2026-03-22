@@ -1,20 +1,38 @@
 """
-Authentication Router
+auth.py  (router)
 
-This module handles all authentication-related endpoints including:
-- User registration
-- Login with OTP
-- Token refresh
-- Password reset
-- Google OAuth
+Consolidated authentication router.
+
+Endpoints:
+  POST /auth/register            – create user, send activation email
+  POST /auth/login               – validate credentials, send OTP
+  POST /auth/verify-otp          – validate OTP, return tokens (or MFA challenge)
+  POST /auth/resend-otp          – resend OTP within active login window
+  POST /auth/refresh             – rotate access + refresh tokens
+  POST /auth/logout              – destroy session
+  POST /auth/forgot-password     – send password-reset email
+  POST /auth/reset-password      – consume reset token, set new password
+  GET  /auth/me                  – current user
+  PUT  /auth/me/password         – change password (authenticated)
+  POST /auth/me/delete           – soft-delete account
+  GET  /auth/google/url          – get Google OAuth URL
+  POST /auth/google/callback     – exchange code for tokens
+  GET  /auth/mfa/status
+  POST /auth/mfa/setup
+  POST /auth/mfa/verify          – used BOTH for setup-verify and login MFA check
+  POST /auth/mfa/enable
+  POST /auth/mfa/disable
+  POST /auth/mfa/verify-backup-code
 """
+
+from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, HTTPException, status, Depends, Request, Response, Body, Form
+from fastapi import APIRouter, HTTPException, Request, status, Depends, Body
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
@@ -24,30 +42,34 @@ from app.config import get_settings
 from app.database import get_db, get_redis, get_db_session
 from app.models.user import User
 from app.models.audit_log import AuditLog, AuditAction
-from app.services.email import send_password_reset_email, send_password_change_notification
-from app.services.email_service import EmailService
-from app.services.sendgrid_service import sendgrid_service
-from app.services.password_history import check_password_reuse, save_password_to_history
-from app.services.gmail_service import GmailService
-from app.routers.security import router as security_router
-from app.services.google_oauth import google_oauth_service
-from app.services.security import (
-    verify_password, get_password_hash, validate_password_strength, generate_totp_secret, generate_totp_uri,
-    generate_qr_code, verify_totp_token, encrypt_mfa_secret, decrypt_mfa_secret,
-    create_access_token, create_refresh_token, verify_token, get_token_expiry,
-    generate_otp, verify_otp, check_mfa_rate_limit, clear_mfa_rate_limit,
-    encrypt_backup_codes, decrypt_backup_codes, should_lock_account,
-    should_lock_otp_account, calculate_lock_time, is_account_locked
+from app.core.session_manager import get_session_manager
+from app.services.email import (
+    send_password_reset_email,
+    send_password_change_notification,
 )
-from app.schemas.auth import (  # ✅ Fixed: correct class names
-    UserCreate, UserResponse, PasswordChange,
-    PasswordReset, PasswordResetRequest, PasswordResetVerify,
-    UserLogin, LoginResponse, OTPVerify, TokenRefresh, ResendOTP, Token,  # ✅ Use Token not TokenResponse
-    DeleteAccountRequest,
+from app.services.email_service import EmailService
+from app.services.password_history import check_password_reuse, save_password_to_history
+from app.services.google_oauth import google_oauth_service
+from app.services.activation_service import activation_service
+from app.services.security import (
+    verify_password, get_password_hash, validate_password_strength,
+    generate_totp_secret, generate_totp_uri, generate_qr_code,
+    verify_totp_token, encrypt_mfa_secret, decrypt_mfa_secret,
+    create_access_token, create_refresh_token, verify_token, get_token_expiry,
+    generate_otp,
+    encrypt_backup_codes, decrypt_backup_codes,
+    should_lock_account, should_lock_otp_account, calculate_lock_time,
+    check_mfa_rate_limit, clear_mfa_rate_limit,
+    create_mfa_session_token,
+)
+from app.schemas.auth import (
+    UserCreate, UserResponse, Token, TokenRefresh,
+    OTPVerify, ResendOTP,
+    PasswordResetRequest, PasswordReset, PasswordChange,
+    LoginResponse, OTPVerificationResponse,
     MFASetupRequest, MFASetupResponse, MFAVerifyRequest,
     MFAEnableRequest, MFADisableRequest, MFAStatusResponse,
-    MFAVerification, OTPVerificationResponse, GoogleAuthUrl,
-    GoogleCallback
+    MFAVerification, GoogleAuthUrl, GoogleCallback,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,1732 +77,802 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
 
 
-def get_gmail_base_email(email: str) -> str:
-    """
-    Get the base Gmail email by removing dots and aliases.
-    This is used for alias detection, not for storage.
-    """
-    if not email:
-        return email
-        
-    email = email.strip().lower()
-    
-    try:
-        local_part, domain = email.split('@', 1)
-    except ValueError:
-        return email
-    
-    gmail_domains = ['gmail.com', 'googlemail.com']
-    
-    if domain in gmail_domains:
-        # Remove aliases
-        if '+' in local_part:
-            local_part = local_part.split('+')[0]
-        # Remove all dots for comparison
-        local_part = local_part.replace('.', '')
-    
-    return f"{local_part}@{domain}"
-
+# ─── Normalisation helpers ─────────────────────────────────────────────────────
 
 def normalize_email(email: str) -> str:
-    """
-    Normalize email address to prevent alias abuse.
-    
-    Handles:
-    - Gmail aliases (test+alias@gmail.com -> test@gmail.com)
-    - Google Workspace aliases
-    - Dots in Gmail addresses (test.test@gmail.com -> test@gmail.com)
-    - Case insensitivity
-    - Leading/trailing whitespace
-    
-    Args:
-        email: Original email address
-        
-    Returns:
-        Normalized email address
-    """
-    if not email:
-        return email
-        
-    # Remove whitespace and convert to lowercase
     email = email.strip().lower()
-    
-    # Split local part and domain
     try:
-        local_part, domain = email.split('@', 1)
+        local, domain = email.split("@", 1)
     except ValueError:
-        return email  # Invalid email format, return as-is
-    
-    # List of domains that support alias removal and dot removal
-    gmail_domains = ['gmail.com', 'googlemail.com']
-    
-    # Normalize Gmail addresses
-    if domain in gmail_domains:
-        # Remove everything after + (aliases)
-        if '+' in local_part:
-            local_part = local_part.split('+')[0]
-        
-        # Remove all dots
-        local_part = local_part.replace('.', '')
-    
-    # For other common providers, you can add specific rules
-    # Outlook/Hotmail: Remove aliases after +
-    elif domain in ['outlook.com', 'hotmail.com', 'live.com']:
-        if '+' in local_part:
-            local_part = local_part.split('+')[0]
-    
-    # Yahoo: Remove aliases after -
-    elif domain in ['yahoo.com', 'ymail.com']:
-        if '-' in local_part:
-            local_part = local_part.split('-')[0]
-    
-    return f"{local_part}@{domain}"
+        return email
+    if domain in {"gmail.com", "googlemail.com"}:
+        local = local.split("+")[0].replace(".", "")
+    elif domain in {"outlook.com", "hotmail.com", "live.com"}:
+        local = local.split("+")[0]
+    elif domain in {"yahoo.com", "ymail.com"}:
+        local = local.split("-")[0]
+    return f"{local}@{domain}"
 
 
-def is_email_alias(original_email: str, stored_email: str) -> bool:
-    """
-    Check if an email is an alias of a stored email.
-    
-    Args:
-        original_email: The email being checked
-        stored_email: The email stored in database
-        
-    Returns:
-        True if original_email is an alias of stored_email
-    """
-    return get_gmail_base_email(original_email) == get_gmail_base_email(stored_email)
-
+# ─── Current user dependency ───────────────────────────────────────────────────
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db)
+    db:    AsyncSession = Depends(get_db),
 ) -> User:
-    """Get current authenticated user from JWT token."""
-    credentials_exception = HTTPException(
+    exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid authentication credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
     payload = verify_token(token, token_type="access")
-    if payload is None:
-        raise credentials_exception
-    
+    if not payload:
+        raise exc
     user_id = payload.get("sub")
-    if user_id is None:
-        raise credentials_exception
-    
+    if not user_id:
+        raise exc
     result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    
-    if user is None or not user.is_active:
-        raise credentials_exception
-    
+    user   = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise exc
     return user
 
 
-async def get_current_active_user(
-    current_user: User = Depends(get_current_user)
-) -> User:
-    """Get current active user."""
+async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
     if current_user.is_locked:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is locked"
-        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is locked.")
     return current_user
 
 
+# ─── Register ─────────────────────────────────────────────────────────────────
+
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(
-    user_data: UserCreate,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
-    """Register a new user."""
+async def register(user_data: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    normalized = normalize_email(user_data.email)
 
-    # Normalize the email once — reused for both duplicate check and storage
-    normalized_email = normalize_email(user_data.email)
+    # Duplicate check via indexed normalized_email column
+    dup = await db.execute(select(User).where(User.normalized_email == normalized))
+    if dup.scalar_one_or_none():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "This email address (or an alias of it) is already registered.")
 
-    # FIX: replaced full-table scan + Python loop with a single indexed query.
-    # normalized_email has an index (ix_users_normalized_email) so this is O(log n)
-    # instead of O(n). Also catches the exact-match case — no separate query needed.
-    result = await db.execute(
-        select(User).where(User.normalized_email == normalized_email)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This email address or an alias of it is already registered."
-        )
-
-    # Validate password strength
-    is_valid, error_msg = validate_password_strength(user_data.password)
+    is_valid, err = validate_password_strength(user_data.password)
     if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg
-        )
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
 
-    # Create user — account_status defaults to 'pending' until activation
     user = User(
         email=user_data.email,
-        normalized_email=normalized_email,
+        normalized_email=normalized,
         password_hash=get_password_hash(user_data.password),
         full_name=user_data.full_name,
         company=user_data.company,
         account_status="pending",
     )
-
     db.add(user)
-    await db.flush()  # get user.id before committing
+    await db.flush()  # get user.id
 
-    # Audit log
-    audit_log = AuditLog(
-        user_id=user.id,
-        user_email=user.email,
-        action=AuditAction.USER_REGISTERED,
-        resource_type="user",
-        resource_id=str(user.id),
+    db.add(AuditLog(
+        user_id=user.id, user_email=user.email,
+        action=AuditAction.USER_REGISTERED, resource_type="user", resource_id=str(user.id),
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
-        status="success"
-    )
-    db.add(audit_log)
+        status="success",
+    ))
     await db.commit()
 
-    logger.info(f"User registered: {user.email}")
-
-    # FIX: send activation email so the user can actually activate their account.
-    # Without this the user stays in 'pending' forever with no way forward.
-    # Done after commit so user.id is guaranteed persisted before the email goes out.
-    from app.services.activation_service import activation_service
+    # Send activation email (async, non-blocking on failure)
     try:
-        activation_token = activation_service.generate_activation_token(str(user.id))
-        activation_code = activation_service.generate_activation_code(str(user.id))
-        email_sent = await activation_service.send_activation_email(
+        token = await activation_service.generate_activation_token(str(user.id))
+        code  = await activation_service.generate_activation_code(str(user.id))
+        sent  = await activation_service.send_activation_email(
             user_email=user.email,
             user_name=user.full_name or user.email.split("@")[0],
             user_id=str(user.id),
-            activation_token=activation_token,
-            activation_code=activation_code,
+            activation_token=token,
+            activation_code=code,
         )
-        if not email_sent:
-            logger.warning(f"Activation email failed to send for {user.email} — user created but not notified")
-    except Exception as e:
-        # Non-fatal: user is created, email just didn't go out.
-        # Log it and continue — don't roll back the registration.
-        logger.error(f"Error sending activation email for {user.email}: {e}")
+        if not sent:
+            logger.warning("Activation email failed for %s – user created but not notified", user.email)
+    except Exception as exc:
+        logger.error("Error sending activation email for %s: %s", user.email, exc)
 
+    logger.info("User registered: %s", user.email)
     return user
 
 
+# ─── Login (step 1) ───────────────────────────────────────────────────────────
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
-    request: Request,
+    request:   Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
+    db:        AsyncSession = Depends(get_db),
+    redis      = Depends(get_redis),
 ):
-    """Login and receive OTP for verification."""
-    # Find user - try exact match first
+    """Validate credentials and send OTP. Returns { email, mfa_required, [mfa_session_token] }."""
+    settings = get_settings()
+
+    # Find user
     result = await db.execute(select(User).where(User.email == form_data.username))
-    user = result.scalar_one_or_none()
-    
-    # If not found, try to find by alias detection
-    if not user:
-        all_users = await db.execute(select(User))
-        for potential_user in all_users.scalars().all():
-            if is_email_alias(form_data.username, potential_user.email):
-                user = potential_user
-                break
-    
-    # Check credentials
+    user   = result.scalar_one_or_none()
+
+    def _bad_creds(reason: str):
+        db.add(AuditLog(
+            user_id=user.id if user else None,
+            user_email=form_data.username,
+            action=AuditAction.LOGIN,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            status="failure",
+            details={"reason": reason, "failed_attempts": getattr(user, "failed_login_attempts", 0)},
+        ))
+
     if not user or not verify_password(form_data.password, user.password_hash):
-        # Handle failed login attempt
         if user:
             user.failed_login_attempts += 1
-            
-            # Check if account should be locked
             if should_lock_account(user.failed_login_attempts):
-                user.locked_until = calculate_lock_time(5)  # Lock for 5 minutes
-                
-                # Log account lockout
-                audit_log = AuditLog(
-                    user_id=user.id,
-                    user_email=user.email,
-                    action=AuditAction.LOGIN,
-                    ip_address=request.client.host if request.client else None,
-                    user_agent=request.headers.get("user-agent"),
-                    status="failure",
-                    details={
-                        "reason": "account_locked",
-                        "failed_attempts": user.failed_login_attempts,
-                        "locked_until": user.locked_until.isoformat()
-                    }
-                )
-                db.add(audit_log)
+                user.locked_until = calculate_lock_time(5)
+                _bad_creds("account_locked")
                 await db.commit()
-                
-                logger.warning(f"Account locked due to failed login attempts: {user.email}")
-                
-                raise HTTPException(
-                    status_code=status.HTTP_423_LOCKED,
-                    detail="Account temporarily locked due to multiple failed login attempts. Please try again in 5 minutes."
-                )
-            else:
-                # Log failed attempt with remaining attempts
-                remaining_attempts = 5 - user.failed_login_attempts
-                audit_log = AuditLog(
-                    user_id=user.id,
-                    user_email=user.email,
-                    action=AuditAction.LOGIN,
-                    ip_address=request.client.host if request.client else None,
-                    user_agent=request.headers.get("user-agent"),
-                    status="failure",
-                    details={
-                        "reason": "invalid_credentials",
-                        "failed_attempts": user.failed_login_attempts,
-                        "remaining_attempts": remaining_attempts
-                    }
-                )
-                db.add(audit_log)
+                raise HTTPException(status.HTTP_423_LOCKED,
+                                    "Account locked due to multiple failed attempts. Try again in 5 minutes.")
+            _bad_creds("invalid_credentials")
         else:
-            # Log failed attempt for unknown user
-            audit_log = AuditLog(
-                user_id=None,
-                user_email=form_data.username,
-                action=AuditAction.LOGIN,
-                ip_address=request.client.host if request.client else None,
-                user_agent=request.headers.get("user-agent"),
-                status="failure",
-                details={"reason": "user_not_found"}
-            )
-            db.add(audit_log)
-        
+            _bad_creds("user_not_found")
         await db.commit()
-        
-        error_message = "Invalid email or password"
-        if user and user.failed_login_attempts > 0:
-            remaining_attempts = 5 - user.failed_login_attempts
-            if remaining_attempts > 0:
-                error_message += f". {remaining_attempts} attempts remaining before account lockout."
-        
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=error_message,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Check if account is locked
+        remaining = max(0, 5 - (user.failed_login_attempts if user else 0))
+        msg = f"Invalid email or password. {remaining} attempts remaining before lockout." if remaining else "Invalid email or password."
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, msg,
+                            headers={"WWW-Authenticate": "Bearer"})
+
     if user.is_locked:
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=f"Account is temporarily locked due to multiple failed attempts. Please try again after {user.locked_until.strftime('%H:%M:%S')}."
-        )
-    
-    # Reset failed login attempts on successful credential verification
+        raise HTTPException(status.HTTP_423_LOCKED,
+                            f"Account locked until {user.locked_until.strftime('%H:%M:%S')} UTC.")
+
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is deactivated.")
+
+    # Reset failed attempts on successful credential check
     user.failed_login_attempts = 0
     user.locked_until = None
-    
-    # Check if account is active
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is deactivated"
-        )
-    
-    # Generate OTP
-    otp = generate_otp()
-    settings = get_settings()
-    
-    # Store OTP in Redis
+
+    # Generate & store OTP
+    otp     = generate_otp()
     otp_key = f"otp:{user.email}"
     await redis.setex(otp_key, settings.OTP_EXPIRE_MINUTES * 60, otp)
-    
-    # Store login attempt
-    attempt_key = f"login_attempt:{user.email}"
-    await redis.setex(attempt_key, settings.OTP_EXPIRE_MINUTES * 60, "pending")
-    
-    # Log login attempt
-    audit_log = AuditLog(
-        user_id=user.id,
-        user_email=user.email,
+    await redis.setex(f"login_attempt:{user.email}", settings.OTP_EXPIRE_MINUTES * 60, "pending")
+
+    # Audit
+    db.add(AuditLog(
+        user_id=user.id, user_email=user.email,
         action=AuditAction.LOGIN,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
         status="success",
-        details={"step": "credentials_verified", "otp_sent": True}
-    )
-    db.add(audit_log)
+        details={"step": "credentials_verified", "otp_sent": True},
+    ))
     await db.commit()
-    
-    # Send OTP via email
-    email_service = EmailService()
+
+    # Send OTP email
+    email_svc = EmailService()
     try:
-        await email_service.send_otp_verification(
+        await email_svc.send_otp_verification(
             to_email=user.email,
             user_name=user.full_name or user.email,
             code=otp,
-            action="verify your login"
+            action="verify your login",
         )
-        logger.info(f"OTP sent to {user.email}: {otp}")
-    except Exception as e:
-        logger.error(f"Failed to send OTP email to {user.email}: {e}")
-        # Continue with login process even if email fails (OTP is still stored in Redis)
-    
-    # Check if user has MFA enabled and create MFA session token
-    if user.mfa_enabled:
-        mfa_session_token = create_mfa_session_token(
-            data={"sub": str(user.id), "type": "mfa_session"}, 
-            expires_delta=timedelta(minutes=15)
-        )
-        
-        return LoginResponse(
-            message="OTP sent to your email",
-            email=user.email,
-            mfa_required=True,
-            mfa_session_token=mfa_session_token
-        )
-    
-    return LoginResponse(
-        message="OTP sent to your email",
-        email=user.email,
-        mfa_required=False
-    )
+    except Exception as exc:
+        logger.error("Failed to send OTP to %s: %s", user.email, exc)
+        # We continue – OTP is in Redis, user can request resend
 
+    # If MFA is enabled, issue a short-lived MFA session token instead of full tokens
+    if user.mfa_enabled:
+        mfa_token = create_mfa_session_token(
+            data={"sub": str(user.id), "type": "mfa_session"},
+            expires_delta=timedelta(minutes=15),
+        )
+        return LoginResponse(message="OTP sent. MFA required.", email=user.email,
+                             mfa_required=True, mfa_session_token=mfa_token)
+
+    return LoginResponse(message="OTP sent to your email.", email=user.email, mfa_required=False)
+
+
+# ─── Verify OTP (step 2) ──────────────────────────────────────────────────────
 
 @router.post("/verify-otp", response_model=OTPVerificationResponse)
 async def verify_otp(
-    otp_data: OTPVerify,
+    body:    OTPVerify,
     request: Request,
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
+    db:      AsyncSession = Depends(get_db),
+    redis    = Depends(get_redis),
 ):
-    """Verify OTP and issue tokens."""
-    # Get user
-    result = await db.execute(select(User).where(User.email == otp_data.email))
-    user = result.scalar_one_or_none()
-    
+    result = await db.execute(select(User).where(User.email == body.email))
+    user   = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Check if account is locked
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+
     if user.is_locked:
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=f"Account is temporarily locked due to multiple failed attempts. Please try again after {user.locked_until.strftime('%H:%M:%S')}."
-        )
-    
-    # Get stored OTP
-    otp_key = f"otp:{otp_data.email}"
-    stored_otp = await redis.get(otp_key)
-    
-    if not stored_otp or stored_otp != otp_data.otp:
-        # Handle failed OTP attempt
+        raise HTTPException(status.HTTP_423_LOCKED,
+                            f"Account locked until {user.locked_until.strftime('%H:%M:%S')} UTC.")
+
+    stored_otp = await redis.get(f"otp:{body.email}")
+    if not stored_otp or not secrets.compare_digest(stored_otp, body.otp):
         user.failed_otp_attempts += 1
-        
-        # Check if account should be locked due to OTP failures
         if should_lock_otp_account(user.failed_otp_attempts):
-            user.locked_until = calculate_lock_time(5)  # Lock for 5 minutes
-            
-            # Log OTP lockout
-            audit_log = AuditLog(
-                user_id=user.id,
-                user_email=user.email,
-                action=AuditAction.MFA_FAILURE,
-                ip_address=request.client.host if request.client else None,
-                user_agent=request.headers.get("user-agent"),
-                status="failure",
-                details={
-                    "reason": "otp_account_locked",
-                    "failed_otp_attempts": user.failed_otp_attempts,
-                    "locked_until": user.locked_until.isoformat()
-                }
-            )
-            db.add(audit_log)
+            user.locked_until = calculate_lock_time(5)
+            await redis.delete(f"otp:{body.email}", f"login_attempt:{body.email}")
             await db.commit()
-            
-            logger.warning(f"Account locked due to failed OTP attempts: {user.email}")
-            
-            # Clear OTP from Redis
-            await redis.delete(otp_key)
-            await redis.delete(f"login_attempt:{user.email}")
-            
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail="Account temporarily locked due to multiple failed OTP attempts. Please try again in 5 minutes."
-            )
-        else:
-            # Log failed OTP attempt with remaining attempts
-            remaining_attempts = 3 - user.failed_otp_attempts
-            audit_log = AuditLog(
-                user_id=user.id,
-                user_email=user.email,
-                action=AuditAction.MFA_FAILURE,
-                ip_address=request.client.host if request.client else None,
-                user_agent=request.headers.get("user-agent"),
-                status="failure",
-                details={
-                    "reason": "invalid_otp",
-                    "failed_otp_attempts": user.failed_otp_attempts,
-                    "remaining_attempts": remaining_attempts
-                }
-            )
-            db.add(audit_log)
-            await db.commit()
-        
-        error_message = "Invalid OTP"
-        if user.failed_otp_attempts > 0:
-            remaining_attempts = 3 - user.failed_otp_attempts
-            if remaining_attempts > 0:
-                error_message += f". {remaining_attempts} attempts remaining before account lockout."
-        
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_message
-        )
-    
-    # Clear OTP
-    await redis.delete(otp_key)
-    
-    # Reset failed OTP attempts on successful verification
-    user.failed_otp_attempts = 0
-    
-    # Update user
-    user.last_login = datetime.utcnow()
-    user.last_login_ip = request.client.host if request.client else None
-    user.failed_login_attempts = 0
-    
-    # Check if user has MFA enabled
+            raise HTTPException(status.HTTP_423_LOCKED,
+                                "Account locked due to multiple failed OTP attempts. Try again in 5 minutes.")
+        await db.commit()
+        remaining = max(0, 3 - user.failed_otp_attempts)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"Invalid OTP. {remaining} attempts remaining." if remaining else "Invalid OTP.")
+
+    # OTP valid – clean up
+    await redis.delete(f"otp:{body.email}")
+    user.failed_otp_attempts  = 0
+    user.last_login           = datetime.utcnow()
+    user.last_login_ip        = request.client.host if request.client else None
+
+    # If MFA enabled → MFA challenge
     if user.mfa_enabled:
-        # Generate MFA session token (short-lived)
-        mfa_session_token = create_mfa_session_token(
-            data={"sub": str(user.id)}, 
-            expires_delta=timedelta(minutes=10)
+        mfa_token = create_mfa_session_token(
+            data={"sub": str(user.id), "type": "mfa_session"},
+            expires_delta=timedelta(minutes=10),
         )
-        
-        # Clear OTP
-        await redis.delete(otp_key)
-        
-        # Log MFA required
-        audit_log = AuditLog(
-            user_id=user.id,
-            user_email=user.email,
-            action=AuditAction.MFA_REQUIRED,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-            status="success"
-        )
-        db.add(audit_log)
-        await db.commit()
-        
-        # Update user to show MFA in progress
         user.mfa_session_created = datetime.utcnow()
+        db.add(AuditLog(user_id=user.id, user_email=user.email,
+                        action=AuditAction.MFA_REQUIRED, status="success"))
         await db.commit()
-        
-        return OTPVerificationResponse(
-            mfa_required=True,
-            mfa_session_token=mfa_session_token,
-            user={
-                "id": str(user.id),
-                "email": user.email,
-                "full_name": user.full_name,
-                "role": user.role
-            }
-        )
-    
-    # Generate tokens (non-MFA users)
-    access_token = create_access_token({"sub": str(user.id)})
+        return OTPVerificationResponse(mfa_required=True, mfa_session_token=mfa_token,
+                                       user={"id": str(user.id), "email": user.email,
+                                             "full_name": user.full_name, "role": user.role})
+
+    # Issue tokens
+    access_token  = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
-    
-    # Store session with pure Redis TTL management
-    from app.core.session_manager import get_session_manager
-    session_manager = get_session_manager(redis)
-    
-    await session_manager.create_session(
-        user_id=str(user.id),
-        user_email=user.email,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent", "")
-    )
-    
-    # Log successful login
-    audit_log = AuditLog(
-        user_id=user.id,
-        user_email=user.email,
-        action=AuditAction.LOGIN,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success",
-        details={"step": "otp_verified", "login_completed": True}
-    )
-    db.add(audit_log)
+
+    session_mgr = get_session_manager(redis)
+    await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
+                                     ip_address=request.client.host if request.client else None,
+                                     user_agent=request.headers.get("user-agent", ""))
+
+    db.add(AuditLog(user_id=user.id, user_email=user.email, action=AuditAction.LOGIN,
+                    ip_address=request.client.host if request.client else None,
+                    status="success", details={"step": "otp_verified"}))
     await db.commit()
-    
-    logger.info(f"User logged in: {user.email}")
-    
+
     return OTPVerificationResponse(
-            mfa_required=False,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="bearer",
-            user={
-                "id": str(user.id),
-                "email": user.email,
-                "full_name": user.full_name,
-                "role": user.role
-            }
-        )
-
-
-@router.post("/resend-otp", response_model=dict)
-async def resend_otp(
-    otp_data: ResendOTP,  # ✅ Use ResendOTP schema instead of OTPVerify
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
-):
-    """Resend OTP for login verification."""
-    # Get user
-    result = await db.execute(select(User).where(User.email == otp_data.email))
-    user = result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Check if account is locked
-    if user.is_locked:
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=f"Account is temporarily locked due to multiple failed attempts. Please try again after {user.locked_until.strftime('%H:%M:%S')}."
-        )
-    
-    # Check if there's an existing login attempt
-    attempt_key = f"login_attempt:{user.email}"
-    existing_attempt = await redis.get(attempt_key)
-    
-    if not existing_attempt:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No active login session found. Please login again."
-        )
-    
-    # Generate new OTP
-    otp = generate_otp()
-    settings = get_settings()
-    
-    # Store new OTP in Redis
-    otp_key = f"otp:{user.email}"
-    await redis.setex(otp_key, settings.OTP_EXPIRE_MINUTES * 60, otp)
-    
-    # Extend login attempt session
-    await redis.setex(attempt_key, settings.OTP_EXPIRE_MINUTES * 60, "pending")
-    
-    # Send OTP via email
-    try:
-        from app.services.email import send_otp_email
-        await send_otp_email(user.email, otp)
-    except Exception as e:
-        logger.error(f"Failed to send OTP email to {user.email}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send OTP email"
-        )
-    
-    # Log OTP resend
-    audit_log = AuditLog(
-        user_id=user.id,
-        user_email=user.email,
-        action=AuditAction.OTP_SENT,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success",
-        details={"action": "resend"}
+        mfa_required=False,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        user={"id": str(user.id), "email": user.email,
+              "full_name": user.full_name, "role": user.role},
     )
-    db.add(audit_log)
-    await db.commit()
-    
-    logger.info(f"OTP resent to: {user.email}")
-    
-    return {
-        "message": "OTP resent successfully",
-        "email": user.email
-    }
 
+
+# ─── Resend OTP ────────────────────────────────────────────────────────────────
+
+@router.post("/resend-otp")
+async def resend_otp(
+    body:    ResendOTP,
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+    redis    = Depends(get_redis),
+):
+    settings = get_settings()
+    result   = await db.execute(select(User).where(User.email == body.email))
+    user     = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    if user.is_locked:
+        raise HTTPException(status.HTTP_423_LOCKED, "Account is locked.")
+
+    # Require an active login window
+    if not await redis.get(f"login_attempt:{body.email}"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "No active login session. Please log in again.")
+
+    otp = generate_otp()
+    await redis.setex(f"otp:{body.email}", settings.OTP_EXPIRE_MINUTES * 60, otp)
+    await redis.setex(f"login_attempt:{body.email}", settings.OTP_EXPIRE_MINUTES * 60, "pending")
+
+    email_svc = EmailService()
+    try:
+        await email_svc.send_otp_verification(
+            to_email=user.email, user_name=user.full_name or user.email,
+            code=otp, action="verify your login",
+        )
+    except Exception as exc:
+        logger.error("Failed to resend OTP to %s: %s", user.email, exc)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to send OTP email.")
+
+    db.add(AuditLog(user_id=user.id, user_email=user.email, action=AuditAction.OTP_SENT,
+                    ip_address=request.client.host if request.client else None, status="success"))
+    await db.commit()
+    return {"message": "OTP resent.", "email": user.email}
+
+
+# ─── Token refresh ────────────────────────────────────────────────────────────
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(
-    refresh_data: TokenRefresh,
-    db: AsyncSession = Depends(get_db)
-):
-    """Refresh access token."""
-    payload = verify_token(refresh_data.refresh_token, token_type="refresh")
-    
+async def refresh_token(body: TokenRefresh, db: AsyncSession = Depends(get_db)):
+    payload = verify_token(body.refresh_token, token_type="refresh")
     if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
-        )
-    
-    user_id = payload.get("sub")
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token.")
+
+    result = await db.execute(select(User).where(User.id == payload.get("sub")))
+    user   = result.scalar_one_or_none()
     if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive"
-        )
-    
-    # Generate new tokens
-    access_token = create_access_token({"sub": str(user.id)})
-    new_refresh_token = create_refresh_token({"sub": str(user.id)})
-    
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found or inactive.")
+
+    settings = get_settings()
     return Token(
-        access_token=access_token,
-        refresh_token=new_refresh_token,
+        access_token=create_access_token({"sub": str(user.id)}),
+        refresh_token=create_refresh_token({"sub": str(user.id)}),
         token_type="bearer",
-        expires_in=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=UserResponse.model_validate(user)
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=UserResponse.model_validate(user),
     )
 
+
+# ─── Logout ───────────────────────────────────────────────────────────────────
 
 @router.post("/logout")
 async def logout(
     request: Request,
     current_user: User = Depends(get_current_user),
-    redis = Depends(get_redis)
+    redis = Depends(get_redis),
 ):
-    """Logout user and invalidate session."""
-    # Remove session from Redis
-    session_key = f"session:{current_user.id}"
-    await redis.delete(session_key)
-    
-    # Log logout
+    await redis.delete(f"session:{current_user.id}")
     async with get_db_session() as db:
-        audit_log = AuditLog(
-            user_id=current_user.id,
-            user_email=current_user.email,
-            action=AuditAction.LOGOUT,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-            status="success"
-        )
-        db.add(audit_log)
+        db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
+                        action=AuditAction.LOGOUT,
+                        ip_address=request.client.host if request.client else None,
+                        status="success"))
         await db.commit()
-    
-    return {"message": "Logged out successfully"}
+    return {"message": "Logged out successfully."}
 
+
+# ─── Forgot / reset password ──────────────────────────────────────────────────
 
 @router.post("/forgot-password")
 async def forgot_password(
-    reset_request: PasswordResetRequest,
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
+    body:  PasswordResetRequest,
+    db:    AsyncSession = Depends(get_db),
+    redis  = Depends(get_redis),
 ):
-    """Request password reset."""
-    result = await db.execute(select(User).where(User.email == reset_request.email))
-    user = result.scalar_one_or_none()
-    
+    result = await db.execute(select(User).where(User.email == body.email))
+    user   = result.scalar_one_or_none()
+    # Always return 200 to prevent email enumeration
     if user:
-        # Generate reset token
         reset_token = create_access_token(
             {"sub": str(user.id), "type": "password_reset"},
-            expires_delta=timedelta(hours=1)
+            expires_delta=timedelta(hours=1),
         )
-        
-        # Store in Redis
-        reset_key = f"password_reset:{user.id}"
-        await redis.setex(reset_key, 3600, reset_token)
-        
-        # Send email
+        await redis.setex(f"password_reset:{user.id}", 3600, reset_token)
         settings = get_settings()
-        reset_url = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
-        await send_password_reset_email(user.email, reset_url)
-        
-        logger.info(f"Password reset requested for {user.email}")
-    
-    # Always return success to prevent email enumeration
-    return {"message": "If the email exists, a reset link has been sent"}
+        await send_password_reset_email(
+            user.email,
+            f"{settings.FRONTEND_URL}/reset-password?token={reset_token}",
+        )
+    return {"message": "If that email is registered, a reset link has been sent."}
 
 
 @router.post("/reset-password")
 async def reset_password(
-    reset_data: PasswordReset,
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
+    body:  PasswordReset,
+    db:    AsyncSession = Depends(get_db),
+    redis  = Depends(get_redis),
 ):
-    """Reset password using reset token."""
-    payload = verify_token(reset_data.token)
-    
+    payload = verify_token(body.token)
     if not payload or payload.get("type") != "password_reset":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset token"
-        )
-    
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired reset token.")
+
     user_id = payload.get("sub")
+    stored  = await redis.get(f"password_reset:{user_id}")
+    if not stored or not secrets.compare_digest(stored, body.token):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Reset token already used or expired.")
+
     result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    
+    user   = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Check if reset token was used
-    reset_key = f"password_reset:{user.id}"
-    stored_token = await redis.get(reset_key)
-    
-    if not stored_token or stored_token != reset_data.token:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Reset token already used or expired"
-        )
-    
-    # Validate password strength
-    is_valid, error_msg = validate_password_strength(reset_data.new_password)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+
+    is_valid, err = validate_password_strength(body.new_password)
     if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg
-        )
-    
-    # Hash the new password to check against history
-    new_password_hash = get_password_hash(reset_data.new_password)
-    
-    # Check password reuse
-    is_reused, reuse_error = await check_password_reuse(db, user, new_password_hash)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
+
+    new_hash = get_password_hash(body.new_password)
+    is_reused, reuse_err = await check_password_reuse(db, user, new_hash)
     if is_reused:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=reuse_error
-        )
-    
-    # Save old password to history
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, reuse_err)
+
     await save_password_to_history(db, user, user.password_hash)
-    
-    # Update password
-    user.password_hash = new_password_hash
+    user.password_hash      = new_hash
     user.password_changed_at = datetime.utcnow()
-    
-    # Clear reset token
-    await redis.delete(reset_key)
-    
+    await redis.delete(f"password_reset:{user_id}")
     await db.commit()
-    
-    # Send password change notification
     await send_password_change_notification(user.email)
-    
+    return {"message": "Password reset successfully."}
 
 
-@router.get("/google/url")
-async def get_google_auth_url():
-    """Get Google OAuth authorization URL."""
-    try:
-        result = google_oauth_service.get_auth_url()
-        return GoogleAuthUrl(auth_url=result["auth_url"], state=result["state"])
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Google OAuth URL generation error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate Google OAuth URL"
-        )
-
-
-@router.get("/google/callback")
-async def google_callback(
-    code: str,
-    state: str,
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
-):
-    """Handle Google OAuth callback - redirects to frontend."""
-    try:
-        token_data = await google_oauth_service.handle_oauth_callback(code, state)
-        
-        if not token_data.get("success"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Failed to authenticate with Google"
-            )
-        
-        # Check if user exists
-        result = await db.execute(select(User).where(User.email == token_data['email']))
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            # Create new user
-            user = User(
-                email=token_data['email'],
-                normalized_email=normalize_email(token_data['email']),  # Add normalized email
-                password_hash=get_password_hash(secrets.token_urlsafe(32)),  # Random password
-                full_name=token_data.get('name'),
-                email_verified=True
-            )
-            db.add(user)
-            await db.commit()
-            await db.refresh(user)
-        
-        # Create access tokens
-        access_token = create_access_token(data={"sub": str(user.id)})
-        refresh_token = create_refresh_token(data={"sub": str(user.id)})
-        
-        # Store session with Redis TTL management
-        from app.core.session_manager import get_session_manager
-        session_manager = get_session_manager(redis)
-        
-        await session_manager.create_session(
-            user_id=str(user.id),
-            user_email=user.email,
-            ip_address="127.0.0.1",  # OAuth callback doesn't have request object
-            user_agent="Google OAuth"
-        )
-        
-        # Redirect to frontend with tokens
-        settings = get_settings()
-        redirect_url = f"{settings.FRONTEND_URL}/google/callback?success=true&access_token={access_token}&refresh_token={refresh_token}"
-        return RedirectResponse(url=redirect_url)
-        
-    except Exception as e:
-        logger.error(f"Google OAuth error: {e}")
-        settings = get_settings()
-        redirect_url = f"{settings.FRONTEND_URL}/google/callback?error=true&message={str(e)}"
-        return RedirectResponse(url=redirect_url)
-
-
-@router.post("/google/callback")
-async def google_callback_post(
-    request: GoogleCallback,
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
-):
-    """Handle Google OAuth callback - API endpoint for popup."""
-    try:
-        token_data = await google_oauth_service.handle_oauth_callback(request.code, request.state)
-        
-        if not token_data.get("success"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=token_data.get('error', 'Failed to authenticate with Google')
-            )
-        
-        # Check if user exists
-        result = await db.execute(select(User).where(User.email == token_data['email']))
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            # Create new user with pending status
-            user = User(
-                email=token_data['email'],
-                normalized_email=normalize_email(token_data['email']),
-                password_hash=get_password_hash(secrets.token_urlsafe(32)),
-                full_name=token_data.get('name'),
-                email_verified=True,
-                account_status="pending"  # New OAuth users start as pending
-            )
-            db.add(user)
-            await db.commit()
-            await db.refresh(user)
-            
-            # Generate activation token and code
-            from app.services.activation_service import activation_service
-            activation_token = activation_service.generate_activation_token(str(user.id))
-            activation_code = activation_service.generate_activation_code(str(user.id))
-            
-            # Send activation email
-            email_sent = await activation_service.send_activation_email(
-                user_email=user.email,
-                user_name=user.full_name or user.email.split('@')[0],
-                user_id=str(user.id),
-                activation_token=activation_token,
-                activation_code=activation_code
-            )
-            
-            if not email_sent:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to send activation email"
-                )
-            
-            return {
-                "activation_required": True,
-                "message": "Please check your email for activation instructions",
-                "email": user.email,
-                "full_name": user.full_name
-            }
-        
-        # Handle existing users
-        if user.account_status == "pending":
-            # User exists but not activated - resend activation
-            from app.services.activation_service import activation_service
-            activation_token = activation_service.generate_activation_token(str(user.id))
-            activation_code = activation_service.generate_activation_code(str(user.id))
-            
-            email_sent = await activation_service.send_activation_email(
-                user_email=user.email,
-                user_name=user.full_name or user.email.split('@')[0],
-                user_id=str(user.id),
-                activation_token=activation_token,
-                activation_code=activation_code
-            )
-            
-            return {
-                "activation_required": True,
-                "message": "Your account is still pending activation. Please check your email.",
-                "email": user.email,
-                "full_name": user.full_name
-            }
-        
-        # Check if user has MFA enabled
-        if user.mfa_enabled:
-            # Generate MFA session token (short-lived)
-            mfa_session_token = create_mfa_session_token(
-                data={"sub": str(user.id), "type": "mfa_session"}, 
-                expires_delta=timedelta(minutes=10)
-            )
-            
-            return {
-                "mfa_required": True,
-                "mfa_session_token": mfa_session_token,
-                "user": {
-                    "id": str(user.id),
-                    "email": user.email,
-                    "full_name": user.full_name,
-                    "role": user.role
-                }
-            }
-        
-        # Create access tokens for active users
-        access_token = create_access_token(data={"sub": str(user.id)})
-        refresh_token = create_refresh_token(data={"sub": str(user.id)})
-        
-        # Store session with Redis TTL management
-        from app.core.session_manager import get_session_manager
-        session_manager = get_session_manager(redis)
-        
-        await session_manager.create_session(
-            user_id=str(user.id),
-            user_email=user.email,
-            ip_address="127.0.0.1",  # OAuth callback doesn't have request object
-            user_agent="Google OAuth POST"
-        )
-        
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "user": {
-                "id": str(user.id),
-                "email": user.email,
-                "full_name": user.full_name,
-                "role": user.role
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Google OAuth error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-
-@router.post("/auth/google/callback")
-async def auth_google_callback_post(
-    request: GoogleCallback,
-    db: AsyncSession = Depends(get_db)
-):
-    """Handle Google OAuth callback - API endpoint for popup (alternative route)."""
-    # This is an alias to the main callback handler
-    return await google_callback_post(request, db)
-
-
-@router.post("/mfa/verify")
-async def verify_mfa(
-    request: MFAVerification,
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify MFA code for users with MFA enabled."""
-    try:
-        logger.info(f"MFA verification attempt with token: {request.mfa_session_token[:20]}...")
-        logger.info(f"MFA verification: Full token received: {request.mfa_session_token}")
-        
-        # Verify MFA session token
-        payload = verify_token(request.mfa_session_token, token_type="mfa_session")
-        
-        logger.info(f"MFA verification: Token payload received: {payload}")
-        logger.info(f"MFA verification: Token type check: expected='mfa_session', actual='{payload.get('type') if payload else 'None'}'")
-        
-        if not payload:
-            logger.error("MFA verification: Invalid or expired session token")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid session token"
-            )
-        
-        if payload.get("type") != "mfa_session":
-            logger.error(f"MFA verification: Invalid token type: {payload.get('type')}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid session token"
-            )
-        
-        user_id = payload.get("sub")
-        logger.info(f"MFA verification: User ID from token: {user_id}")
-        
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        
-        if not user or not user.mfa_enabled:
-            logger.error(f"MFA verification: User not found or MFA not enabled for user_id: {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid user or MFA not enabled"
-            )
-        
-        # Verify MFA code using TOTP
-        logger.info(f"MFA verification: User {user.email} MFA enabled: {user.mfa_enabled}")
-        logger.info(f"MFA verification: User MFA secret exists: {bool(user.mfa_secret)}")
-        logger.info(f"MFA verification: Received code: {request.code}")
-        
-        # Decrypt MFA secret before verification
-        decrypted_secret = decrypt_mfa_secret(user.mfa_secret)
-        logger.info(f"MFA verification: Secret decrypted successfully: {bool(decrypted_secret)}")
-        
-        is_valid = verify_totp_token(decrypted_secret, request.code)
-        logger.info(f"MFA verification: TOTP verification result: {is_valid}")
-        
-        if not is_valid:
-            logger.error(f"MFA verification: Invalid TOTP code for user {user.email}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid MFA code"
-            )
-        
-        # Create access tokens after MFA verification
-        access_token = create_access_token(data={"sub": str(user.id)})
-        refresh_token = create_refresh_token(data={"sub": str(user.id)})
-        
-        response = OTPVerificationResponse(
-            mfa_required=False,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="bearer",
-            user={
-                "id": str(user.id),
-                "email": user.email,
-                "full_name": user.full_name,
-                "role": user.role
-            }
-        )
-        
-        logger.info(f"MFA verification: Successful response prepared for user {user.email}")
-        logger.info(f"MFA verification: Response mfa_required: {response.mfa_required}")
-        logger.info(f"MFA verification: Response access_token: {response.access_token[:20] if response.access_token else 'None'}...")
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"MFA verification error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
+# ─── Profile ──────────────────────────────────────────────────────────────────
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user_info(
-    current_user: User = Depends(get_current_active_user)
-):
-    """Get current user information."""
+async def get_me(current_user: User = Depends(get_current_active_user)):
     return current_user
-
-
-@router.post("/me/delete")
-async def delete_account(
-    password: str = Form(...),
-    request: Request = None,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Delete user account (requires password confirmation)."""
-    # Verify password
-    if not verify_password(password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Incorrect password"
-        )
-    
-    try:
-        # Create audit log before deletion
-        audit_log = AuditLog(
-            user_id=current_user.id,
-            user_email=current_user.email,
-            action=AuditAction.USER_DELETED,
-            resource_type="user",
-            resource_id=str(current_user.id),
-            ip_address=request.client.host if request and request.client else None,
-            user_agent=request.headers.get("user-agent") if request else None,
-            status="success",
-            details={"reason": "User requested account deletion"}
-        )
-        db.add(audit_log)
-        
-        # Soft delete the user
-        current_user.deleted_at = datetime.utcnow()
-        current_user.is_active = False
-        current_user.email = f"deleted_{current_user.id}@deleted.com"
-        
-        # Clear sensitive data
-        current_user.password_hash = "deleted"  # Cannot be NULL, set to placeholder
-        current_user.gmail_credentials = None
-        current_user.gmail_email = None
-        current_user.mfa_secret = None
-        
-        await db.commit()
-        
-        logger.info(f"User account deleted: {current_user.email}")
-        
-        return {"message": "Account deleted successfully"}
-        
-    except Exception as e:
-        logger.error(f"Error deleting user account: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete account"
-        )
 
 
 @router.put("/me/password")
 async def change_password(
-    request: Request,
+    request:      Request,
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
-    redis = Depends(get_redis)
+    db:           AsyncSession = Depends(get_db),
 ):
-    """Change current user password."""
-    # Parse JSON body and extract body content
     import json
     try:
-        # First check if there's any body at all
-        body_bytes = await request.body()
-        logger.info(f"Raw body bytes: {body_bytes}")
-        
-        if not body_bytes:
-            logger.error("Empty request body received")
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Empty request body"
-            )
-        
-        raw_data = json.loads(body_bytes.decode('utf-8'))
-        logger.info(f"Raw JSON received: {raw_data}")
-        
-        current_password = raw_data.get('current_password')
-        new_password = raw_data.get('new_password')
-        
-        logger.info(f"Extracted passwords: current_password={current_password}, new_password={new_password}")
-        
-        if not current_password or not new_password:
-            logger.error(f"Missing passwords. current_password={current_password}, new_password={new_password}")
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Both current_password and new_password are required"
-            )
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid JSON format: {str(e)}"
-        )
-    except Exception as e:
-        logger.error(f"Error parsing request: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid request format: {str(e)}"
-        )
-    
-    # Verify current password
-    if not verify_password(current_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect"
-        )
-    
-    # Validate new password strength
-    is_valid, error_msg = validate_password_strength(new_password)
+        raw  = await request.body()
+        data = json.loads(raw)
+        current_pwd = data.get("current_password", "")
+        new_pwd     = data.get("new_password", "")
+        if not current_pwd or not new_pwd:
+            raise ValueError("missing fields")
+    except Exception:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "Body must be JSON with current_password and new_password.")
+
+    if not verify_password(current_pwd, current_user.password_hash):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is incorrect.")
+
+    is_valid, err = validate_password_strength(new_pwd)
     if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg
-        )
-    
-    # Hash the new password to check against history
-    new_password_hash = get_password_hash(new_password)
-    
-    # Check password reuse
-    is_reused, reuse_error = await check_password_reuse(db, current_user, new_password_hash)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
+
+    new_hash = get_password_hash(new_pwd)
+    is_reused, reuse_err = await check_password_reuse(db, current_user, new_hash)
     if is_reused:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=reuse_error
-        )
-    
-    # Save old password to history
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, reuse_err)
+
     await save_password_to_history(db, current_user, current_user.password_hash)
-    
-    # Update password
-    current_user.password_hash = new_password_hash
-    current_user.password_changed_at = datetime.utcnow()
-    
-    # Invalidate all other sessions (keep current one active)
-    session_pattern = f"session:{current_user.id}:*"
-    # Note: This would require modifying session storage to include device identifiers
-    # For now, we'll keep current session active
-    
-    # Log password change
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        user_email=current_user.email,
-        action=AuditAction.PASSWORD_CHANGED,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success"
-    )
-    db.add(audit_log)
+    current_user.password_hash       = new_hash
+    current_user.password_changed_at  = datetime.utcnow()
+
+    db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
+                    action=AuditAction.PASSWORD_CHANGED,
+                    ip_address=request.client.host if request.client else None, status="success"))
     await db.commit()
-    
-    # Send password change notification email
-    await send_password_change_notification(
-        current_user.email, 
-        request.client.host if request.client else None
-    )
-    
-    logger.info(f"Password changed for {current_user.email}")
-    
-    return {"message": "Password changed successfully"}
+    await send_password_change_notification(current_user.email,
+                                            request.client.host if request.client else None)
+    return {"message": "Password changed successfully."}
 
 
-# MFA Endpoints
-@router.post("/mfa/setup", response_model=MFASetupResponse)
-async def setup_mfa(
-    request: Request,
-    setup_data: MFASetupRequest,
+@router.post("/me/delete")
+async def delete_account(
+    password:     str,
+    request:      Request = None,
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    db:           AsyncSession = Depends(get_db),
 ):
-    """Set up MFA for user account."""
-    # Rate limiting check
-    allowed, message = check_mfa_rate_limit(str(current_user.id), "setup", max_attempts=3, window_minutes=30)
-    if not allowed:
-        logger.warning(f"MFA setup rate limit exceeded for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=message
-        )
-    
-    # Password verification is no longer required for MFA setup
-    # All users (OAuth and regular) can set up MFA without password
-    # Security is maintained through MFA verification process and rate limiting
-    logger.info(f"MFA setup initiated for {current_user.email} - password verification not required")
-    
-    # Generate new TOTP secret
-    secret = generate_totp_secret()
-    
-    # Generate QR code
-    uri = generate_totp_uri(secret, current_user.email)
-    qr_code = generate_qr_code(uri)
-    
-    # Generate secure alphanumeric backup codes
-    backup_codes = [generate_otp(8) for _ in range(12)]
-    
-    # Generate MFA setup session token for validation
-    from app.services.security import create_access_token
-    mfa_session_token = create_access_token(
-        data={"sub": str(current_user.id), "type": "mfa_setup", "backup_codes": backup_codes},
-        expires_delta=timedelta(minutes=15)  # 15-minute session
-    )
-    
-    # Store encrypted secret temporarily (not enabled yet)
-    current_user.mfa_secret = encrypt_mfa_secret(secret)
-    
-    # Store encrypted backup codes temporarily
-    from app.services.security import encrypt_backup_codes
-    current_user.mfa_backup_codes = encrypt_backup_codes(backup_codes)
-    
+    if not verify_password(password, current_user.password_hash):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Incorrect password.")
+
+    # Soft delete
+    db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
+                    action=AuditAction.USER_DELETED, resource_type="user",
+                    resource_id=str(current_user.id), status="success",
+                    details={"reason": "self-requested"}))
+    current_user.deleted_at   = datetime.utcnow()
+    current_user.is_active    = False
+    current_user.email        = f"deleted_{current_user.id}@deleted.phishcatcher"
+    current_user.password_hash = "deleted"
+    current_user.gmail_credentials = None
+    current_user.mfa_secret   = None
     await db.commit()
-    
-    # Log MFA setup initiation
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        user_email=current_user.email,
-        action=AuditAction.MFA_SETUP_INITIATED,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success"
-    )
-    db.add(audit_log)
-    await db.commit()
-    
-    logger.info(f"MFA setup initiated for {current_user.email}")
-    
-    return MFASetupResponse(
-        secret=secret,
-        qr_code=qr_code,
-        backup_codes=backup_codes,
-        mfa_session_token=mfa_session_token,  # Add session token for validation
-        instructions=(
-            "1. Scan the QR code with your authenticator app (Google Authenticator, Authy, etc.)\n"
-            "2. Or manually enter the secret key in your app\n"
-            "3. Enter the 6-digit code from your app to verify and enable MFA\n"
-            "4. Save the backup codes in a secure location for account recovery\n"
-            "5. This setup session expires in 15 minutes for security"
-        )
-    )
+    return {"message": "Account deleted successfully."}
 
 
-@router.post("/mfa/verify", response_model=dict)
-async def verify_mfa_setup(
-    request: Request,
-    verify_data: MFAVerifyRequest,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify MFA setup and enable MFA."""
-    # Rate limiting check
-    allowed, message = check_mfa_rate_limit(str(current_user.id), "verify", max_attempts=5, window_minutes=15)
-    if not allowed:
-        logger.warning(f"MFA verification rate limit exceeded for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=message
-        )
-    
-    if not current_user.mfa_secret:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="MFA setup not initiated"
-        )
-    
-    # Decrypt secret and verify token
+# ─── Google OAuth ─────────────────────────────────────────────────────────────
+
+@router.get("/google/url", response_model=GoogleAuthUrl)
+async def google_auth_url():
     try:
-        secret = decrypt_mfa_secret(current_user.mfa_secret)
-        if not verify_totp_token(secret, verify_data.token):
-            logger.warning(f"Invalid MFA token for setup verification: {current_user.email}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid verification code"
-            )
-    except Exception:
-        logger.error(f"Error decrypting MFA secret for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error verifying MFA setup"
-        )
-    
-    # Enable MFA and store backup codes
-    current_user.mfa_enabled = True
-    
-    # Store backup codes for account recovery (they were encrypted during setup)
-    if verify_data.backup_codes:
-        from app.services.security import encrypt_backup_codes
-        current_user.mfa_backup_codes = encrypt_backup_codes(verify_data.backup_codes)
-        current_user.mfa_backup_codes_used = []  # Initialize empty array for used codes
-    
-    # Clear rate limit on successful verification
-    clear_mfa_rate_limit(str(current_user.id), "verify")
-    
-    await db.commit()
-    
-    # Log MFA enable
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        user_email=current_user.email,
-        action=AuditAction.MFA_ENABLED,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success"
-    )
-    db.add(audit_log)
-    await db.commit()
-    
-    logger.info(f"MFA enabled for {current_user.email}")
-    
-    return {"message": "MFA enabled successfully"}
+        result = google_oauth_service.get_auth_url()
+        return GoogleAuthUrl(auth_url=result["auth_url"], state=result["state"])
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
 
 
-@router.post("/mfa/enable", response_model=dict)
-async def enable_mfa(
-    request: Request,
-    enable_data: MFAEnableRequest,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+@router.post("/google/callback")
+async def google_callback(
+    body:  GoogleCallback,
+    db:    AsyncSession = Depends(get_db),
+    redis  = Depends(get_redis),
 ):
-    """Enable MFA with verification token."""
-    if not current_user.mfa_secret:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="MFA setup not completed"
-        )
-    
-    # Verify token
-    try:
-        secret = decrypt_mfa_secret(current_user.mfa_secret)
-        if not verify_totp_token(secret, enable_data.token):
-            logger.warning(f"Invalid MFA token for enable: {current_user.email}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid verification code"
-            )
-    except Exception:
-        logger.error(f"Error verifying MFA token for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error enabling MFA"
-        )
-    
-    # Enable MFA
-    current_user.mfa_enabled = True
-    await db.commit()
-    
-    # Log MFA enable
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        user_email=current_user.email,
-        action=AuditAction.MFA_ENABLED,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success"
-    )
-    db.add(audit_log)
-    await db.commit()
-    
-    logger.info(f"MFA enabled for {current_user.email}")
-    
-    return {"message": "MFA enabled successfully"}
+    token_data = await google_oauth_service.handle_oauth_callback(body.code, body.state)
+    if not token_data.get("success"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            token_data.get("error", "Google authentication failed."))
 
+    result = await db.execute(select(User).where(User.email == token_data["email"]))
+    user   = result.scalar_one_or_none()
 
-@router.post("/mfa/disable", response_model=dict)
-async def disable_mfa(
-    request: Request,
-    disable_data: MFADisableRequest,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Disable MFA."""
-    logger.info(f"MFA disable attempt for user: {current_user.email}")
-    
-    # Check if user is an OAuth user
-    is_oauth_user = (
-        current_user.gmail_credentials is not None or 
-        current_user.gmail_email is not None or
-        (current_user.password_hash and current_user.password_hash.startswith('$2b$12$kMMqwecAe9x2ubhZ.IH2Le'))
-    )
-    
-    # For regular users, verify password first
-    if not is_oauth_user:
-        if not verify_password(disable_data.password, current_user.password_hash):
-            logger.warning(f"Invalid password for MFA disable attempt: {current_user.email}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid password"
-            )
-        logger.info(f"Password verified for MFA disable: {current_user.email}")
-    else:
-        logger.info(f"OAuth user {current_user.email} disabling MFA - password verification skipped")
-    
-    # Verify current MFA token (required for all users)
-    if current_user.mfa_enabled and current_user.mfa_secret:
-        try:
-            secret = decrypt_mfa_secret(current_user.mfa_secret)
-            logger.info(f"MFA secret decrypted for disable: {current_user.email}")
-            
-            if not verify_totp_token(secret, disable_data.token):
-                logger.warning(f"Invalid MFA token for disable: {current_user.email}")
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid verification code. Please enter the current 6-digit code from your authenticator app."
-                )
-            
-            logger.info(f"MFA token verified for disable: {current_user.email}")
-        except Exception as e:
-            logger.error(f"Error verifying MFA token for disable: {current_user.email}, error: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error disabling MFA"
-            )
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="MFA is not currently enabled"
+    if not user:
+        # New user – create pending account and require activation
+        user = User(
+            email=token_data["email"],
+            normalized_email=normalize_email(token_data["email"]),
+            password_hash=get_password_hash(secrets.token_urlsafe(32)),
+            full_name=token_data.get("name"),
+            email_verified=True,
+            account_status="pending",
         )
-    
-    # Disable MFA
-    current_user.mfa_enabled = False
-    current_user.mfa_secret = None
-    await db.commit()
-    
-    logger.info(f"MFA disabled in database for: {current_user.email}")
-    
-    # Log MFA disable
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        user_email=current_user.email,
-        action=AuditAction.MFA_DISABLED,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success"
-    )
-    db.add(audit_log)
-    await db.commit()
-    
-    logger.info(f"MFA disabled successfully for {current_user.email}")
-    
-    return {"message": "MFA disabled successfully"}
+        db.add(user)
+        await db.flush()
 
+        token = await activation_service.generate_activation_token(str(user.id))
+        code  = await activation_service.generate_activation_code(str(user.id))
+        await activation_service.send_activation_email(
+            user_email=user.email,
+            user_name=user.full_name or user.email.split("@")[0],
+            user_id=str(user.id),
+            activation_token=token,
+            activation_code=code,
+        )
+        await db.commit()
+        return {
+            "activation_required": True,
+            "email":     user.email,
+            "full_name": user.full_name,
+            "message":   "Please check your email for activation instructions.",
+        }
 
-@router.post("/mfa/verify-backup-code", response_model=dict)
-async def verify_backup_code(
-    request: Request,
-    backup_data: dict,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify MFA backup code for login or recovery."""
-    backup_code = backup_data.get("backup_code")
-    
-    # Rate limiting check
-    allowed, message = check_mfa_rate_limit(str(current_user.id), "backup_code", max_attempts=3, window_minutes=60)
-    if not allowed:
-        logger.warning(f"Backup code verification rate limit exceeded for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=message
+    if user.account_status == "pending":
+        # Existing but not activated – resend activation
+        token = await activation_service.generate_activation_token(str(user.id))
+        code  = await activation_service.generate_activation_code(str(user.id))
+        await activation_service.send_activation_email(
+            user_email=user.email,
+            user_name=user.full_name or user.email.split("@")[0],
+            user_id=str(user.id),
+            activation_token=token,
+            activation_code=code,
         )
-    
-    if not backup_code:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Backup code is required"
+        return {
+            "activation_required": True,
+            "email":     user.email,
+            "full_name": user.full_name,
+            "message":   "Your account is pending activation. Check your email.",
+        }
+
+    if user.mfa_enabled:
+        mfa_token = create_mfa_session_token(
+            data={"sub": str(user.id), "type": "mfa_session"},
+            expires_delta=timedelta(minutes=10),
         )
-    
-    if not current_user.mfa_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="MFA is not enabled for this account"
-        )
-    
-    # Check if backup codes exist
-    if not current_user.mfa_backup_codes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No backup codes available for this account"
-        )
-    
-    # Decrypt backup codes
-    try:
-        from app.services.security import decrypt_backup_codes
-        backup_codes = decrypt_backup_codes(current_user.mfa_backup_codes)
-    except Exception:
-        logger.error(f"Error decrypting backup codes for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error verifying backup code"
-        )
-    
-    # Normalize backup code (remove spaces, make uppercase)
-    normalized_code = backup_code.replace(" ", "").upper()
-    
-    # Check if code is valid
-    if normalized_code not in backup_codes:
-        logger.warning(f"Invalid backup code attempted for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid backup code"
-        )
-    
-    # Check if code has already been used
-    if current_user.mfa_backup_codes_used and normalized_code in current_user.mfa_backup_codes_used:
-        logger.warning(f"Already used backup code attempted for {current_user.email}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Backup code has already been used"
-        )
-    
-    # Mark backup code as used
-    if not current_user.mfa_backup_codes_used:
-        current_user.mfa_backup_codes_used = []
-    
-    current_user.mfa_backup_codes_used.append(normalized_code)
-    
-    # Remove from available codes and re-encrypt
-    backup_codes.remove(normalized_code)
-    from app.services.security import encrypt_backup_codes
-    current_user.mfa_backup_codes = encrypt_backup_codes(backup_codes)
-    
-    # Generate new tokens for successful authentication
-    from app.services.security import create_access_token, create_refresh_token
-    
-    access_token = create_access_token(data={"sub": str(current_user.id)})
-    refresh_token = create_refresh_token(data={"sub": str(current_user.id)})
-    
-    # Clear rate limit on successful verification
-    clear_mfa_rate_limit(str(current_user.id), "backup_code")
-    
-    await db.commit()
-    
-    # Log backup code usage
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        user_email=current_user.email,
-        action=AuditAction.MFA_BACKUP_CODE_USED,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        status="success"
-    )
-    db.add(audit_log)
-    await db.commit()
-    
-    logger.info(f"Backup code verified successfully for {current_user.email}")
-    
+        return {"mfa_required": True, "mfa_session_token": mfa_token,
+                "user": {"id": str(user.id), "email": user.email,
+                         "full_name": user.full_name, "role": user.role}}
+
+    # Active user without MFA → issue tokens
+    access_token  = create_access_token({"sub": str(user.id)})
+    refresh_token = create_refresh_token({"sub": str(user.id)})
+    session_mgr   = get_session_manager(redis)
+    await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
+                                     ip_address="oauth", user_agent="Google OAuth")
     return {
-        "success": True,
-        "message": "Backup code verified successfully",
-        "access_token": access_token,
+        "access_token":  access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user": {
-            "id": str(current_user.id),
-            "email": current_user.email,
-            "full_name": current_user.full_name,
-            "role": current_user.role,
-            "mfa_enabled": current_user.mfa_enabled
-        },
-        "remaining_backup_codes": len(current_user.mfa_backup_codes) if current_user.mfa_backup_codes else 0
+        "token_type":    "bearer",
+        "user": {"id": str(user.id), "email": user.email,
+                 "full_name": user.full_name, "role": user.role},
     }
 
 
+# ─── MFA ─────────────────────────────────────────────────────────────────────
+
 @router.get("/mfa/status", response_model=MFAStatusResponse)
-async def get_mfa_status(
-    current_user: User = Depends(get_current_active_user)
-):
-    """Get MFA status for current user."""
+async def mfa_status(current_user: User = Depends(get_current_active_user)):
     return MFAStatusResponse(
         enabled=current_user.mfa_enabled,
         setup_completed=bool(current_user.mfa_secret),
-        has_backup_codes=False  # TODO: Implement backup codes storage
+        has_backup_codes=bool(current_user.mfa_backup_codes),
     )
+
+
+@router.post("/mfa/setup", response_model=MFASetupResponse)
+async def mfa_setup(
+    request:      Request,
+    _:            MFASetupRequest,
+    current_user: User = Depends(get_current_active_user),
+    db:           AsyncSession = Depends(get_db),
+):
+    allowed, msg = check_mfa_rate_limit(str(current_user.id), "setup", max_attempts=3, window_minutes=30)
+    if not allowed:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, msg)
+
+    secret  = generate_totp_secret()
+    uri     = generate_totp_uri(secret, current_user.email)
+    qr_code = generate_qr_code(uri)
+    backup_codes = [generate_otp(8) for _ in range(12)]
+
+    mfa_session = create_mfa_session_token(
+        data={"sub": str(current_user.id), "type": "mfa_setup"},
+        expires_delta=timedelta(minutes=15),
+    )
+
+    current_user.mfa_secret      = encrypt_mfa_secret(secret)
+    current_user.mfa_backup_codes = encrypt_backup_codes(backup_codes)
+    db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
+                    action=AuditAction.MFA_SETUP_INITIATED, status="success"))
+    await db.commit()
+
+    return MFASetupResponse(
+        secret=secret, qr_code=qr_code, backup_codes=backup_codes,
+        mfa_session_token=mfa_session,
+        instructions=(
+            "1. Scan the QR code with your authenticator app.\n"
+            "2. Enter the 6-digit code below to enable MFA.\n"
+            "3. Save your backup codes in a secure place."
+        ),
+    )
+
+
+@router.post("/mfa/verify")
+async def mfa_verify(
+    request: Request,
+    body:    MFAVerification,
+    db:      AsyncSession = Depends(get_db),
+    redis    = Depends(get_redis),
+):
+    """
+    Dual-purpose:
+    - Called during login flow (with mfa_session_token issued at login/OTP).
+    - Called during MFA setup (with token from /mfa/setup).
+    Returns tokens on success (login) or {"message": "MFA enabled"} (setup).
+    """
+    payload = verify_token(body.mfa_session_token, token_type="mfa_session")
+    if not payload:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired MFA session.")
+
+    user_id = payload.get("sub")
+    flow    = payload.get("type", "mfa_session")  # "mfa_session" | "mfa_setup"
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user   = result.scalar_one_or_none()
+    if not user or not user.mfa_secret:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA not configured for this account.")
+
+    secret   = decrypt_mfa_secret(user.mfa_secret)
+    is_valid = verify_totp_token(secret, body.code)
+    if not is_valid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid MFA code.")
+
+    # --- Setup flow ---
+    if flow == "mfa_setup":
+        user.mfa_enabled = True
+        clear_mfa_rate_limit(str(user.id), "setup")
+        db.add(AuditLog(user_id=user.id, user_email=user.email,
+                        action=AuditAction.MFA_ENABLED, status="success"))
+        await db.commit()
+        return {"message": "MFA enabled successfully."}
+
+    # --- Login flow ---
+    access_token  = create_access_token({"sub": str(user.id)})
+    refresh_token = create_refresh_token({"sub": str(user.id)})
+    session_mgr   = get_session_manager(redis)
+    await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
+                                     ip_address=request.client.host if request.client else None,
+                                     user_agent=request.headers.get("user-agent", ""))
+    db.add(AuditLog(user_id=user.id, user_email=user.email,
+                    action=AuditAction.MFA_SUCCESS, status="success"))
+    await db.commit()
+    return OTPVerificationResponse(
+        mfa_required=False,
+        access_token=access_token, refresh_token=refresh_token, token_type="bearer",
+        user={"id": str(user.id), "email": user.email,
+              "full_name": user.full_name, "role": user.role},
+    )
+
+
+@router.post("/mfa/enable")
+async def mfa_enable(
+    request:      Request,
+    body:         MFAEnableRequest,
+    current_user: User = Depends(get_current_active_user),
+    db:           AsyncSession = Depends(get_db),
+):
+    if not current_user.mfa_secret:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA setup not completed.")
+    secret = decrypt_mfa_secret(current_user.mfa_secret)
+    if not verify_totp_token(secret, body.token):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid verification code.")
+    current_user.mfa_enabled = True
+    db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
+                    action=AuditAction.MFA_ENABLED, status="success"))
+    await db.commit()
+    return {"message": "MFA enabled."}
+
+
+@router.post("/mfa/disable")
+async def mfa_disable(
+    request:      Request,
+    body:         MFADisableRequest,
+    current_user: User = Depends(get_current_active_user),
+    db:           AsyncSession = Depends(get_db),
+):
+    if not current_user.mfa_enabled or not current_user.mfa_secret:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA is not currently enabled.")
+
+    # Verify TOTP token always required
+    secret = decrypt_mfa_secret(current_user.mfa_secret)
+    if not verify_totp_token(secret, body.token):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Invalid authenticator code. Enter the current 6-digit code from your app.")
+
+    # Password required only for non-OAuth users
+    is_oauth = bool(current_user.gmail_credentials or current_user.gmail_email)
+    if not is_oauth and not verify_password(body.password, current_user.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid password.")
+
+    current_user.mfa_enabled  = False
+    current_user.mfa_secret   = None
+    db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
+                    action=AuditAction.MFA_DISABLED, status="success"))
+    await db.commit()
+    return {"message": "MFA disabled."}
+
+
+@router.post("/mfa/verify-backup-code")
+async def verify_backup_code(
+    request:      Request,
+    body:         dict,
+    current_user: User = Depends(get_current_active_user),
+    db:           AsyncSession = Depends(get_db),
+    redis         = Depends(get_redis),
+):
+    code = body.get("backup_code", "")
+    allowed, msg = check_mfa_rate_limit(str(current_user.id), "backup_code",
+                                        max_attempts=3, window_minutes=60)
+    if not allowed:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, msg)
+
+    if not current_user.mfa_enabled or not current_user.mfa_backup_codes:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA / backup codes not configured.")
+
+    codes      = decrypt_backup_codes(current_user.mfa_backup_codes)
+    normalized = code.replace(" ", "").upper()
+    if normalized not in codes:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid backup code.")
+    used = current_user.mfa_backup_codes_used or []
+    if normalized in used:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Backup code already used.")
+
+    # Mark used
+    codes.remove(normalized)
+    current_user.mfa_backup_codes      = encrypt_backup_codes(codes)
+    current_user.mfa_backup_codes_used = [*used, normalized]
+    clear_mfa_rate_limit(str(current_user.id), "backup_code")
+
+    access_token  = create_access_token({"sub": str(current_user.id)})
+    refresh_token = create_refresh_token({"sub": str(current_user.id)})
+    session_mgr   = get_session_manager(redis)
+    await session_mgr.create_session(user_id=str(current_user.id), user_email=current_user.email,
+                                     ip_address=request.client.host if request.client else None,
+                                     user_agent=request.headers.get("user-agent", ""))
+
+    db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
+                    action=AuditAction.MFA_BACKUP_CODE_USED, status="success"))
+    await db.commit()
+    return {
+        "success":       True,
+        "access_token":  access_token,
+        "refresh_token": refresh_token,
+        "token_type":    "bearer",
+        "user": {"id": str(current_user.id), "email": current_user.email,
+                 "full_name": current_user.full_name, "role": current_user.role},
+        "remaining_backup_codes": len(codes),
+    }

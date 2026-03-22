@@ -1,72 +1,47 @@
+/**
+ * ModelManagement.jsx
+ * Admin page: AI model metrics, version info, and retrain trigger.
+ */
+
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { 
-  Brain, 
-  ArrowLeft,
-  RefreshCw,
-  Loader2,
-  CheckCircle,
-  AlertTriangle,
-  BarChart3,
-  Clock,
-  Database,
-  Zap,
-  Play,
-  Settings,
-  FileText,
-  ChevronRight
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Database, RefreshCw, Loader2, Activity, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { adminApi } from '@/lib/api';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
 
 export default function ModelManagement() {
-  const [modelInfo, setModelInfo] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [model,      setModel]      = useState(null);
+  const [loading,    setLoading]    = useState(true);
   const [retraining, setRetraining] = useState(false);
-  const [showRetrainDialog, setShowRetrainDialog] = useState(false);
+  const [error,      setError]      = useState('');
 
-  const fetchModelInfo = async () => {
+  const fetchModel = async () => {
     try {
-      setLoading(true);
       const data = await adminApi.getModelInfo();
-      setModelInfo(data);
-    } catch (error) {
-      toast.error('Failed to load model information');
-      console.error('Error fetching model info:', error);
-    } finally {
-      setLoading(false);
+      setModel(data);
+    } catch (err) {
+      setError(err.message ?? 'Failed to load model info');
     }
   };
 
   useEffect(() => {
-    fetchModelInfo();
+    fetchModel().finally(() => setLoading(false));
   }, []);
 
-  const handleRetrainModel = async () => {
+  const handleRetrain = async () => {
+    if (!window.confirm(
+      'Start model retraining? This will use all current analysis data and may take 5–20 minutes.\n\nThe model will remain operational during retraining.'
+    )) return;
+
+    setRetraining(true);
     try {
-      setRetraining(true);
-      setShowRetrainDialog(false);
       await adminApi.retrainModel();
-      toast.success('Model retraining has been queued. This may take several minutes.');
-    } catch (error) {
-      toast.error('Failed to start model retraining');
+      toast.success('Retraining job started!');
+      // Poll for updates
+      setTimeout(async () => {
+        await fetchModel();
+      }, 3000);
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to start retraining');
     } finally {
       setRetraining(false);
     }
@@ -74,264 +49,144 @@ export default function ModelManagement() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <Loader2 className="w-8 h-8 animate-spin text-violet-400" />
+      <div className="flex items-center justify-center py-24">
+        <Loader2 className="w-6 h-6 animate-spin" style={{ color: 'var(--brand)' }} />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <Button variant="outline" size="icon" className="bg-transparent border-violet-500/25" asChild>
-            <Link to="/admin">
-              <ArrowLeft className="w-4 h-4" />
-            </Link>
-          </Button>
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-heading font-bold text-white">ML Model Management</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Manage phishing detection model
-            </p>
+    <div className="max-w-2xl animate-fade-in">
+      <div className="page-header">
+        <h1 className="page-title">AI Model Management</h1>
+        <p className="page-subtitle">Monitor and retrain the phishing detection model</p>
+      </div>
+
+      {error && <div className="alert-error mb-6">{error}</div>}
+
+      {model && (
+        <div className="space-y-5">
+
+          {/* Status banner */}
+          <div
+            className="rounded-2xl p-5 flex items-center gap-4"
+            style={{
+              background: model.status === 'active' ? 'var(--success-dim)' : 'var(--threat-dim)',
+              border: `1px solid ${model.status === 'active' ? 'var(--success)' : 'var(--threat)'}`,
+            }}
+          >
+            <div
+              className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0"
+              style={{
+                background: model.status === 'active' ? 'var(--success)' : 'var(--threat)',
+                color: '#fff',
+              }}
+            >
+              <Database className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="font-heading font-700 text-base" style={{ color: 'var(--text-primary)' }}>
+                Model v{model.version ?? '—'} — {model.status ?? 'unknown'}
+              </p>
+              <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                {model.algorithm ?? 'Unknown algorithm'} ·
+                Last trained: {model.last_trained ? new Date(model.last_trained).toLocaleDateString() : '—'}
+              </p>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <Button 
-            variant="outline" 
-            className="bg-transparent border-violet-500/25 text-white"
-            onClick={fetchModelInfo}
-            disabled={loading}
-          >
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-          <Button 
-            className="bg-violet-500 hover:bg-violet-600"
-            onClick={() => setShowRetrainDialog(true)}
-            disabled={retraining}
-          >
-            {retraining ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Play className="w-4 h-4 mr-2" />
-            )}
-            Retrain Model
-          </Button>
-        </div>
-      </div>
 
-      {/* Model Status Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="glass-card border-violet-500/15">
-          <CardHeader className="pb-2">
-            <CardDescription className="text-muted-foreground">Model Status</CardDescription>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <CheckCircle className="w-5 h-5 text-teal-400" />
-              <span className="text-white">Active</span>
-            </CardTitle>
-          </CardHeader>
-        </Card>
-
-        <Card className="glass-card border-violet-500/15">
-          <CardHeader className="pb-2">
-            <CardDescription className="text-muted-foreground">Accuracy</CardDescription>
-            <CardTitle className="text-lg text-white">
-              {modelInfo?.accuracy ? `${(modelInfo.accuracy * 100).toFixed(1)}%` : 'N/A'}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-
-        <Card className="glass-card border-violet-500/15">
-          <CardHeader className="pb-2">
-            <CardDescription className="text-muted-foreground">Training Samples</CardDescription>
-            <CardTitle className="text-lg text-white">
-              {modelInfo?.training_samples?.toLocaleString() || 'N/A'}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-
-        <Card className="glass-card border-violet-500/15">
-          <CardHeader className="pb-2">
-            <CardDescription className="text-muted-foreground">Model Version</CardDescription>
-            <CardTitle className="text-lg text-white">
-              {modelInfo?.version || 'N/A'}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-      </div>
-
-      {/* Model Details */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Model Information */}
-        <Card className="glass-card border-violet-500/15">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <Brain className="w-5 h-5 text-violet-400" />
-              Model Information
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Current model configuration and metadata
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">Algorithm</span>
-              <span className="text-sm font-medium text-white">{modelInfo?.algorithm || 'Gradient Boosting'}</span>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">Features</span>
-              <span className="text-sm font-medium text-white">{modelInfo?.feature_count || 'N/A'}</span>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">Last Training</span>
-              <span className="text-sm font-medium text-white">
-                {modelInfo?.last_training_date ? new Date(modelInfo.last_training_date).toLocaleDateString() : 'N/A'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">Model Size</span>
-              <span className="text-sm font-medium text-white">{modelInfo?.model_size || 'N/A'}</span>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Performance Metrics */}
-        <Card className="glass-card border-violet-500/15">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-teal-400" />
+          {/* Performance metrics */}
+          <div className="card p-6">
+            <h2 className="font-heading font-700 text-base mb-4" style={{ color: 'var(--text-primary)' }}>
               Performance Metrics
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Model performance on test dataset
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">Precision</span>
-              <span className="text-sm font-medium text-white">
-                {modelInfo?.precision ? `${(modelInfo.precision * 100).toFixed(1)}%` : 'N/A'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">Recall</span>
-              <span className="text-sm font-medium text-white">
-                {modelInfo?.recall ? `${(modelInfo.recall * 100).toFixed(1)}%` : 'N/A'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">F1 Score</span>
-              <span className="text-sm font-medium text-white">
-                {modelInfo?.f1_score ? `${(modelInfo.f1_score * 100).toFixed(1)}%` : 'N/A'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-violet-500/10">
-              <span className="text-sm text-muted-foreground">AUC-ROC</span>
-              <span className="text-sm font-medium text-white">
-                {modelInfo?.auc_roc ? `${(modelInfo.auc_roc * 100).toFixed(1)}%` : 'N/A'}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Quick Actions */}
-      <Card className="glass-card border-violet-500/15">
-        <CardHeader>
-          <CardTitle className="text-white flex items-center gap-2">
-            <Zap className="w-5 h-5 text-amber-400" />
-            Quick Actions
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Button 
-              variant="outline" 
-              className="h-auto py-4 flex flex-col items-start gap-2 bg-transparent border-violet-500/25 hover:bg-violet-500/10"
-              onClick={() => setShowRetrainDialog(true)}
-            >
-              <Play className="w-5 h-5 text-violet-400" />
-              <div className="text-left">
-                <p className="font-medium text-white">Retrain Model</p>
-                <p className="text-xs text-muted-foreground">Start full model retraining</p>
-              </div>
-            </Button>
-
-            <Button 
-              variant="outline" 
-              className="h-auto py-4 flex flex-col items-start gap-2 bg-transparent border-violet-500/25 hover:bg-violet-500/10"
-              asChild
-            >
-              <Link to="/admin">
-                <BarChart3 className="w-5 h-5 text-teal-400" />
-                <div className="text-left">
-                  <p className="font-medium text-white">View Statistics</p>
-                  <p className="text-xs text-muted-foreground">See system-wide stats</p>
+            </h2>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Accuracy',  value: model.accuracy  ? `${(model.accuracy  * 100).toFixed(2)}%` : '—', color: 'var(--success)' },
+                { label: 'Precision', value: model.precision ? `${(model.precision * 100).toFixed(2)}%` : '—', color: 'var(--brand)'   },
+                { label: 'Recall',    value: model.recall    ? `${(model.recall    * 100).toFixed(2)}%` : '—', color: 'var(--brand)'   },
+                { label: 'F1 Score',  value: model.f1_score  ? model.f1_score.toFixed(4)               : '—', color: 'var(--success)' },
+              ].map(s => (
+                <div key={s.label} className="rounded-xl p-4"
+                  style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                  <p className="text-xs font-700 uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>
+                    {s.label}
+                  </p>
+                  <p className="font-heading font-700 text-2xl" style={{ color: s.color }}>{s.value}</p>
                 </div>
-              </Link>
-            </Button>
+              ))}
+            </div>
 
-            <Button 
-              variant="outline" 
-              className="h-auto py-4 flex flex-col items-start gap-2 bg-transparent border-violet-500/25 hover:bg-violet-500/10"
-            >
-              <FileText className="w-5 h-5 text-pink-400" />
-              <div className="text-left">
-                <p className="font-medium text-white">Export Report</p>
-                <p className="text-xs text-muted-foreground">Download model report</p>
+            {/* Accuracy bar */}
+            {model.accuracy && (
+              <div className="mt-5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-600 uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                    Overall accuracy
+                  </span>
+                  <span className="font-heading font-700 text-sm" style={{ color: 'var(--success)' }}>
+                    {(model.accuracy * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div className="h-3 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                  <div
+                    className="h-full rounded-full transition-all duration-700"
+                    style={{ width: `${model.accuracy * 100}%`, background: 'var(--success)' }}
+                  />
+                </div>
               </div>
-            </Button>
+            )}
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Retrain Confirmation Dialog */}
-      <Dialog open={showRetrainDialog} onOpenChange={setShowRetrainDialog}>
-        <DialogContent className="glass-card border-violet-500/25">
-          <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-amber-400" />
-              Retrain Model
-            </DialogTitle>
-            <DialogDescription className="text-muted-foreground">
-              Are you sure you want to retrain the model? This process may take several minutes and will use significant computational resources.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Clock className="w-4 h-4" />
-              <span>Estimated time: 10-30 minutes</span>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Database className="w-4 h-4" />
-              <span>Will use latest training data</span>
+          {/* Model info */}
+          <div className="card p-6">
+            <h2 className="font-heading font-700 text-base mb-4" style={{ color: 'var(--text-primary)' }}>
+              Model Information
+            </h2>
+            <div className="space-y-0"
+              style={{ borderTop: '1px solid var(--border)' }}>
+              {[
+                { label: 'Version',            value: model.version        ?? '—' },
+                { label: 'Algorithm',          value: model.algorithm      ?? '—' },
+                { label: 'Training samples',   value: model.training_samples ? model.training_samples.toLocaleString() : '—' },
+                { label: 'Model size',         value: model.model_size     ?? '—' },
+                { label: 'Feature count',      value: model.feature_count  ?? '—' },
+                { label: 'Last trained',       value: model.last_trained   ? new Date(model.last_trained).toLocaleString() : '—' },
+                { label: 'Status',             value: model.status         ?? '—' },
+              ].map(row => (
+                <div key={row.label} className="flex gap-4 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span className="text-xs font-600 uppercase tracking-wide w-36 shrink-0 pt-0.5"
+                    style={{ color: 'var(--text-muted)' }}>
+                    {row.label}
+                  </span>
+                  <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{row.value}</span>
+                </div>
+              ))}
             </div>
           </div>
-          <DialogFooter>
-            <Button 
-              variant="outline" 
-              onClick={() => setShowRetrainDialog(false)}
-              className="bg-transparent border-violet-500/25"
-            >
-              Cancel
-            </Button>
-            <Button 
-              onClick={handleRetrainModel}
-              className="bg-violet-500 hover:bg-violet-600"
+
+          {/* Retrain */}
+          <div className="card p-6">
+            <h2 className="font-heading font-700 text-base mb-1" style={{ color: 'var(--text-primary)' }}>
+              Retrain Model
+            </h2>
+            <p className="text-sm mb-5" style={{ color: 'var(--text-muted)' }}>
+              Trigger a full retraining using all current analysis data. The model stays operational during training.
+              Retraining typically takes 5–20 minutes depending on dataset size.
+            </p>
+            <button
+              onClick={handleRetrain}
               disabled={retraining}
+              className="btn-primary h-10"
             >
-              {retraining ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="w-4 h-4 mr-2" />
-              )}
-              Start Retraining
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {retraining
+                ? <><Loader2 className="w-4 h-4 animate-spin" />Retraining in progress…</>
+                : <><RefreshCw className="w-4 h-4" />Start retraining</>
+              }
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

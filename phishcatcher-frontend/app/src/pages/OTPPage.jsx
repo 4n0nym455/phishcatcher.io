@@ -1,288 +1,242 @@
-import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { Shield, Key, ArrowRight, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
-import { authApi, setTokens } from "@/lib/api"; // Add this import
-import LoadingOrb from "@/components/LoadingOrb";
+/**
+ * OTPPage.jsx
+ * Step 2 of email+password login flow.
+ * Receives: { email, mfaRequired, mfaSessionToken, from } via router state.
+ * 6-character alphanumeric OTP input with auto-advance, paste, backspace navigation, resend countdown.
+ */
 
-export default function OTPPage({ onVerify }) {
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
+import { ArrowLeft, Mail, RefreshCw, Loader2, ArrowRight } from 'lucide-react';
+import { toast } from 'sonner';
+import { authApi } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
+
+const OTP_LEN    = 6;
+const RESEND_SEC = 60;
+
+export default function OTPPage() {
   const navigate = useNavigate();
-  const [otp, setOtp] = useState(["", "", "", "", "", ""]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [countdown, setCountdown] = useState(60);
-  const [canResend, setCanResend] = useState(false);
+  const location = useLocation();
+  const { loginWithTokens } = useAuth();
+
+  const {
+    email           = '',
+    from            = '/dashboard',
+  } = location.state ?? {};
+
+  const [digits,    setDigits]    = useState(Array(OTP_LEN).fill(''));
+  const [loading,   setLoading]   = useState(false);
+  const [resending, setResending] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const [error,     setError]     = useState('');
   const inputRefs = useRef([]);
 
-  const email = localStorage.getItem("phishcatcher_email") || "your email";
-
+  // Guard: no email → redirect to login
   useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    } else {
-      setCanResend(true);
-    }
+    if (!email) navigate('/login', { replace: true });
+  }, [email, navigate]);
+
+  // Countdown timer
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const id = setTimeout(() => setCountdown(c => c - 1), 1000);
+    return () => clearTimeout(id);
   }, [countdown]);
 
+  // Auto-focus first box
   useEffect(() => {
     inputRefs.current[0]?.focus();
   }, []);
 
-  const handleChange = (index, value) => {
-    if (value.length > 1) return;
+  const otp = digits.join('');
 
-    const newOtp = [...otp];
-    newOtp[index] = value;
-    setOtp(newOtp);
+  /* ─── Input handlers ─────────────────────────────────────────────────── */
+  const focusAt = idx => inputRefs.current[idx]?.focus();
 
-    if (value && index < 5) {
-      inputRefs.current[index + 1]?.focus();
-    }
+  const handleChange = (idx, val) => {
+    const v = val.replace(/[^a-zA-Z0-9]/g, '');
+    if (!v && val) return; // reject non-alphanumeric
+    const next = [...digits];
+    next[idx] = v.slice(-1);
+    setDigits(next);
+    if (v && idx < OTP_LEN - 1) focusAt(idx + 1);
+  };
 
-    if (index === 5 && value) {
-      const fullOtp = [...newOtp.slice(0, 5), value].join("");
-      if (fullOtp.length === 6) {
-        handleVerify(fullOtp);
+  const handleKeyDown = (idx, e) => {
+    if (e.key === 'Backspace') {
+      if (digits[idx]) {
+        const next = [...digits]; next[idx] = ''; setDigits(next);
+      } else if (idx > 0) {
+        focusAt(idx - 1);
       }
-    }
+    } else if (e.key === 'ArrowLeft'  && idx > 0)          focusAt(idx - 1);
+    else if   (e.key === 'ArrowRight' && idx < OTP_LEN - 1) focusAt(idx + 1);
   };
 
-  const handleKeyDown = (index, e) => {
-    if (e.key === "Backspace" && !otp[index] && index > 0) {
-      inputRefs.current[index - 1]?.focus();
-    }
-  };
-
-  const handlePaste = (e) => {
+  const handlePaste = e => {
     e.preventDefault();
-    const pastedData = e.clipboardData.getData('text').trim().toUpperCase();
-    
-    // Remove any non-alphanumeric characters and take first 6 characters
-    const cleanOtp = pastedData.replace(/[^A-Z0-9]/g, '').slice(0, 6);
-    
-    if (cleanOtp.length === 6) {
-      // Fill all inputs with the pasted OTP
-      const newOtp = cleanOtp.split('');
-      setOtp(newOtp);
-      
-      // Focus the last input
-      inputRefs.current[5]?.focus();
-      
-      // Auto-verify the pasted OTP
-      handleVerify(cleanOtp);
-    } else if (cleanOtp.length > 0) {
-      // Fill available inputs with pasted characters
-      const newOtp = [...otp];
-      for (let i = 0; i < Math.min(cleanOtp.length, 6); i++) {
-        newOtp[i] = cleanOtp[i];
-      }
-      setOtp(newOtp);
-      
-      // Focus the next empty input or the last filled one
-      const nextEmptyIndex = newOtp.findIndex(digit => !digit);
-      const focusIndex = nextEmptyIndex === -1 ? 5 : nextEmptyIndex;
-      inputRefs.current[focusIndex]?.focus();
-    }
+    const text = e.clipboardData.getData('text').replace(/[^a-zA-Z0-9]/g, '').slice(0, OTP_LEN);
+    if (!text) return;
+    const next = Array(OTP_LEN).fill('');
+    text.split('').forEach((c, i) => { next[i] = c; });
+    setDigits(next);
+    focusAt(Math.min(text.length, OTP_LEN - 1));
+    // Auto-submit if fully filled
+    if (text.length === OTP_LEN) submit(text);
   };
 
-  const handleVerify = async (code) => {
-    setIsLoading(true);
-
+  /* ─── Submit ─────────────────────────────────────────────────────────── */
+  const submit = async code => {
+    setError('');
+    setLoading(true);
     try {
-      // Call backend to verify OTP
       const data = await authApi.verifyOTP(email, code);
-      
-      // Check if MFA is required
       if (data.mfa_required) {
-        // Store MFA session token and redirect to MFA verification
-        localStorage.setItem('mfa_session_token', data.mfa_session_token);
-        localStorage.setItem('mfa_user', JSON.stringify(data.user));
-        toast.success("OTP verified! Please enter your MFA code.");
-        navigate("/mfa-verification");
-        return;
-      }
-      
-      // Store tokens (non-MFA users)
-      if (data.access_token) {
-        // Store tokens
-        setTokens(data);
-        
-        // Store user data in localStorage for App.jsx to pick up
-        localStorage.setItem('phishcatcher_role', data.user.role);
-        localStorage.setItem('phishcatcher_email', data.user.email);
-        
-        // Trigger App.jsx loading state
-        window.dispatchEvent(new CustomEvent('auth-success'));
-        
-        toast.success("Successfully logged in!");
-        navigate('/dashboard');
-      }
-      onVerify?.(); // Call to parent handler to update auth state
-      navigate("/dashboard");
-    } catch (error) {
-      toast.error(error.message || "Invalid verification code");
-      // Clear inputs on error
-      setOtp(["", "", "", "", "", ""]);
-      inputRefs.current[0]?.focus();
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    const code = otp.join("");
-    if (code.length === 6) {
-      handleVerify(code);
-    } else {
-      toast.error("Please enter all 6 characters");
-    }
-  };
-
-  const handleResend = async () => {
-    if (!canResend) return;
-
-    try {
-      setIsLoading(true);
-      await authApi.resendOTP(email);
-      toast.success("New code sent to your email");
-      
-      // Reset countdown
-      setCountdown(60);
-      setCanResend(false);
-      
-      // Clear current OTP
-      setOtp(["", "", "", "", "", ""]);
-      if (inputRefs.current[0]) {
-        inputRefs.current[0].focus();
-      }
-    } catch (error) {
-      if (error.message?.includes("No active login session found")) {
-        toast.error("Your session has expired. Please login again.");
-        navigate("/login");
+        navigate('/mfa-verification', {
+          state: { mfaSessionToken: data.mfa_session_token, user: data.user, from },
+        });
       } else {
-        toast.error(error.message || "Failed to resend code");
+        await loginWithTokens(data);
+        toast.success('Signed in successfully');
+        navigate(from, { replace: true });
       }
+    } catch (err) {
+      setError(err.message ?? 'Invalid code. Please try again.');
+      setDigits(Array(OTP_LEN).fill(''));
+      focusAt(0);
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    if (otp.length !== OTP_LEN) return setError('Please enter all 6 characters.');
+    submit(otp);
+  };
+
+  /* ─── Resend ─────────────────────────────────────────────────────────── */
+  const handleResend = async () => {
+    setResending(true);
+    setError('');
+    try {
+      await authApi.resendOTP(email);
+      toast.success('New code sent to your email');
+      setCountdown(RESEND_SEC);
+      setDigits(Array(OTP_LEN).fill(''));
+      focusAt(0);
+    } catch (err) {
+      if (err.message?.includes('No active login session')) {
+        toast.error('Session expired. Please log in again.');
+        navigate('/login', { replace: true });
+      } else {
+        setError(err.message ?? 'Failed to resend code');
+      }
+    } finally {
+      setResending(false);
+    }
+  };
+
+  if (!email) return null;
 
   return (
-    <div className="min-h-screen bg-primary-60 flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Background Effects */}
-      <div className="absolute inset-0 bg-radial-spotlight opacity-50" />
-      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-72 sm:w-96 h-72 sm:h-96 bg-violet-500/8 rounded-full blur-3xl" />
+    <div className="auth-bg flex items-center justify-center p-4">
+      <div className="w-full max-w-[420px] animate-slide-up">
 
-      {/* Grid Pattern */}
-      <div
-        className="absolute inset-0 opacity-[0.02]"
-        style={{
-          backgroundImage: `linear-gradient(rgba(123, 97, 255, 0.5) 1px, transparent 1px),
-                           linear-gradient(90deg, rgba(123, 97, 255, 0.5) 1px, transparent 1px)`,
-          backgroundSize: "50px 50px",
-        }}
-      />
+        {/* Back */}
+        <button
+          onClick={() => navigate('/login')}
+          className="flex items-center gap-2 text-sm mb-6 transition-opacity hover:opacity-70"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to login
+        </button>
 
-      <div className="w-full max-w-md relative z-10">
         {/* Logo */}
-        <div className="flex items-center justify-center gap-3 mb-6 sm:mb-8">
-          <div className="w-11 sm:w-12 h-11 sm:h-12 rounded-xl bg-white/80 flex items-center justify-center shadow-glow">
-            <img
-              src="/phishcatcher.png"
-              alt="PhishCatcher Logo"
-              className="w-8 h-8 object-contain"
-            />
-          </div>
-          <span className="text-xl sm:text-2xl font-heading font-bold text-white">
+        <div className="flex items-center justify-center gap-2.5 mb-6">
+          <img src="/phishcatcher.png" alt="PhishCatcher" className="w-7 h-7 object-contain" />
+          <span className="font-heading font-700 text-lg" style={{ color: 'var(--text-primary)' }}>
             PhishCatcher
           </span>
         </div>
 
-        {/* OTP Card */}
-        <div className="glass-card-strong rounded-2xl sm:rounded-3xl p-6 sm:p-8">
-          <div className="text-center mb-6 sm:mb-8">
-            <div className="w-14 sm:w-16 h-14 sm:h-16 rounded-2xl bg-violet-500/20 flex items-center justify-center mx-auto mb-4">
-              <Key className="w-7 sm:w-8 h-7 sm:h-8 text-violet-400" />
-            </div>
-            <h1 className="text-xl sm:text-2xl font-heading font-bold text-white/80 mb-2">
-              Verify your email
+        <div className="auth-card">
+          {/* Icon */}
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-5"
+            style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}>
+            <Mail className="w-6 h-6" />
+          </div>
+
+          <div className="mb-6">
+            <h1 className="font-heading text-2xl font-700 mb-1" style={{ color: 'var(--text-primary)' }}>
+              Check your email
             </h1>
-            <p className="text-sm text-muted-foreground">
-              We've sent a 6-character code to
-              <br />
-              <span className="text-violet-400 font-medium break-all px-2">
-                {email}
-              </span>
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              We sent a 6-character code to{' '}
+              <span className="font-600" style={{ color: 'var(--text-secondary)' }}>{email}</span>
             </p>
           </div>
 
-          {/* OTP Form */}
-          <form onSubmit={handleSubmit} className="space-y-5 sm:space-y-6" onPaste={handlePaste}>
-            <div className="flex justify-center gap-2 sm:gap-3">
-              {otp.map((digit, index) => (
+          {error && <div className="alert-error mb-5">{error}</div>}
+
+          <form onSubmit={handleSubmit}>
+            {/* OTP boxes */}
+            <div className="flex gap-2 justify-center mb-6" onPaste={handlePaste}>
+              {digits.map((d, i) => (
                 <input
-                  key={index}
-                  ref={(el) => {
-                    inputRefs.current[index] = el;
-                  }}
+                  key={i}
+                  ref={el => inputRefs.current[i] = el}
                   type="text"
                   inputMode="text"
                   maxLength={1}
-                  value={digit}
-                  onChange={(e) =>
-                    handleChange(index, e.target.value.toUpperCase())
-                  }
-                  onKeyDown={(e) => handleKeyDown(index, e)}
-                  className="w-10 sm:w-14 h-12 sm:h-16 text-center text-xl sm:text-2xl font-mono font-bold bg-slate-800/50 border-2 border-violet-500/25 rounded-xl text-white placeholder:text-gray-400 focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 transition-all disabled:opacity-50 backdrop-blur-sm"
-                  disabled={isLoading}
+                  value={d}
+                  onChange={e => handleChange(i, e.target.value)}
+                  onKeyDown={e => handleKeyDown(i, e)}
+                  disabled={loading}
+                  className="otp-digit"
+                  style={d ? { borderColor: 'var(--brand)', background: 'var(--brand-dim)' } : {}}
                 />
               ))}
             </div>
 
-            <Button
+            <button
               type="submit"
-              className="w-full h-11 sm:h-12 bg-violet-gradient hover:opacity-90 text-white font-bold rounded-xl font-medium shadow-glow text-sm sm:text-base"
-              disabled={isLoading || otp.join("").length !== 6}
+              disabled={loading || otp.length !== OTP_LEN}
+              className="btn-primary w-full h-11 justify-center"
             >
-              {isLoading ? (
-                <LoadingOrb size="mini" text="" />
-              ) : (
-                <>
-                  Verify code
-                  <ArrowRight className="w-4 sm:w-5 h-4 sm:h-5 ml-2" />
-                </>
-              )}
-            </Button>
+              {loading
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <>Verify code <ArrowRight className="w-4 h-4" /></>
+              }
+            </button>
           </form>
 
-          {/* Resend Section */}
-          <div className="mt-5 sm:mt-6 text-center">
-            <p className="text-sm text-muted-foreground mb-2">
-              Didn't receive the code?
-            </p>
-            <button
-              onClick={handleResend}
-              disabled={!canResend}
-              className={`inline-flex items-center gap-2 text-sm font-medium transition-colors ${
-                canResend
-                  ? "text-violet-400 hover:text-violet-300"
-                  : "text-muted-foreground cursor-not-allowed"
-              }`}
-            >
-              <RefreshCw
-                className={`w-4 h-4 ${!canResend && "animate-spin"}`}
-              />
-              {canResend ? "Resend code" : `Resend in ${countdown}s`}
-            </button>
+          {/* Resend */}
+          <div className="mt-5 text-center">
+            {countdown > 0 ? (
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                Resend available in{' '}
+                <span className="font-600" style={{ color: 'var(--text-secondary)' }}>{countdown}s</span>
+              </p>
+            ) : (
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                Didn't receive it?{' '}
+                <button
+                  onClick={handleResend}
+                  disabled={resending}
+                  className="font-600 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
+                  style={{ color: 'var(--brand)' }}
+                >
+                  {resending && <RefreshCw className="w-3 h-3 animate-spin" />}
+                  Resend code
+                </button>
+              </p>
+            )}
           </div>
-        </div>
 
-        {/* Security Info */}
-        <div className="mt-6 sm:mt-8 text-center">
-          <p className="text-xs text-muted-foreground">
-            For your security, this code will expire in 10 minutes
+          <p className="text-center text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
+            Code expires in 10 minutes
           </p>
         </div>
       </div>

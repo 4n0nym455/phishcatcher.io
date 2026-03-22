@@ -1,178 +1,113 @@
-import { useEffect, useState, useRef } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { toast } from "sonner";
-import { authApi, setTokens } from "@/lib/api";
-import { oauthService } from "@/lib/oauthService";
+/**
+ * GoogleCallbackPage.jsx
+ * Runs inside the OAuth popup window ONLY.
+ * Exchanges code+state with the backend, then posts a typed message to the opener.
+ * The opener (LoginPage) calls loginWithTokens() after receiving GOOGLE_AUTH_SUCCESS.
+ *
+ * Messages posted to opener:
+ *   GOOGLE_AUTH_SUCCESS    → { access_token, refresh_token, user }
+ *   GOOGLE_AUTH_MFA        → { mfa_session_token, user }
+ *   GOOGLE_AUTH_ACTIVATION → { email, full_name, message }
+ *   GOOGLE_AUTH_ERROR      → { error: string }
+ */
+
+import { useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Loader2, AlertTriangle } from 'lucide-react';
+import { authApi } from '@/lib/api';
+import { oauthService } from '@/lib/oauthService';
 
 export default function GoogleCallbackPage() {
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [params]  = useSearchParams();
+  const processed = useRef(false);
 
-  // Get URL parameters safely - handle special characters in authorization code
-  const code = searchParams.get("code");
-  const state = searchParams.get("state");
-  const error = searchParams.get("error");
+  const code  = params.get('code');
+  const state = params.get('state');
+  const error = params.get('error');   // e.g. "access_denied"
 
-  // State to store the OAuth state from parent window
-  const [oauthState, setOauthState] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processedCode, setProcessedCode] = useState(null);
-
-  // Immediate synchronous guard to prevent double processing
-  const processedRef = useRef(false);
-
-  // Listen for OAuth state from parent window
   useEffect(() => {
-    const messageHandler = (event) => {
-      // Verify origin for security
-      if (event.origin !== window.location.origin) return;
+    if (processed.current) return;
+    processed.current = true;
 
-      if (event.data.type === "OAUTH_STATE") {
-        setOauthState(event.data.state);
+    (async () => {
+      // User cancelled or Google returned an error
+      if (error) {
+        oauthService.sendMessageToParent({ type: 'GOOGLE_AUTH_ERROR', error });
+        oauthService.closePopup(1200);
+        return;
       }
-    };
 
-    window.addEventListener("message", messageHandler);
+      if (!code || !state) {
+        oauthService.sendMessageToParent({ type: 'GOOGLE_AUTH_ERROR', error: 'missing_params' });
+        oauthService.closePopup(1200);
+        return;
+      }
 
-    // Request OAuth state from parent window
-    if (window.opener && !window.opener.closed) {
-      window.opener.postMessage(
-        { type: "REQUEST_OAUTH_STATE" },
-        window.location.origin,
-      );
-    }
+      try {
+        const data = await authApi.googleCallback(code, state);
 
-    return () => {
-      window.removeEventListener("message", messageHandler);
-    };
-  }, []);
-
-  useEffect(() => {
-    // Process OAuth callback IMMEDIATELY - no delays, no waiting
-    // Add multiple layers of protection against duplicate processing
-    if (code && !processedRef.current && code !== processedCode) {
-      console.log("🚀 Processing OAuth callback IMMEDIATELY...");
-      console.log("🔍 Code exists:", !!code);
-      console.log("🔍 processedRef.current:", processedRef.current);
-      console.log("🔍 code !== processedCode:", code !== processedCode);
-
-      // Set all protection flags immediately
-      processedRef.current = true;
-      setIsProcessing(true);
-      setProcessedCode(code);
-
-      // Process RIGHT NOW - no async delays
-      (async () => {
-        try {
-          console.log(
-            "⏰ Immediate processing start:",
-            new Date().toISOString(),
-          );
-
-          // Use URL state directly - no waiting for parent window
-          const response = await oauthService.handleOAuthCallback(code, state);
-
-          console.log("✅ OAuth callback response:", response);
-
-          if (response.mfa_required) {
-            localStorage.setItem(
-              "mfa_session_token",
-              response.mfa_session_token,
-            );
-            localStorage.setItem("mfa_user", JSON.stringify(response.user));
-            oauthService.closePopup("google-auth-mfa-required");
-            return;
-          }
-
-          if (response.activation_required) {
-            // New user - activation required
-            // Store activation info for the activation pending page
-            const activationInfo = {
-              email: response.email,
-              full_name: response.full_name,
-              message:
-                response.message ||
-                "Please check your email for activation instructions",
-            };
-
-            // Store activation info temporarily
-            localStorage.setItem(
-              "pending_activation",
-              JSON.stringify(activationInfo),
-            );
-
-            // Close popup and notify parent to redirect to activation pending
-            oauthService.closePopup("google-auth-activation-required");
-            return;
-          }
-
-          if (response.access_token) {
-            // Existing active user - direct login
-            setTokens(response);
-            if (response.user) {
-              localStorage.setItem("phishcatcher_email", response.user.email);
-              localStorage.setItem(
-                "phishcatcher_role",
-                response.user.role || "user",
-              );
-              localStorage.setItem(
-                "phishcatcher_name",
-                response.user.full_name || "",
-              );
-              // Store login method for MFA detection
-              localStorage.setItem("login_method", "oauth");
-            }
-            oauthService.closePopup("google-auth-success");
-            return;
-          }
-
-          throw new Error(
-            "Failed to authenticate with Google - no valid response received",
-          );
-        } catch (error) {
-          console.error("❌ OAuth callback error:", error);
-
-          // Show error in popup and notify parent
-          document.body.innerHTML = `
-            <div style="padding: 20px; font-family: Arial, sans-serif; text-align: center; max-width: 400px;">
-              <h2>❌ Authentication Error</h2>
-              <p><strong>Error:</strong> ${error.message}</p>
-              <p>This window will close in 5 seconds...</p>
-            </div>
-          `;
-
-          oauthService.closePopup("google-auth-error", 5000);
+        if (data.activation_required) {
+          oauthService.sendMessageToParent({
+            type:      'GOOGLE_AUTH_ACTIVATION',
+            email:     data.email,
+            full_name: data.full_name,
+            message:   data.message,
+          });
+        } else if (data.mfa_required) {
+          oauthService.sendMessageToParent({
+            type:              'GOOGLE_AUTH_MFA',
+            mfa_session_token: data.mfa_session_token,
+            user:              data.user,
+          });
+        } else if (data.access_token) {
+          oauthService.sendMessageToParent({
+            type:          'GOOGLE_AUTH_SUCCESS',
+            access_token:  data.access_token,
+            refresh_token: data.refresh_token,
+            user:          data.user,
+          });
+        } else {
+          throw new Error('Unexpected response from server');
         }
-      })();
-    } else {
-      console.log("🔄 Skipping OAuth processing:");
-      console.log("🔍 Code exists:", !!code);
-      console.log("🔍 processedRef.current:", processedRef.current);
-      console.log("🔍 code !== processedCode:", code !== processedCode);
-    }
-  }, [code, state, oauthState, navigate]);
+      } catch (err) {
+        oauthService.sendMessageToParent({
+          type:  'GOOGLE_AUTH_ERROR',
+          error: err.message ?? 'Authentication failed',
+        });
+      } finally {
+        oauthService.closePopup(600);
+      }
+    })();
+  }, []); // run once
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-slate-800/50 backdrop-blur-xl border border-violet-500/20 rounded-2xl p-8 text-center">
-        <div className="w-12 h-12 bg-violet-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-          <div className="w-6 h-6 bg-violet-500 rounded-full animate-pulse"></div>
+    <div
+      className="min-h-screen flex items-center justify-center p-4"
+      style={{ background: 'var(--bg-base)' }}
+    >
+      <div className="max-w-sm w-full text-center animate-fade-in">
+        <div className="w-14 h-14 rounded-2xl overflow-hidden flex items-center justify-center mx-auto mb-5"
+          style={{ background: 'var(--brand-dim)' }}>
+          <img src="/phishcatcher.png" alt="PhishCatcher" className="w-12 h-12 object-contain" />
         </div>
 
-        <h1 className="text-2xl font-bold text-white mb-4">
-          {error ? "Authentication Error" : "Processing Authentication"}
-        </h1>
-
-        <p className="text-gray-300 mb-6">
-          {isProcessing
-            ? "Processing your authentication..."
-            : "Please wait..."}
-        </p>
-
-        {error && (
-          <div className="bg-red-500/20 border border-red-500/30 rounded-lg p-4 mb-6">
-            <p className="text-red-300 text-sm">Error: {error}</p>
-          </div>
+        {error ? (
+          <>
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center mx-auto mb-4"
+              style={{ background: 'var(--danger-dim)', color: 'var(--danger)' }}>
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <p className="font-600 mb-1" style={{ color: 'var(--text-primary)' }}>Sign-in cancelled</p>
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Closing window…</p>
+          </>
+        ) : (
+          <>
+            <Loader2 className="w-6 h-6 animate-spin mx-auto mb-4" style={{ color: 'var(--brand)' }} />
+            <p className="font-600 mb-1" style={{ color: 'var(--text-primary)' }}>Completing sign-in…</p>
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              This window will close automatically.
+            </p>
+          </>
         )}
       </div>
     </div>

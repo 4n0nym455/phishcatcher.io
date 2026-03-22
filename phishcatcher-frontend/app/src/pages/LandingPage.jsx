@@ -1,601 +1,435 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { gsap } from 'gsap';
-import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { 
-  Shield, 
-  ArrowRight, 
-  Link as LinkIcon,
-  FileWarning,
-  UserX,
-  Lock,
-  Brain,
-  FileText,
-  Globe,
-  Zap,
-  Check,
-  Mail,
-  AlertTriangle,
-  Upload,
-  Eye,
-  FileSearch,
-  TrendingUp,
-  CheckCircle,
-  XCircle,
-  Info,
-  LogOut,
-  User
+/**
+ * LandingPage.jsx
+ * Public marketing page. Full light/dark mode via CSS variables.
+ * Logo: /phishcatcher.png  — no orb image needed, uses CSS blobs.
+ */
+
+import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import {
+  Shield, Zap, BarChart3, Mail, Lock, CheckCircle,
+  AlertTriangle, ArrowRight, ChevronRight, Eye, TrendingUp,
+  Menu, X,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
-import { getTokens, clearTokens } from '@/lib/api';
 
-gsap.registerPlugin(ScrollTrigger);
+/* ─── Background orb ─────────────────────────────────────────────────────── */
+function CssOrb({ style = {} }) {
+  return (
+    <div
+      className="absolute rounded-full pointer-events-none select-none"
+      style={{ filter: 'blur(90px)', ...style }}
+    />
+  );
+}
 
-// Threat detection features
-const threatFeatures = [
-  { icon: LinkIcon, title: 'Phishing Links', description: 'Detect deceptive URLs and malicious redirects in email content.' },
-  { icon: FileWarning, title: 'Malicious Attachments', description: 'Identify suspicious file types and embedded malware.' },
-  { icon: UserX, title: 'Spoofed Senders', description: 'Detect display-name spoofing and lookalike domains.' },
-  { icon: Lock, title: 'Credential Theft', description: 'Spot password-grabbing forms and credential harvesting attempts.' },
-  { icon: Brain, title: 'Social Engineering', description: 'Flag urgency tactics, authority tricks, and manipulation patterns.' },
-  { icon: FileText, title: 'Fake Invoices', description: 'Identify fraudulent payment requests and billing scams.' },
-  { icon: Globe, title: 'Domain Impersonation', description: 'Compare DNS records and detect brand impersonation.' },
-  { icon: Zap, title: 'Zero-Day Threats', description: 'Behavioral detection for unknown and emerging threats.' },
-];
-
-// How it works steps
-const steps = [
-  {
-    number: '01',
-    title: 'Upload Email',
-    description: 'Upload .eml, .txt, or .msg files directly through our secure web interface. No installation required.',
-    icon: Upload,
-  },
-  {
-    number: '02',
-    title: 'ML Analysis',
-    description: 'Our machine learning models analyze headers, content, links, and attachments using multiple threat intelligence sources.',
-    icon: FileSearch,
-  },
-  {
-    number: '03',
-    title: 'Get Report',
-    description: 'Receive a comprehensive analysis report with risk scores, findings, and actionable recommendations.',
-    icon: Eye,
-  },
-];
-
-// Stats
-const stats = [
-  { value: '10M+', label: 'Emails Analyzed' },
-  { value: '99.7%', label: 'Detection Rate' },
-  { value: '18ms', label: 'Avg Analysis Time' },
-  { value: '50+', label: 'Threat Indicators' },
-];
-
-export default function LandingPage() {
-  const navigate = useNavigate();
-  const heroRef = useRef(null);
-  const orbRef = useRef(null);
-  const headlineRef = useRef(null);
-  const subheadlineRef = useRef(null);
-  const ctaRef = useRef(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [userData, setUserData] = useState(null);
+/* ─── Navbar ──────────────────────────────────────────────────────────────── */
+function NavBar() {
+  const [open, setOpen]       = useState(false);
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    // Check authentication status
-    const { accessToken } = getTokens();
-    if (accessToken) {
-      setIsAuthenticated(true);
-      // Get user data from localStorage
-      const email = localStorage.getItem('phishcatcher_email');
-      const role = localStorage.getItem('phishcatcher_role');
-      setUserData({ email, role });
-    }
+    const h = () => setScrolled(window.scrollY > 24);
+    window.addEventListener('scroll', h);
+    return () => window.removeEventListener('scroll', h);
   }, []);
 
-  const handleLogout = () => {
-    clearTokens();
-    setIsAuthenticated(false);
-    setUserData(null);
-    toast.success('Logged out successfully');
-  };
-
-  useEffect(() => {
-    const ctx = gsap.context(() => {
-      const tl = gsap.timeline({ defaults: { ease: 'power2.out' } });
-      
-      tl.fromTo(orbRef.current,
-        { opacity: 0, scale: 0.85, y: 40 },
-        { opacity: 1, scale: 1, y: 0, duration: 1 }
-      )
-      .fromTo(headlineRef.current,
-        { opacity: 0, y: 24 },
-        { opacity: 1, y: 0, duration: 0.8 },
-        '-=0.6'
-      )
-      .fromTo(subheadlineRef.current,
-        { opacity: 0, y: 16 },
-        { opacity: 1, y: 0, duration: 0.6 },
-        '-=0.4'
-      )
-      .fromTo(ctaRef.current,
-        { opacity: 0, y: 16 },
-        { opacity: 1, y: 0, duration: 0.6 },
-        '-=0.3'
-      );
-
-      gsap.to(orbRef.current, {
-        y: -10,
-        duration: 4,
-        repeat: -1,
-        yoyo: true,
-        ease: 'sine.inOut'
-      });
-    }, heroRef);
-
-    return () => ctx.revert();
-  }, []);
-
-  const handleViewDemo = () => {
-    toast.info('Demo coming soon!');
-  };
+  const links = ['#features', '#how-it-works', '#security'];
+  const labels = ['Features', 'How it works', 'Security'];
 
   return (
-    <div className="min-h-screen bg-primary-60">
-      {/* Navigation */}
-      <nav className="fixed top-0 left-0 right-0 z-50 bg-primary-60/80 backdrop-blur-xl border-b border-violet-500/10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-14 sm:h-16">
-            <Link to="/" className="flex items-center gap-2 sm:gap-3">
-              <div className="w-15 sm:w-13 h-15 sm:h-13 rounded-xl bg-primary-60 flex items-center justify-center shadow-glow">
-                <img 
-                  src="/phishcatcher.png"
-                  alt="PhishCatcher Logo" 
-                  className="w-12 h-12 object-contain"
-                />
-              </div>
-              <span className="text-lg sm:text-xl font-heading font-bold text-white">PhishCatcher</span>
-            </Link>
-            
-            <div className="hidden md:flex items-center gap-8">
-              <a href="#features" className="text-sm text-muted-foreground hover:text-white transition-colors">Features</a>
-              <a href="#how-it-works" className="text-sm text-muted-foreground hover:text-white transition-colors">How it Works</a>
-            </div>
+    <nav
+      className="fixed top-0 left-0 right-0 z-50 transition-all duration-300"
+      style={{
+        background: scrolled ? 'var(--bg-overlay)' : 'transparent',
+        backdropFilter: scrolled ? 'blur(16px)' : 'none',
+        borderBottom: scrolled ? '1px solid var(--border)' : 'none',
+      }}
+    >
+      <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+        <Link to="/" className="flex items-center gap-2.5">
+          <img src="/phishcatcher.png" alt="PhishCatcher" className="w-8 h-8 object-contain" />
+          <span className="font-heading font-700 text-[15px]" style={{ color: 'var(--text-primary)' }}>
+            PhishCatcher
+          </span>
+        </Link>
 
-            <div className="flex items-center gap-2 sm:gap-4">
-              {isAuthenticated ? (
-                <>
-                  <div className="hidden sm:flex items-center gap-2 text-sm text-muted-foreground">
-                    <User className="w-4 h-4" />
-                    <span>{userData?.email}</span>
+        <div className="hidden md:flex items-center gap-8">
+          {links.map((href, i) => (
+            <a
+              key={href}
+              href={href}
+              className="text-sm font-500 transition-opacity hover:opacity-70"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {labels[i]}
+            </a>
+          ))}
+        </div>
+
+        <div className="hidden md:flex items-center gap-3">
+          <Link to="/login" className="text-sm font-500 px-4 py-2 rounded-lg transition-opacity hover:opacity-70"
+            style={{ color: 'var(--text-secondary)' }}>
+            Sign in
+          </Link>
+          <Link to="/register" className="btn-primary text-sm h-9 px-5">
+            Get started <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+
+        <button
+          className="md:hidden p-2 rounded-lg"
+          style={{ color: 'var(--text-muted)' }}
+          onClick={() => setOpen(v => !v)}
+        >
+          {open ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+        </button>
+      </div>
+
+      {open && (
+        <div
+          className="md:hidden px-5 pb-5 space-y-1"
+          style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}
+        >
+          {links.map((href, i) => (
+            <a
+              key={href}
+              href={href}
+              onClick={() => setOpen(false)}
+              className="block py-2.5 text-sm font-500"
+              style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}
+            >
+              {labels[i]}
+            </a>
+          ))}
+          <div className="pt-3 flex flex-col gap-2">
+            <Link to="/login" onClick={() => setOpen(false)} className="btn-ghost h-10 justify-center text-sm">
+              Sign in
+            </Link>
+            <Link to="/register" onClick={() => setOpen(false)} className="btn-primary h-10 justify-center text-sm">
+              Get started
+            </Link>
+          </div>
+        </div>
+      )}
+    </nav>
+  );
+}
+
+/* ─── Data ────────────────────────────────────────────────────────────────── */
+const FEATURES = [
+  {
+    icon: Shield, title: 'AI Threat Detection', color: 'var(--brand)', bg: 'var(--brand-dim)',
+    desc: 'ML model trained on millions of phishing samples. Detects spoofed domains, malicious URLs, and social engineering with 97.4% accuracy.',
+  },
+  {
+    icon: Zap, title: 'Real-Time Analysis', color: 'var(--threat)', bg: 'var(--threat-dim)',
+    desc: 'Upload any .eml file and receive a full threat report in under 3 seconds — with risk score, category, and per-indicator breakdown.',
+  },
+  {
+    icon: BarChart3, title: 'Weekly Reports', color: 'var(--success)', bg: 'var(--success-dim)',
+    desc: 'Automated weekly threat intelligence summaries showing attack trends, patterns, and your organisation\'s evolving risk posture.',
+  },
+  {
+    icon: Mail, title: 'Gmail Integration', color: 'var(--brand)', bg: 'var(--brand-dim)',
+    desc: 'Connect your Gmail inbox via OAuth 2.0. PhishCatcher continuously monitors incoming mail and flags threats in real time.',
+  },
+  {
+    icon: Lock, title: 'Enterprise Security', color: 'var(--danger)', bg: 'var(--danger-dim)',
+    desc: 'MFA, OTP email login, Redis-backed sessions, encrypted secrets, and a full immutable audit log on every action.',
+  },
+  {
+    icon: Eye, title: 'Deep Threat Intel', color: 'var(--threat)', bg: 'var(--threat-dim)',
+    desc: 'Per-email breakdown of sender spoofing, header anomalies, link redirection chains, urgency language, and impersonation signals.',
+  },
+];
+
+const STATS = [
+  { value: '97.4%', label: 'Detection accuracy' },
+  { value: '<3s',   label: 'Analysis time'      },
+  { value: '50K+',  label: 'Emails analyzed'    },
+  { value: '12+',   label: 'Threat categories'  },
+];
+
+const HOW_STEPS = [
+  { n: '01', title: 'Upload your email', desc: 'Drag and drop an .eml file, or connect Gmail for automatic continuous monitoring.' },
+  { n: '02', title: 'AI analysis',       desc: 'Headers, links, sender reputation, language patterns, and known attack signatures — all checked in parallel.' },
+  { n: '03', title: 'Get your report',   desc: 'A threat score, category, and full indicator breakdown ready in under 3 seconds.' },
+];
+
+const SECURITY_ITEMS = [
+  { icon: Lock,         title: 'End-to-end encryption',   desc: 'All data is TLS 1.3 in transit. Email body content is never permanently stored.' },
+  { icon: Shield,       title: 'Multi-factor auth',        desc: 'TOTP 2FA with backup codes, plus OTP email verification on every login attempt.' },
+  { icon: TrendingUp,   title: 'Audit logging',            desc: 'Every action timestamped with IP and user agent for compliance and forensics.' },
+  { icon: CheckCircle,  title: 'Redis sessions',           desc: 'Short-lived JWTs with server-side invalidation — logout is immediate across all devices.' },
+];
+
+/* ─── Main ────────────────────────────────────────────────────────────────── */
+export default function LandingPage() {
+  return (
+    <div style={{ background: 'var(--bg-base)', color: 'var(--text-primary)', minHeight: '100dvh' }}>
+      <NavBar />
+
+      {/* ═══ HERO ════════════════════════════════════════════════════════════ */}
+      <section className="relative pt-36 pb-28 px-5 overflow-hidden">
+        <CssOrb style={{ width: 700, height: 700, top: -200, left: -200, background: 'var(--brand)', opacity: 0.12 }} />
+        <CssOrb style={{ width: 500, height: 500, top: -50, right: -100, background: 'var(--threat)', opacity: 0.09 }} />
+
+        <div className="max-w-5xl mx-auto text-center relative z-10">
+          {/* Badge */}
+          <div
+            className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-600 mb-8 animate-fade-in"
+            style={{ background: 'var(--brand-dim)', color: 'var(--brand)', border: '1px solid var(--brand)' }}
+          >
+            <Zap className="w-3 h-3" />
+            AI-powered phishing detection · 97.4% accuracy
+          </div>
+
+          <h1
+            className="font-heading font-800 mb-6 animate-slide-up"
+            style={{ fontSize: 'clamp(2.4rem, 6vw, 4.2rem)', lineHeight: 1.08, color: 'var(--text-primary)' }}
+          >
+            Stop phishing attacks<br />
+            <span style={{ color: 'var(--brand)' }}>before they land</span>
+          </h1>
+
+          <p
+            className="text-lg max-w-2xl mx-auto mb-10 animate-slide-up animate-stagger-1"
+            style={{ color: 'var(--text-muted)', lineHeight: 1.75 }}
+          >
+            PhishCatcher analyzes emails in real time using advanced ML —
+            catching sophisticated attacks that bypass traditional filters in under 3 seconds.
+          </p>
+
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-slide-up animate-stagger-2">
+            <Link to="/register" className="btn-primary h-12 px-9 text-[15px]">
+              Start for free <ArrowRight className="w-5 h-5" />
+            </Link>
+            <Link to="/login" className="btn-ghost h-12 px-9 text-[15px]">
+              Sign in <ChevronRight className="w-4 h-4" />
+            </Link>
+          </div>
+
+          <div
+            className="flex flex-wrap items-center justify-center gap-6 mt-10 text-sm animate-fade-in animate-stagger-3"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            {['No credit card required', 'Free tier available', 'SOC 2 aligned'].map(t => (
+              <span key={t} className="flex items-center gap-1.5">
+                <CheckCircle className="w-4 h-4" style={{ color: 'var(--success)' }} /> {t}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Demo card */}
+        <div className="max-w-3xl mx-auto mt-16 relative z-10 animate-slide-up animate-stagger-4">
+          <div
+            className="rounded-2xl overflow-hidden"
+            style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          >
+            {/* window chrome */}
+            <div
+              className="flex items-center gap-2 px-4 py-3"
+              style={{ background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)' }}
+            >
+              <span className="w-3 h-3 rounded-full" style={{ background: '#f87171' }} />
+              <span className="w-3 h-3 rounded-full" style={{ background: '#fbbf24' }} />
+              <span className="w-3 h-3 rounded-full" style={{ background: '#34d399' }} />
+              <span className="mx-auto text-xs font-500" style={{ color: 'var(--text-muted)' }}>
+                PhishCatcher — Threat Analysis
+              </span>
+            </div>
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Email preview */}
+              <div className="space-y-3">
+                <p className="text-xs font-700 uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                  Analyzed Email
+                </p>
+                {[
+                  { label: 'From',     value: 'security@paypa1.com',            warn: true  },
+                  { label: 'Subject',  value: 'Your account needs verification', warn: false },
+                  { label: 'Reply-To', value: 'collect@attacker.xyz',            warn: true  },
+                  { label: 'Link',     value: 'http://paypa1-login.tk/verify',   warn: true  },
+                ].map(r => (
+                  <div key={r.label} className="flex gap-2">
+                    <span className="text-xs font-600 w-16 shrink-0 pt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {r.label}
+                    </span>
+                    <span className="text-xs leading-relaxed" style={{ color: r.warn ? 'var(--danger)' : 'var(--text-secondary)' }}>
+                      {r.warn && <AlertTriangle className="w-3 h-3 inline mr-1 mb-0.5" />}
+                      {r.value}
+                    </span>
                   </div>
-                  <Button 
-                    variant="outline"
-                    className="bg-transparent border-violet-500/25 hover:bg-violet-500/10 h-8 sm:h-10 text-xs sm:text-sm px-3 sm:px-4"
-                    onClick={() => navigate('/dashboard')}
-                  >
-                    Dashboard
-                  </Button>
-                  <Button 
-                    variant="outline"
-                    className="bg-transparent border-violet-500/25 hover:bg-violet-500/10 h-8 sm:h-10 text-xs sm:text-sm px-3 sm:px-4"
-                    onClick={handleLogout}
-                  >
-                    <LogOut className="w-4 h-4 mr-2" />
-                    Logout
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Link to="/login" className="hidden sm:block text-sm text-muted-foreground hover:text-white transition-colors">
-                    Sign In
-                  </Link>
-                  <Button 
-                    className="bg-violet-gradient hover:opacity-90 text-white shadow-glow h-8 sm:h-10 text-xs sm:text-sm px-3 sm:px-4"
-                    asChild
-                  >
-                    <Link to="/register">Get Started</Link>
-                  </Button>
-                </>
-              )}
+                ))}
+              </div>
+              {/* Threat score */}
+              <div
+                className="rounded-xl p-4"
+                style={{ background: 'var(--danger-dim)', border: '1px solid var(--danger)' }}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-700 uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                    Threat Score
+                  </span>
+                  <span className="badge badge-danger">HIGH RISK</span>
+                </div>
+                <div
+                  className="font-heading font-800 mb-0.5"
+                  style={{ fontSize: '3.5rem', lineHeight: 1, color: 'var(--danger)' }}
+                >
+                  94
+                </div>
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>out of 100</p>
+                <div className="space-y-2">
+                  {['Spoofed sender domain', 'Malicious redirect URL', 'Urgency manipulation', 'Lookalike domain'].map(f => (
+                    <div key={f} className="flex items-center gap-2 text-xs" style={{ color: 'var(--danger)' }}>
+                      <AlertTriangle className="w-3 h-3 shrink-0" /> {f}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </nav>
+      </section>
 
-      {/* Hero Section */}
-      <section ref={heroRef} className="relative min-h-screen flex items-center justify-center pt-20 sm:pt-24 pb-16 overflow-hidden">
-        {/* Background Effects */}
-        <div className="absolute inset-0 bg-radial-spotlight" />
-        <div className="absolute top-1/4 left-1/4 w-64 sm:w-96 h-64 sm:h-96 bg-violet-500/6 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-64 sm:w-96 h-64 sm:h-96 bg-violet-600/6 rounded-full blur-3xl" />
-        
-        {/* Grid Pattern */}
-        <div 
-          className="absolute inset-0 opacity-[0.02]"
-          style={{
-            backgroundImage: `linear-gradient(rgba(123, 97, 255, 0.5) 1px, transparent 1px),
-                             linear-gradient(90deg, rgba(123, 97, 255, 0.5) 1px, transparent 1px)`,
-            backgroundSize: '50px 50px'
-          }}
-        />
+      {/* ═══ STATS ═══════════════════════════════════════════════════════════ */}
+      <section style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
+        <div className="max-w-4xl mx-auto px-5 py-12 grid grid-cols-2 md:grid-cols-4 gap-8">
+          {STATS.map(s => (
+            <div key={s.label} className="text-center">
+              <div className="font-heading font-800 text-3xl mb-1" style={{ color: 'var(--brand)' }}>{s.value}</div>
+              <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+      </section>
 
-        <div className="relative z-10 text-center px-4 max-w-5xl mx-auto">
-          {/* Orb */}
-          <div className="mb-6 sm:mb-8">
-            <img 
-              ref={orbRef}
-              src="/orb_glow_sphere.png" 
-              alt="Security Orb" 
-              className="w-32 h-32 sm:w-48 sm:h-48 md:w-56 md:h-56 mx-auto"
-            />
+      {/* ═══ FEATURES ════════════════════════════════════════════════════════ */}
+      <section id="features" className="py-24 px-5">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="font-heading font-700 text-3xl md:text-4xl mb-4">Everything you need to stay safe</h2>
+            <p className="text-lg max-w-xl mx-auto" style={{ color: 'var(--text-muted)' }}>
+              Professional-grade threat detection without the enterprise price tag.
+            </p>
           </div>
-
-          {/* Headline */}
-          <h1 
-            ref={headlineRef}
-            className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-heading font-bold text-white mb-4 sm:mb-6"
-          >
-            ML-Based Email{' '}
-            <span className="text-gradient">Phishing Detection</span>
-          </h1>
-
-          {/* Subheadline */}
-          <p 
-            ref={subheadlineRef}
-            className="text-base sm:text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-6 sm:mb-8 px-4"
-          >
-            Upload email files and get instant machine learning-powered analysis. 
-            Detect phishing, malware, and social engineering with comprehensive threat reports.
-          </p>
-
-          {/* CTAs */}
-          <div ref={ctaRef} className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4 mb-6 sm:mb-8">
-            <Button 
-              size="lg"
-              className="bg-violet-gradient hover:opacity-90 text-white rounded-xl px-6 sm:px-8 shadow-glow w-full sm:w-auto h-11 sm:h-12"
-              asChild
-            >
-              <Link to="/register">
-                Start analyzing free
-                <ArrowRight className="w-4 sm:w-5 h-4 sm:h-5 ml-2" />
-              </Link>
-            </Button>
-            <Button 
-              size="lg"
-              variant="outline"
-              className="bg-transparent border-violet-500/25 hover:bg-violet-500/10 text-white rounded-xl px-6 sm:px-8 w-full sm:w-auto h-11 sm:h-12"
-              onClick={handleViewDemo}
-            >
-              View demo
-            </Button>
-          </div>
-
-          <p className="text-xs sm:text-sm text-muted-foreground">
-            No credit card required • Free tier available
-          </p>
-
-          {/* Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-8 mt-12 sm:mt-16 max-w-3xl mx-auto">
-            {stats.map((stat, index) => (
-              <div key={index} className="text-center">
-                <p className="text-2xl sm:text-3xl md:text-4xl font-mono font-bold text-white">{stat.value}</p>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-1">{stat.label}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {FEATURES.map((f, i) => (
+              <div
+                key={f.title}
+                className="card p-6 theme-transition animate-fade-in"
+                style={{ animationDelay: `${i * 0.07}s` }}
+              >
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center mb-4"
+                  style={{ background: f.bg, color: f.color }}
+                >
+                  <f.icon className="w-5 h-5" />
+                </div>
+                <h3 className="font-heading font-700 text-[15px] mb-2" style={{ color: 'var(--text-primary)' }}>
+                  {f.title}
+                </h3>
+                <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>{f.desc}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Features Section */}
-      <section id="features" className="relative py-20 sm:py-32 overflow-hidden">
-        <div className="absolute inset-0 bg-radial-violet" />
-        
-        <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-12 sm:mb-16">
-            <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 mb-3 sm:mb-4">
-              Comprehensive Detection
-            </Badge>
-            <h2 className="text-2xl sm:text-3xl md:text-4xl font-heading font-bold text-white mb-3 sm:mb-4">
-              Eight Layers of Threat Detection
-            </h2>
-            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto px-4">
-              Our ML models analyze multiple threat vectors to give you a complete security picture
-            </p>
+      {/* ═══ HOW IT WORKS ════════════════════════════════════════════════════ */}
+      <section id="how-it-works" className="py-24 px-5" style={{ background: 'var(--bg-surface)' }}>
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="font-heading font-700 text-3xl md:text-4xl mb-4">How it works</h2>
+            <p className="text-lg" style={{ color: 'var(--text-muted)' }}>From upload to report in under 10 seconds.</p>
           </div>
-
-          {/* Features Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-            {threatFeatures.map((feature, index) => {
-              const Icon = feature.icon;
-              return (
-                <div 
-                  key={index}
-                  className="glass-card rounded-2xl p-5 sm:p-6 hover:border-violet-500/30 transition-all"
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+            {HOW_STEPS.map((step, i) => (
+              <div key={step.n} className="text-center animate-slide-up" style={{ animationDelay: `${i * 0.1}s` }}>
+                <div
+                  className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4 font-heading font-800 text-xl"
+                  style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}
                 >
-                  <div className="w-10 sm:w-12 h-10 sm:h-12 rounded-xl bg-violet-500/15 flex items-center justify-center mb-3 sm:mb-4">
-                    <Icon className="w-5 sm:w-6 h-5 sm:h-6 text-violet-400" />
-                  </div>
-                  <h3 className="text-base sm:text-lg font-heading font-semibold text-white mb-1.5 sm:mb-2">
-                    {feature.title}
-                  </h3>
-                  <p className="text-xs sm:text-sm text-muted-foreground">
-                    {feature.description}
-                  </p>
+                  {step.n}
                 </div>
-              );
-            })}
+                <h3 className="font-heading font-700 text-lg mb-2" style={{ color: 'var(--text-primary)' }}>{step.title}</h3>
+                <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>{step.desc}</p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* How It Works Section */}
-      <section id="how-it-works" className="relative py-20 sm:py-32">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-12 sm:mb-16">
-            <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 mb-3 sm:mb-4">
-              How It Works
-            </Badge>
-            <h2 className="text-2xl sm:text-3xl md:text-4xl font-heading font-bold text-white mb-3 sm:mb-4">
-              Analyze in Three Simple Steps
-            </h2>
-            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto px-4">
-              No installation required. Upload and analyze directly from your browser.
-            </p>
+      {/* ═══ SECURITY ════════════════════════════════════════════════════════ */}
+      <section id="security" className="py-24 px-5">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="font-heading font-700 text-3xl md:text-4xl mb-4">Built with security first</h2>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
-            {steps.map((step, index) => {
-              const Icon = step.icon;
-              return (
-                <div 
-                  key={index}
-                  className="glass-card rounded-2xl sm:rounded-3xl p-6 sm:p-8 hover:border-violet-500/30 transition-all text-center"
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {SECURITY_ITEMS.map(item => (
+              <div
+                key={item.title}
+                className="flex gap-4 p-5 rounded-2xl theme-transition"
+                style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
+              >
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                  style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}
                 >
-                  <div className="w-14 sm:w-16 h-14 sm:h-16 rounded-2xl bg-violet-500/15 flex items-center justify-center mx-auto mb-4 sm:mb-6">
-                    <Icon className="w-7 sm:w-8 h-7 sm:h-8 text-violet-400" />
-                  </div>
-                  <span className="text-3xl sm:text-4xl font-mono font-bold text-violet-500/30">
-                    {step.number}
-                  </span>
-                  <h3 className="text-lg sm:text-xl font-heading font-semibold text-white mt-3 sm:mt-4 mb-2 sm:mb-3">
-                    {step.title}
-                  </h3>
-                  <p className="text-sm sm:text-base text-muted-foreground">
-                    {step.description}
-                  </p>
+                  <item.icon className="w-5 h-5" />
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* Analysis Preview Section */}
-      <section className="relative py-20 sm:py-32 overflow-hidden">
-        <div className="absolute inset-0 bg-radial-violet" />
-        
-        <div className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-10 sm:mb-12">
-            <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 mb-3 sm:mb-4">
-              Sample Report
-            </Badge>
-            <h2 className="text-2xl sm:text-3xl md:text-4xl font-heading font-bold text-white mb-3 sm:mb-4">
-              Comprehensive Analysis Reports
-            </h2>
-            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto px-4">
-              Get detailed insights with risk scores, threat indicators, and actionable recommendations
-            </p>
-          </div>
-
-          {/* Sample Report Card */}
-          <div className="glass-card-strong rounded-2xl sm:rounded-3xl p-5 sm:p-8">
-            <div className="flex flex-col lg:flex-row gap-6 sm:gap-8">
-              {/* Left: Email Info */}
-              <div className="flex-1">
-                <div className="flex items-start gap-3 sm:gap-4 mb-5 sm:mb-6">
-                  <div className="w-10 sm:w-12 h-10 sm:h-12 rounded-xl bg-pink-500/15 flex items-center justify-center flex-shrink-0">
-                    <Mail className="w-5 sm:w-6 h-5 sm:h-6 text-pink-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-base sm:text-lg font-heading font-semibold text-white mb-0.5 sm:mb-1">
-                      Reset your password immediately
-                    </h3>
-                    <p className="text-xs sm:text-sm text-muted-foreground truncate">
-                      security-notice@service-alerts.com
-                    </p>
-                  </div>
-                </div>
-
-                {/* Risk Score */}
-                <div className="flex items-center gap-3 sm:gap-4 mb-5 sm:mb-6">
-                  <div className="w-16 sm:w-20 h-16 sm:h-20 rounded-2xl bg-pink-500/15 border-2 border-pink-500/25 flex flex-col items-center justify-center">
-                    <span className="text-xl sm:text-2xl font-mono font-bold text-pink-400">92%</span>
-                    <span className="text-[10px] sm:text-xs text-pink-400">Risk</span>
-                  </div>
-                  <div>
-                    <Badge className="status-danger mb-1.5 sm:mb-2 text-xs">High Risk</Badge>
-                    <p className="text-xs sm:text-sm text-muted-foreground">
-                      Multiple threat indicators detected
-                    </p>
-                  </div>
-                </div>
-
-                {/* Findings */}
-                <div className="space-y-2 sm:space-y-3">
-                  <div className="flex items-start gap-2 sm:gap-3">
-                    <XCircle className="w-4 sm:w-5 h-4 sm:h-5 text-pink-400 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm text-white">Suspicious Domain Age</p>
-                      <p className="text-xs text-muted-foreground">Domain registered 3 days ago</p>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-2 sm:gap-3">
-                    <XCircle className="w-4 sm:w-5 h-4 sm:h-5 text-pink-400 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm text-white">Suspicious Link Detected</p>
-                      <p className="text-xs text-muted-foreground">Link points to known phishing domain</p>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-2 sm:gap-3">
-                    <AlertTriangle className="w-4 sm:w-5 h-4 sm:h-5 text-amber-400 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm text-white">Urgency Tactics</p>
-                      <p className="text-xs text-muted-foreground">Pressure language detected</p>
-                    </div>
-                  </div>
+                <div>
+                  <h4 className="font-heading font-700 text-sm mb-1" style={{ color: 'var(--text-primary)' }}>{item.title}</h4>
+                  <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{item.desc}</p>
                 </div>
               </div>
-
-              {/* Right: Chart Placeholder */}
-              <div className="lg:w-56 xl:w-64 flex items-center justify-center">
-                <div className="relative w-40 h-40 sm:w-48 sm:h-48">
-                  <svg className="w-full h-full -rotate-90">
-                    <circle
-                      cx="50%"
-                      cy="50%"
-                      r="42%"
-                      fill="none"
-                      stroke="rgba(123, 97, 255, 0.15)"
-                      strokeWidth="10"
-                    />
-                    <circle
-                      cx="50%"
-                      cy="50%"
-                      r="42%"
-                      fill="none"
-                      stroke="#FF4D8D"
-                      strokeWidth="10"
-                      strokeLinecap="round"
-                      strokeDasharray={`${2 * Math.PI * 42 * 0.92}% ${2 * Math.PI * 42}%`}
-                      style={{ transformOrigin: 'center' }}
-                    />
-                  </svg>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-2xl sm:text-3xl font-mono font-bold text-pink-400">92%</span>
-                    <span className="text-xs text-pink-400">Threat Score</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="relative py-20 sm:py-32 overflow-hidden">
-        <div className="absolute inset-0 bg-radial-violet" />
-        
-        <div className="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="glass-card-strong rounded-2xl sm:rounded-3xl p-8 sm:p-12 text-center">
-            <img 
-              src="/shield_icon.png" 
-              alt="Shield" 
-              className="w-16 h-16 sm:w-24 sm:h-24 mx-auto mb-5 sm:mb-8"
-            />
-            <h2 className="text-2xl sm:text-3xl md:text-4xl font-heading font-bold text-white mb-3 sm:mb-4">
-              {isAuthenticated ? 'Welcome Back to PhishCatcher' : 'Start Protecting Your Inbox Today'}
-            </h2>
-            <p className="text-base sm:text-lg text-muted-foreground mb-6 sm:mb-8 max-w-xl mx-auto px-4">
-              {isAuthenticated 
-                ? `Ready to continue analyzing emails, ${userData?.email}?`
-                : 'Join thousands of users who trust PhishCatcher for email security analysis'
-              }
-            </p>
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
-              {isAuthenticated ? (
-                <>
-                  <Button 
-                    size="lg"
-                    className="bg-violet-gradient hover:opacity-90 text-white rounded-xl px-6 sm:px-8 shadow-glow w-full sm:w-auto h-11 sm:h-12"
-                    onClick={() => navigate('/dashboard')}
-                  >
-                    Go to Dashboard
-                    <ArrowRight className="w-4 sm:w-5 h-4 sm:h-5 ml-2" />
-                  </Button>
-                  <Button 
-                    variant="outline"
-                    size="lg"
-                    className="bg-transparent border-violet-500/25 hover:bg-violet-500/10 text-white rounded-xl px-6 sm:px-8 w-full sm:w-auto h-11 sm:h-12"
-                    onClick={handleLogout}
-                  >
-                    <LogOut className="w-4 sm:w-5 h-4 sm:h-5 mr-2" />
-                    Logout
-                  </Button>
-                </>
-              ) : (
-                <Button 
-                  size="lg"
-                  className="bg-violet-gradient hover:opacity-90 text-white rounded-xl px-6 sm:px-8 shadow-glow w-full sm:w-auto h-11 sm:h-12"
-                  asChild
-                >
-                  <Link to="/register">
-                    Get started free
-                    <ArrowRight className="w-4 sm:w-5 h-4 sm:h-5 ml-2" />
-                  </Link>
-                </Button>
-              )}
-            </div>
-          </div>
+      {/* ═══ CTA ═════════════════════════════════════════════════════════════ */}
+      <section className="py-24 px-5 relative overflow-hidden">
+        <CssOrb style={{ width: 600, height: 600, bottom: -150, right: -100, background: 'var(--brand)', opacity: 0.1 }} />
+        <div
+          className="max-w-2xl mx-auto text-center rounded-3xl p-12 relative z-10"
+          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+        >
+          <img src="/phishcatcher.png" alt="PhishCatcher" className="w-14 h-14 object-contain mx-auto mb-6" />
+          <h2 className="font-heading font-800 text-3xl mb-4" style={{ color: 'var(--text-primary)' }}>
+            Protect your inbox today
+          </h2>
+          <p className="mb-8 text-lg" style={{ color: 'var(--text-muted)' }}>
+            Join thousands of users who trust PhishCatcher to guard against email-based attacks.
+          </p>
+          <Link to="/register" className="btn-primary h-12 px-10 text-[15px] inline-flex">
+            Create free account <ArrowRight className="w-5 h-5" />
+          </Link>
+          <p className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+            No credit card required · Cancel anytime
+          </p>
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="border-t border-violet-500/15 py-12 sm:py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 sm:gap-8 mb-10 sm:mb-12">
-            <div>
-              <h4 className="font-medium text-white mb-3 sm:mb-4">Product</h4>
-              <ul className="space-y-2">
-                <li><Link to="/dashboard" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Dashboard</Link></li>
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">API</a></li>
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Status</a></li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-medium text-white mb-3 sm:mb-4">Resources</h4>
-              <ul className="space-y-2">
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Docs</a></li>
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Blog</a></li>
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Support</a></li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-medium text-white mb-3 sm:mb-4">Company</h4>
-              <ul className="space-y-2">
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">About</a></li>
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Careers</a></li>
-                <li><a href="#" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Contact</a></li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-medium text-white mb-3 sm:mb-4">Legal</h4>
-              <ul className="space-y-2">
-                <li><Link to="/privacy" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Privacy Policy</Link></li>
-                <li><Link to="/terms" className="text-xs sm:text-sm text-muted-foreground hover:text-white transition-colors">Terms of Service</Link></li>
-              </ul>
-            </div>
+      {/* ═══ FOOTER ══════════════════════════════════════════════════════════ */}
+      <footer className="px-5 py-8" style={{ borderTop: '1px solid var(--border)' }}>
+        <div className="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <img src="/phishcatcher.png" alt="PhishCatcher" className="w-5 h-5 object-contain" />
+            <span className="text-sm font-600" style={{ color: 'var(--text-secondary)' }}>PhishCatcher</span>
           </div>
-
-          <div className="flex flex-col sm:flex-row items-center justify-between pt-6 sm:pt-8 border-t border-violet-500/15 gap-4">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-12 h-12 rounded-lg bg-primary-60/70 flex items-center justify-center">
-                <img 
-                  src="/phishcatcher.png" 
-                  alt="PhishCatcher Logo" 
-                  className="w-11 h-11 object-contain"
-                />
-              </div>
-              <span className="font-heading font-bold text-white">PhishCatcher</span>
-            </div>
-            <p className="text-xs text-muted-foreground text-center sm:text-right">
-              © 2026 PhishCatcher. All rights reserved.
-            </p>
+          <div className="flex gap-6 text-sm">
+            {[{ label: 'Terms', to: '/terms' }, { label: 'Privacy', to: '/privacy' }, { label: 'Sign in', to: '/login' }].map(l => (
+              <Link key={l.label} to={l.to} className="hover:underline" style={{ color: 'var(--text-muted)' }}>
+                {l.label}
+              </Link>
+            ))}
           </div>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            © {new Date().getFullYear()} PhishCatcher. All rights reserved.
+          </p>
         </div>
       </footer>
     </div>

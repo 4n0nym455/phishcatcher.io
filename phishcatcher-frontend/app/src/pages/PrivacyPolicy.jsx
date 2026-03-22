@@ -1,474 +1,168 @@
-import { useEffect } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Shield, ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { usePageVisitTracker } from "@/hooks/usePageVisitTracker";
-import { toast } from "sonner";
-import { setTokens } from "@/lib/api";
-
-export default function PrivacyPolicy() {
-  const { markPageVisited } = usePageVisitTracker();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  
-  // Check if coming from Google signup
-  const fromGoogle = searchParams.get("from") === "google";
-  const fromGoogleOAuth = searchParams.get("fromGoogle") === "true";
-  const userEmail = searchParams.get("email");
-
-  useEffect(() => {
-    markPageVisited('privacy');
-    
-    // Handle Google OAuth users
-    if (fromGoogleOAuth) {
-      // Get user info from temporary storage
-      const tempUserInfo = localStorage.getItem('temp_user_info');
-      const userInfo = tempUserInfo ? JSON.parse(tempUserInfo) : null;
-      
-      if (userInfo) {
-        // Mark privacy as consented
-        localStorage.setItem('terms_consent', 'true');
-        localStorage.setItem('privacy_consent', 'true');
-        
-        // Store tokens permanently
-        const accessToken = searchParams.get('access_token');
-        const refreshToken = searchParams.get('refresh_token');
-        
-        if (accessToken && refreshToken) {
-          localStorage.setItem('access_token', accessToken);
-          localStorage.setItem('refresh_token', refreshToken);
-          localStorage.setItem('phishcatcher_email', userInfo.email);
-          localStorage.setItem('phishcatcher_role', userInfo.role || 'user');
-        }
-        
-        toast.success("Privacy Policy accepted successfully!");
-        navigate('/dashboard');
-        return;
-      }
-    }
-    
-    // Auto-proceed for Google signup users after 3 seconds
-    if (fromGoogle && userEmail) {
-      const timer = setTimeout(() => {
-        // Mark privacy as consented
-        localStorage.setItem('privacy_consent', 'true');
-        
-        // Get tokens from URL (if they were passed)
-        const accessToken = searchParams.get("access_token");
-        const refreshToken = searchParams.get("refresh_token");
-        
-        if (accessToken && refreshToken) {
-          // Set tokens and redirect to dashboard
-          setTokens({ access_token: accessToken, refresh_token: refreshToken });
-          toast.success(`Welcome! Your Google account ${userEmail} has been connected.`);
-          navigate("/dashboard");
-        }
-      }, 3000);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [fromGoogle, fromGoogleOAuth, navigate, searchParams]);
+/* ══════════════════════════════════════════════════════════════════════════
+   PrivacyPolicy.jsx
+══════════════════════════════════════════════════════════════════════════ */
+ 
+import { Lock } from 'lucide-react';
+ 
+const PRIVACY_SECTIONS = [
+  {
+    title: '1. Introduction',
+    body: `PhishCatcher ("we", "our", "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard information when you use our email threat detection service.
+ 
+By using PhishCatcher, you consent to the data practices described in this policy. If you do not agree with any part of this policy, please do not use our service.`,
+  },
+  {
+    title: '2. Information We Collect',
+    body: `Account Information: When you register, we collect your name, email address, and optionally your company name.
+ 
+Authentication Data: We store a hashed version of your password (never plain-text), MFA secrets in encrypted form, and session tokens in Redis with short TTLs.
+ 
+Email Analysis Data: When you upload an email for analysis, we process the content to generate a threat report. We store analysis metadata (sender, subject, threat score, indicators, timestamp) for up to 90 days. Full body content is not permanently stored.
+ 
+Usage Data: Standard server logs including IP addresses, browser/client type, and pages visited for security and debugging purposes.
+ 
+Gmail Integration Data: If you connect Gmail, we use OAuth 2.0 to obtain limited read access. We store OAuth access and refresh tokens in encrypted form. You can revoke access at any time.`,
+  },
+  {
+    title: '3. How We Use Your Information',
+    body: `We use collected information to:
+ 
+• Provide, operate, and maintain the PhishCatcher service
+• Process email threat analysis requests and generate reports
+• Send transactional emails (OTP codes, account activation, password resets)
+• Send weekly threat summary reports if opted in
+• Improve our ML models using anonymised, aggregated threat patterns
+• Detect and prevent fraud, abuse, and security incidents
+• Comply with legal obligations
+ 
+We do not sell your personal information to third parties. We do not use your email content for advertising purposes.`,
+  },
+  {
+    title: '4. Data Retention',
+    body: `Account data is retained for as long as your account is active. You can delete your account at any time from Settings, which anonymises your personal data immediately.
+ 
+Analysis history is retained for up to 90 days by default. You can delete individual records or your entire history from the Analysis History page.
+ 
+Server logs are retained for up to 30 days for security monitoring. Backup data may be retained for up to 7 additional days after deletion.`,
+  },
+  {
+    title: '5. Data Security',
+    body: `We implement industry-standard security measures:
+ 
+• All data is encrypted in transit using TLS 1.3
+• Passwords are hashed using bcrypt with appropriate cost factors
+• MFA secrets are encrypted at rest using AES-256
+• Redis sessions use short-lived tokens (default 2 hours) with server-side invalidation
+• All authentication events are logged in an immutable audit log
+• Rate limiting and account lockout protect against brute-force attacks
+ 
+Despite these measures, no method of electronic storage is 100% secure. We cannot guarantee absolute security.`,
+  },
+  {
+    title: '6. Your Rights',
+    body: `Depending on your location, you may have the right to:
+ 
+• Access the personal data we hold about you
+• Request correction of inaccurate or incomplete data
+• Request deletion of your account and associated data
+• Request your data in a machine-readable format
+• Withdraw consent for Gmail integration at any time
+• Object to processing of your data in certain circumstances
+ 
+To exercise these rights, use the account management features in Settings. We will respond to requests within 30 days.`,
+  },
+  {
+    title: '7. Cookies and Tracking',
+    body: `PhishCatcher uses minimal, functional browser storage:
+ 
+• Authentication tokens stored in localStorage (access and refresh tokens only)
+• Session preferences (theme, etc.) stored in localStorage
+• No advertising cookies or third-party tracking pixels
+• No Google Analytics or analytics services that share data with third parties
+ 
+You can clear your browser's localStorage at any time, which will log you out of the service.`,
+  },
+  {
+    title: '8. Children\'s Privacy',
+    body: `PhishCatcher is not intended for children under the age of 16. We do not knowingly collect personal information from children under 16. If we become aware that we have inadvertently collected such information, we will promptly delete it.`,
+  },
+  {
+    title: '9. Changes to This Policy',
+    body: `We may update this Privacy Policy from time to time. We will notify you of significant changes by email or by displaying a prominent notice in the application at least 30 days before changes take effect.
+ 
+Your continued use of the service after the effective date constitutes acceptance of the updated policy.
+ 
+Last updated: March 2026`,
+  },
+];
+ 
+export function PrivacyPolicy() {
   return (
-    <div className="min-h-screen bg-primary-60">
-      {/* Header */}
-      <header className="border-b border-violet-500/15">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <Link to="/" className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-xl bg-white/90 flex items-center justify-center shadow-glow">
-                <img
-                  src="/phishcatcher.png"
-                  alt="PhishCatcher Logo"
-                  className="w-8 h-8 object-contain" // Adjusted size to fit comfortably like the icon
-                />{" "}
+    <div style={{ background: 'var(--bg-base)', color: 'var(--text-primary)', minHeight: '100dvh' }}>
+      {/* Nav */}
+      <nav className="sticky top-0 z-10 flex items-center justify-between px-6 h-14"
+        style={{ background: 'var(--bg-overlay)', backdropFilter: 'blur(12px)', borderBottom: '1px solid var(--border)' }}>
+        <Link to="/" className="flex items-center gap-2">
+          <img src="/phishcatcher.png" alt="PhishCatcher" className="w-6 h-6 object-contain" />
+          <span className="font-heading font-700 text-sm" style={{ color: 'var(--text-primary)' }}>PhishCatcher</span>
+        </Link>
+        <button onClick={() => window.close()} className="btn-ghost h-8 px-3 text-xs">
+          <ArrowLeft className="w-3.5 h-3.5" /> Close
+        </button>
+      </nav>
+ 
+      <div className="max-w-3xl mx-auto px-6 py-12">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-8 p-4 rounded-2xl"
+          style={{ background: 'var(--brand-dim)', border: '1px solid var(--brand)' }}>
+          <Lock className="w-6 h-6 shrink-0" style={{ color: 'var(--brand)' }} />
+          <div>
+            <h1 className="font-heading font-700 text-xl" style={{ color: 'var(--text-primary)' }}>
+              Privacy Policy
+            </h1>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              How we collect, use, and protect your data
+            </p>
+          </div>
+        </div>
+ 
+        <p className="text-sm leading-relaxed mb-8" style={{ color: 'var(--text-secondary)' }}>
+          Your privacy matters to us. This policy explains our data practices in plain language.
+        </p>
+ 
+        <div className="space-y-8">
+          {PRIVACY_SECTIONS.map(section => (
+            <div key={section.title}>
+              <h2 className="font-heading font-700 text-base mb-3" style={{ color: 'var(--text-primary)' }}>
+                {section.title}
+              </h2>
+              <div className="space-y-3">
+                {section.body.split('\n\n').map((para, i) => (
+                  <p key={i} className="text-sm leading-relaxed whitespace-pre-wrap"
+                    style={{ color: 'var(--text-secondary)' }}>
+                    {para}
+                  </p>
+                ))}
               </div>
-              <span className="text-xl font-heading font-bold text-white">
-                PhishCatcher
-              </span>
-            </Link>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                if (fromGoogle) {
-                  // Google users already handled by auto-proceed
-                  return;
-                }
-                navigate("/register");
-              }}
-              className="inline-flex items-center justify-center rounded-lg text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-violet-500/25 bg-transparent hover:bg-violet-500/10 px-4 py-2 text-white"
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              {fromGoogle ? "Processing..." : "Done"}
+              <div className="mt-6 h-px" style={{ background: 'var(--border)' }} />
+            </div>
+          ))}
+        </div>
+ 
+        <div className="mt-12 text-center">
+          <p className="text-sm mb-5" style={{ color: 'var(--text-muted)' }}>
+            By creating an account, you confirm you have read and agree to this Privacy Policy.
+          </p>
+          <div className="flex items-center justify-center gap-4">
+            <button onClick={() => window.close()} className="btn-primary h-10 px-6">
+              I understand — close
             </button>
+            <Link to="/terms" className="btn-ghost h-10 px-5 text-sm">
+              View Terms of Service
+            </Link>
           </div>
         </div>
-      </header>
-
-      {/* Content */}
-      <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="glass-card-strong rounded-2xl p-8 sm:p-12">
-          <h1 className="text-3xl sm:text-4xl font-heading font-bold text-white mb-4">
-            Privacy Policy
-          </h1>
-          <p className="text-muted-foreground mb-8">
-            Last updated: January 2026
-          </p>
-
-          <div className="prose prose-invert max-w-none">
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                1. Introduction
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                PhishCatcher (&quot;we,&quot; &quot;our,&quot; or
-                &quot;us&quot;) is committed to protecting your privacy. This
-                Privacy Policy explains how we collect, use, store, and protect
-                your personal information when you use our email analysis
-                service.
-              </p>
-              <p className="text-muted-foreground">
-                This policy complies with the General Data Protection Regulation
-                (GDPR) for users in the European Union and the Kenya Data
-                Protection Act, 2019 for users in Kenya.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                2. Data Controller
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                For the purposes of applicable data protection laws:
-              </p>
-              <div className="bg-secondary-30/50 rounded-lg p-4 text-muted-foreground">
-                <p>
-                  <strong>Data Controller:</strong> PhishCatcher Ltd
-                </p>
-                <p>
-                  <strong>Address:</strong> Nairobi, Kenya
-                </p>
-                <p>
-                  <strong>Email:</strong> privacy@phishcatcher.io
-                </p>
-                <p>
-                  <strong>DPO Email:</strong> dpo@phishcatcher.io
-                </p>
-              </div>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                3. Information We Collect
-              </h2>
-
-              <h3 className="text-lg font-medium text-white mb-3">
-                3.1 Account Information
-              </h3>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4 mb-4">
-                <li>Name and email address</li>
-                <li>Company/organization (optional)</li>
-                <li>Account credentials (encrypted)</li>
-                <li>Profile preferences</li>
-              </ul>
-
-              <h3 className="text-lg font-medium text-white mb-3">
-                3.2 Email Analysis Data
-              </h3>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4 mb-4">
-                <li>Email headers (From, To, Subject, Date, etc.)</li>
-                <li>Email body content (for threat analysis only)</li>
-                <li>Attachment metadata (filename, size, type)</li>
-                <li>URLs and links within emails</li>
-              </ul>
-              <p className="text-muted-foreground mb-4">
-                <strong>Important:</strong> We do not read, store, or process
-                email content for any purpose other than threat detection. Email
-                content is analyzed in real-time and not retained beyond the
-                analysis period.
-              </p>
-
-              <h3 className="text-lg font-medium text-white mb-3">
-                3.3 Usage Data
-              </h3>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>IP address and browser information</li>
-                <li>Device type and operating system</li>
-                <li>Pages visited and features used</li>
-                <li>Analysis history and timestamps</li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                4. Legal Basis for Processing (GDPR)
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                We process your personal data based on the following legal
-                grounds:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>
-                  <strong>Contract:</strong> Processing necessary to provide the
-                  Service you requested
-                </li>
-                <li>
-                  <strong>Consent:</strong> Where you have given explicit
-                  consent (e.g., marketing communications)
-                </li>
-                <li>
-                  <strong>Legitimate Interests:</strong> Improving our services
-                  and ensuring security
-                </li>
-                <li>
-                  <strong>Legal Obligation:</strong> Compliance with applicable
-                  laws and regulations
-                </li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                5. How We Use Your Information
-              </h2>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>To provide and maintain the email analysis service</li>
-                <li>To detect and analyze potential email threats</li>
-                <li>To generate analysis reports and threat intelligence</li>
-                <li>
-                  To improve our machine learning models and detection accuracy
-                </li>
-                <li>
-                  To communicate with you about your account and the Service
-                </li>
-                <li>To respond to your inquiries and support requests</li>
-                <li>To ensure the security and integrity of our systems</li>
-                <li>To comply with legal obligations</li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                6. Data Retention
-              </h2>
-              <table className="w-full text-sm text-muted-foreground mb-4">
-                <thead>
-                  <tr className="border-b border-violet-500/20">
-                    <th className="text-left py-2">Data Type</th>
-                    <th className="text-left py-2">Retention Period</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="border-b border-violet-500/10">
-                    <td className="py-2">Account information</td>
-                    <td className="py-2">Until account deletion</td>
-                  </tr>
-                  <tr className="border-b border-violet-500/10">
-                    <td className="py-2">Uploaded email files</td>
-                    <td className="py-2">30 days after analysis</td>
-                  </tr>
-                  <tr className="border-b border-violet-500/10">
-                    <td className="py-2">Analysis results</td>
-                    <td className="py-2">Duration of account + 90 days</td>
-                  </tr>
-                  <tr className="border-b border-violet-500/10">
-                    <td className="py-2">Usage logs</td>
-                    <td className="py-2">12 months</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2">Support communications</td>
-                    <td className="py-2">3 years</td>
-                  </tr>
-                </tbody>
-              </table>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                7. Data Sharing and Transfers
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                We do not sell your personal data. We may share data with:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4 mb-4">
-                <li>
-                  <strong>Service Providers:</strong> Cloud hosting, analytics,
-                  and security vendors (under strict data processing agreements)
-                </li>
-                <li>
-                  <strong>Legal Authorities:</strong> When required by law or to
-                  protect our rights
-                </li>
-                <li>
-                  <strong>Threat Intelligence Partners:</strong> Anonymized
-                  threat indicators only
-                </li>
-              </ul>
-              <p className="text-muted-foreground">
-                International transfers outside the EEA are protected by
-                Standard Contractual Clauses approved by the European
-                Commission.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                8. Your Rights
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                Under GDPR and the Kenya Data Protection Act, you have the
-                following rights:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>
-                  <strong>Right to Access:</strong> Request a copy of your
-                  personal data
-                </li>
-                <li>
-                  <strong>Right to Rectification:</strong> Correct inaccurate or
-                  incomplete data
-                </li>
-                <li>
-                  <strong>Right to Erasure:</strong> Request deletion of your
-                  data (&quot;Right to be Forgotten&quot;)
-                </li>
-                <li>
-                  <strong>Right to Restrict Processing:</strong> Limit how we
-                  use your data
-                </li>
-                <li>
-                  <strong>Right to Data Portability:</strong> Receive your data
-                  in a structured format
-                </li>
-                <li>
-                  <strong>Right to Object:</strong> Object to certain types of
-                  processing
-                </li>
-                <li>
-                  <strong>Right to Withdraw Consent:</strong> Withdraw consent
-                  at any time
-                </li>
-              </ul>
-              <p className="text-muted-foreground mt-4">
-                To exercise these rights, contact us at{" "}
-                <a
-                  href="mailto:privacy@phishcatcher.io"
-                  className="text-violet-400 hover:text-violet-300"
-                >
-                  privacy@phishcatcher.io
-                </a>
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                9. Data Security
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                We implement appropriate technical and organizational measures
-                to protect your data:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>Encryption at rest (AES-256) and in transit (TLS 1.3)</li>
-                <li>Regular security audits and penetration testing</li>
-                <li>Access controls and authentication mechanisms</li>
-                <li>Employee training on data protection</li>
-                <li>Incident response procedures</li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                10. Cookies and Tracking
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                We use cookies and similar technologies to:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>Authenticate users and maintain sessions</li>
-                <li>Remember user preferences (including theme settings)</li>
-                <li>Analyze usage patterns to improve the Service</li>
-              </ul>
-              <p className="text-muted-foreground mt-4">
-                You can manage cookie preferences through your browser settings.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                11. Children&apos;s Privacy
-              </h2>
-              <p className="text-muted-foreground">
-                The Service is not intended for users under 16 years of age. We
-                do not knowingly collect personal information from children. If
-                you believe we have collected data from a child, please contact
-                us immediately.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                12. Data Breach Notification
-              </h2>
-              <p className="text-muted-foreground">
-                In the event of a personal data breach, we will notify affected
-                users and relevant supervisory authorities within 72 hours of
-                becoming aware of the breach, as required by applicable law.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                13. Changes to This Policy
-              </h2>
-              <p className="text-muted-foreground">
-                We may update this Privacy Policy from time to time. We will
-                notify you of significant changes via email or through the
-                Service. The updated policy will indicate the effective date.
-              </p>
-            </section>
-
-            <section>
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                14. Contact Us
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                If you have questions or concerns about this Privacy Policy or
-                our data practices, please contact us:
-              </p>
-              <div className="bg-secondary-30/50 rounded-lg p-4 text-muted-foreground">
-                <p>
-                  <strong>Email:</strong>{" "}
-                  <a
-                    href="mailto:privacy@phishcatcher.io"
-                    className="text-violet-400 hover:text-violet-300"
-                  >
-                    privacy@phishcatcher.io
-                  </a>
-                </p>
-                <p>
-                  <strong>Data Protection Officer:</strong>{" "}
-                  <a
-                    href="mailto:dpo@phishcatcher.io"
-                    className="text-violet-400 hover:text-violet-300"
-                  >
-                    dpo@phishcatcher.io
-                  </a>
-                </p>
-              </div>
-            </section>
-          </div>
-        </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-violet-500/15 py-8">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            © 2026 PhishCatcher. All rights reserved.
-          </p>
-        </div>
-      </footer>
+      </div>
     </div>
   );
 }

@@ -1,34 +1,35 @@
-import { Navigate, useLocation } from "react-router-dom";
-
 /**
- * PrivateRoute — guards authenticated routes
+ * PrivateRoute
  *
- * Checks localStorage for access_token and a valid user object.
- * Does NOT block on account_status — that is enforced by the backend
- * on every API call. The activation flow now sets status='active' before
- * issuing tokens, so by the time the user reaches the dashboard the
- * backend will accept their requests.
+ * Guards authenticated routes. Uses AuthContext (not raw localStorage)
+ * so it reacts to programmatic logout correctly.
+ *
+ * While auth is still being determined (loading === true) we render nothing
+ * to avoid a flash of the login page for returning users.
  */
-export default function PrivateRoute({ children }) {
+
+import { Navigate, useLocation } from 'react-router-dom';
+import { useAuth } from '@/context/AuthContext';
+import LoadingOrb from '@/components/LoadingOrb';
+
+export default function PrivateRoute({ children, requireAdmin = false }) {
+  const { isAuthenticated, isAdmin, loading } = useAuth();
   const location = useLocation();
 
-  const token = localStorage.getItem("access_token");
-  const userRaw = localStorage.getItem("user");
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <LoadingOrb size="large" text="Loading…" />
+      </div>
+    );
+  }
 
-  // No token at all — send to login
-  if (!token) {
+  if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Token exists but user object is malformed — clear and re-login
-  let user = null;
-  try {
-    user = userRaw ? JSON.parse(userRaw) : null;
-  } catch {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
-    return <Navigate to="/login" state={{ from: location }} replace />;
+  if (requireAdmin && !isAdmin) {
+    return <Navigate to="/dashboard" replace />;
   }
 
   return children;

@@ -1,74 +1,44 @@
-import { Moon, Sun, Monitor } from 'lucide-react';
-import { useTheme } from './ThemeProvider';
-import { Button } from './ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from './ui/dropdown-menu';
+/**
+ * ThemeToggle
+ *
+ * Animated sun ↔ moon toggle button.
+ * Renders in the header next to the user menu.
+ */
 
-export function ThemeToggle() {
-  const { theme, setTheme, resolvedTheme } = useTheme();
+import { Sun, Moon } from 'lucide-react';
+import { useTheme } from '@/context/ThemeContext';
 
-  const getIcon = () => {
-    if (theme === 'system') return <Monitor className="h-4 w-4" />;
-    if (resolvedTheme === 'dark') return <Moon className="h-4 w-4" />;
-    return <Sun className="h-4 w-4" />;
-  };
-
-  const getLabel = () => {
-    if (theme === 'system') return 'System';
-    if (resolvedTheme === 'dark') return 'Dark';
-    return 'Light';
-  };
+export function ThemeToggle({ className = '' }) {
+  const { isDark, toggle } = useTheme();
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button 
-          variant="ghost" 
-          size="icon" 
-          className="h-9 w-9 relative group transition-all duration-200 hover:bg-violet-500/10"
-          title={`Current theme: ${getLabel()}`}
-        >
-          <div className="absolute inset-0 bg-gradient-to-r from-violet-500/20 to-purple-500/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
-          <span className="relative z-10">{getIcon()}</span>
-          <span className="sr-only">Toggle theme</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
-        <DropdownMenuItem 
-          onClick={() => setTheme('light')}
-          className="flex items-center gap-2 cursor-pointer transition-colors hover:bg-violet-500/10"
-        >
-          <Sun className="h-4 w-4" />
-          <span>Light</span>
-          {theme === 'light' && (
-            <div className="w-2 h-2 bg-violet-500 rounded-full ml-auto" />
-          )}
-        </DropdownMenuItem>
-        <DropdownMenuItem 
-          onClick={() => setTheme('dark')}
-          className="flex items-center gap-2 cursor-pointer transition-colors hover:bg-violet-500/10"
-        >
-          <Moon className="h-4 w-4" />
-          <span>Dark</span>
-          {theme === 'dark' && (
-            <div className="w-2 h-2 bg-violet-500 rounded-full ml-auto" />
-          )}
-        </DropdownMenuItem>
-        <DropdownMenuItem 
-          onClick={() => setTheme('system')}
-          className="flex items-center gap-2 cursor-pointer transition-colors hover:bg-violet-500/10"
-        >
-          <Monitor className="h-4 w-4" />
-          <span>System</span>
-          {theme === 'system' && (
-            <div className="w-2 h-2 bg-violet-500 rounded-full ml-auto" />
-          )}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <button
+      onClick={toggle}
+      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      className={`
+        relative w-9 h-9 rounded-lg
+        flex items-center justify-center
+        transition-all duration-200
+        hover:scale-105 active:scale-95
+        ${isDark
+          ? 'bg-[var(--bg-elevated)] text-[var(--brand)] hover:bg-[var(--brand-dim)]'
+          : 'bg-[var(--bg-elevated)] text-[var(--threat)] hover:bg-[var(--threat-dim)]'
+        }
+        ${className}
+      `}
+    >
+      <span
+        className="absolute inset-0 flex items-center justify-center transition-all duration-300"
+        style={{ opacity: isDark ? 1 : 0, transform: isDark ? 'rotate(0deg) scale(1)' : 'rotate(90deg) scale(0.5)' }}
+      >
+        <Moon className="w-4 h-4" />
+      </span>
+      <span
+        className="absolute inset-0 flex items-center justify-center transition-all duration-300"
+        style={{ opacity: isDark ? 0 : 1, transform: isDark ? 'rotate(-90deg) scale(0.5)' : 'rotate(0deg) scale(1)' }}
+      >
+        <Sun className="w-4 h-4" />
+      </span>
+    </button>
   );
 }

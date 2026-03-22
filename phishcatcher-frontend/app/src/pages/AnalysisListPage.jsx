@@ -1,351 +1,269 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { 
-  Search, 
-  Filter, 
-  FileText, 
-  Shield, 
-  AlertTriangle, 
-  CheckCircle, 
-  ArrowRight,
-  Calendar,
-  TrendingUp,
-  TrendingDown,
-  Eye
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { generateUUIDs } from '@/lib/uuid';
+/**
+ * AnalysisListPage.jsx
+ * Searchable, filterable table of all email analyses with delete and load-more.
+ */
 
-// Mock data for analyses with UUIDs
-const mockAnalyses = [
-  {
-    id: generateUUIDs(1)[0],
-    subject: 'Urgent: Account Verification Required',
-    sender: 'security@paypal.com',
-    status: 'danger',
-    score: 92,
-    type: 'eml',
-    date: '2024-03-22T10:30:00Z',
-    threatType: 'phishing'
-  },
-  {
-    id: generateUUIDs(1)[0], 
-    subject: 'Weekly Team Meeting Notes',
-    sender: 'manager@company.com',
-    status: 'safe',
-    score: 15,
-    type: 'eml',
-    date: '2024-03-22T09:15:00Z',
-    threatType: 'none'
-  },
-  {
-    id: generateUUIDs(1)[0],
-    subject: 'Suspicious Login Attempt Detected',
-    sender: 'alerts@github.com',
-    status: 'warning',
-    score: 67,
-    type: 'txt',
-    date: '2024-03-22T08:45:00Z',
-    threatType: 'suspicious'
-  },
-  {
-    id: generateUUIDs(1)[0],
-    subject: 'Invoice #12345 - Payment Due',
-    sender: 'billing@fake-invoice.com',
-    status: 'danger',
-    score: 88,
-    type: 'msg',
-    date: '2024-03-22T07:20:00Z',
-    threatType: 'phishing'
-  },
-  {
-    id: generateUUIDs(1)[0],
-    subject: 'Project Update - Q1 Review',
-    sender: 'team@company.com',
-    status: 'safe',
-    score: 8,
-    type: 'eml',
-    date: '2024-03-21T16:30:00Z',
-    threatType: 'none'
-  },
-  {
-    id: generateUUIDs(1)[0],
-    subject: 'Your Package Has Been Delivered',
-    sender: 'delivery@tracking-service.com',
-    status: 'warning',
-    score: 45,
-    type: 'eml',
-    date: '2024-03-21T14:10:00Z',
-    threatType: 'suspicious'
-  }
+import { useState, useEffect, useCallback } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  Search, Upload, FileText, Clock, RefreshCw, Loader2,
+  X, AlertTriangle, CheckCircle, Shield,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { analysisApi } from '@/lib/api';
+
+/* ─── Helpers ──────────────────────────────────────────────────────────── */
+function score(a)     { return a.threat_score ?? a.risk_score ?? 0; }
+function riskLabel(s) { return s >= 70 ? 'High' : s >= 40 ? 'Medium' : 'Safe'; }
+function riskBadge(s) { return s >= 70 ? 'badge badge-danger' : s >= 40 ? 'badge badge-threat' : 'badge badge-success'; }
+function riskColor(s) { return s >= 70 ? 'var(--danger)' : s >= 40 ? 'var(--threat)' : 'var(--success)'; }
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+const FILTER_OPTS = [
+  { label: 'All',         value: 'all'    },
+  { label: 'High risk',   value: 'high'   },
+  { label: 'Medium risk', value: 'medium' },
+  { label: 'Safe',        value: 'safe'   },
 ];
 
-export default function AnalysisListPage() {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
-  const [isLoading, setIsLoading] = useState(true);
+const PAGE_SIZE = 20;
 
-  useEffect(() => {
-    // Simulate loading
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 1000);
-    
-    return () => clearTimeout(timer);
+export default function AnalysisListPage() {
+  const navigate = useNavigate();
+
+  const [items,    setItems]    = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [search,   setSearch]   = useState('');
+  const [filter,   setFilter]   = useState('all');
+  const [page,     setPage]     = useState(1);
+  const [hasMore,  setHasMore]  = useState(false);
+  const [deleting, setDeleting] = useState(null);
+
+  const load = useCallback(async (pg = 1, reset = true) => {
+    setLoading(true);
+    try {
+      const res  = await analysisApi.getHistory({ page: pg, pageSize: PAGE_SIZE });
+      const list = res.items ?? res.analyses ?? (Array.isArray(res) ? res : []);
+      setItems(prev => reset ? list : [...prev, ...list]);
+      setHasMore(list.length === PAGE_SIZE);
+      setPage(pg);
+    } catch { /* silent */ }
+    finally { setLoading(false); }
   }, []);
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'safe':
-        return <CheckCircle className="w-4 h-4 text-teal-400" />;
-      case 'warning':
-        return <AlertTriangle className="w-4 h-4 text-amber-400" />;
-      case 'danger':
-        return <Shield className="w-4 h-4 text-pink-400" />;
-      default:
-        return <FileText className="w-4 h-4 text-muted-foreground" />;
+  useEffect(() => { load(1, true); }, [load]);
+
+  const handleDelete = async (e, id) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this analysis? This cannot be undone.')) return;
+    setDeleting(id);
+    try {
+      await analysisApi.deleteAnalysis(id);
+      setItems(prev => prev.filter(a => a.id !== id));
+      toast.success('Analysis deleted');
+    } catch (err) {
+      toast.error(err.message ?? 'Delete failed');
+    } finally {
+      setDeleting(null);
     }
   };
 
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'safe':
-        return <span className="status-safe">Safe</span>;
-      case 'warning':
-        return <span className="status-warning">Suspicious</span>;
-      case 'danger':
-        return <span className="status-danger">Threat Detected</span>;
-      default:
-        return null;
-    }
-  };
-
-  const getScoreColor = (score) => {
-    if (score >= 70) return 'text-pink-400';
-    if (score >= 40) return 'text-amber-400';
-    return 'text-teal-400';
-  };
-
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
-      year: 'numeric' 
-    });
-  };
-
-  const filteredAnalyses = mockAnalyses.filter(analysis => {
-    const matchesSearch = analysis.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         analysis.sender.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchesFilter = filterStatus === 'all' || analysis.status === filterStatus;
-    
-    return matchesSearch && matchesFilter;
+  // Client-side filter + search
+  const filtered = items.filter(a => {
+    const s = score(a);
+    const matchFilter =
+      filter === 'all'    ? true :
+      filter === 'high'   ? s >= 70 :
+      filter === 'medium' ? s >= 40 && s < 70 :
+      filter === 'safe'   ? s < 40 : true;
+    const term = search.toLowerCase();
+    const matchSearch = !search ||
+      (a.subject ?? a.filename ?? a.email_subject ?? '').toLowerCase().includes(term) ||
+      (a.threat_category ?? a.category ?? '').toLowerCase().includes(term);
+    return matchFilter && matchSearch;
   });
 
-  const stats = {
-    total: mockAnalyses.length,
-    safe: mockAnalyses.filter(a => a.status === 'safe').length,
-    warning: mockAnalyses.filter(a => a.status === 'warning').length,
-    danger: mockAnalyses.filter(a => a.status === 'danger').length,
-  };
+  // Mini stats
+  const countHigh   = items.filter(a => score(a) >= 70).length;
+  const countMedium = items.filter(a => score(a) >= 40 && score(a) < 70).length;
+  const countSafe   = items.filter(a => score(a) < 40).length;
 
   return (
-    <div className="min-h-screen bg-slate-900 p-4 sm:p-6 lg:p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-heading font-bold text-white mb-2">Analysis History</h1>
-          <p className="text-sm text-muted-foreground mb-6">Browse and manage your email analysis results</p>
-        </div>
+    <div className="animate-fade-in">
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
-            <div className="flex items-start justify-between">
-              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-violet-500/15 flex items-center justify-center">
-                <FileText className="w-4 sm:w-6 h-4 sm:h-6 text-violet-400" />
-              </div>
-              <div className="mt-3 sm:mt-4">
-                <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.total}</p>
-                <p className="text-xs sm:text-sm text-muted-foreground">Total Analyses</p>
-              </div>
-            </div>
-          </div>
-          
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
-            <div className="flex items-start justify-between">
-              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-teal-500/15 flex items-center justify-center">
-                <CheckCircle className="w-4 sm:w-6 h-4 sm:h-6 text-teal-400" />
-              </div>
-              <div className="mt-3 sm:mt-4">
-                <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.safe}</p>
-                <p className="text-xs sm:text-sm text-muted-foreground">Safe Emails</p>
-              </div>
-            </div>
-          </div>
-          
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
-            <div className="flex items-start justify-between">
-              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-amber-500/15 flex items-center justify-center">
-                <AlertTriangle className="w-4 sm:w-6 h-4 sm:h-6 text-amber-400" />
-              </div>
-              <div className="mt-3 sm:mt-4">
-                <p className="text-xl sm:text-3xl font-mono font-medium text-white">{stats.warning}</p>
-                <p className="text-xs sm:text-sm text-muted-foreground">Suspicious</p>
-              </div>
-            </div>
-          </div>
-          
-          <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6">
-            <div className="flex items-start justify-between">
-              <div className="w-9 sm:w-12 h-9 sm:h-12 rounded-lg sm:rounded-xl bg-pink-500/15 flex items-center justify-center">
-                <Shield className="w-4 sm:w-6 h-4 sm:h-6 text-pink-400" />
-              </div>
-              <div className="mt-3 sm:mt-4">
-                <p className="text-xl sm:text-3xl font-mono font-medium text-pink-400">{stats.danger}</p>
-                <p className="text-xs sm:text-sm text-muted-foreground">Threats Detected</p>
-              </div>
-            </div>
-          </div>
+      {/* Header */}
+      <div className="page-header flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="page-title">Analysis History</h1>
+          <p className="page-subtitle">{items.length} total analyses</p>
         </div>
+        <Link to="/upload" className="btn-primary h-9 px-4 text-sm self-start sm:self-auto">
+          <Upload className="w-4 h-4" /> New analysis
+        </Link>
+      </div>
 
-        {/* Filters */}
-        <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-6 mb-6">
-          <div className="flex flex-col lg:flex-row gap-4">
-            <div className="flex-1">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-5 h-5" />
-                <Input
-                  placeholder="Search by subject or sender..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 bg-slate-800/50 border-violet-500/30 text-white placeholder-gray-400"
-                />
+      {/* Mini stats */}
+      {items.length > 0 && (
+        <div className="grid grid-cols-3 gap-3 mb-5">
+          {[
+            { label: 'High risk',   count: countHigh,   icon: Shield,        color: 'var(--danger)',  bg: 'var(--danger-dim)',  filt: 'high'   },
+            { label: 'Medium risk', count: countMedium, icon: AlertTriangle, color: 'var(--threat)',  bg: 'var(--threat-dim)',  filt: 'medium' },
+            { label: 'Safe',        count: countSafe,   icon: CheckCircle,   color: 'var(--success)', bg: 'var(--success-dim)', filt: 'safe'   },
+          ].map(s => (
+            <button
+              key={s.filt}
+              onClick={() => setFilter(prev => prev === s.filt ? 'all' : s.filt)}
+              className="stat-card text-left transition-all hover:scale-[1.01] active:scale-[0.99]"
+              style={{ outline: filter === s.filt ? `2px solid ${s.color}` : 'none' }}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <s.icon className="w-3.5 h-3.5" style={{ color: s.color }} />
+                <span className="text-xs font-500" style={{ color: 'var(--text-muted)' }}>{s.label}</span>
               </div>
-            </div>
-            
-            <div className="flex gap-2">
-              <Button
-                variant={filterStatus === 'all' ? 'default' : 'outline'}
-                onClick={() => setFilterStatus('all')}
-                className={filterStatus === 'all' ? 'bg-violet-500 hover:bg-violet-600' : 'border-violet-500/30 text-violet-400 hover:bg-violet-500/10'}
-              >
-                All
-              </Button>
-              <Button
-                variant={filterStatus === 'safe' ? 'default' : 'outline'}
-                onClick={() => setFilterStatus('safe')}
-                className={filterStatus === 'safe' ? 'bg-teal-500 hover:bg-teal-600' : 'border-teal-500/30 text-teal-400 hover:bg-teal-500/10'}
-              >
-                Safe
-              </Button>
-              <Button
-                variant={filterStatus === 'warning' ? 'default' : 'outline'}
-                onClick={() => setFilterStatus('warning')}
-                className={filterStatus === 'warning' ? 'bg-amber-500 hover:bg-amber-600' : 'border-amber-500/30 text-amber-400 hover:bg-amber-500/10'}
-              >
-                Suspicious
-              </Button>
-              <Button
-                variant={filterStatus === 'danger' ? 'default' : 'outline'}
-                onClick={() => setFilterStatus('danger')}
-                className={filterStatus === 'danger' ? 'bg-pink-500 hover:bg-pink-600' : 'border-pink-500/30 text-pink-400 hover:bg-pink-500/10'}
-              >
-                Threats
-              </Button>
-            </div>
-          </div>
+              <div className="font-heading font-700 text-xl" style={{ color: s.color }}>{s.count}</div>
+            </button>
+          ))}
         </div>
+      )}
 
-        {/* Analyses List */}
-        <div className="glass-card rounded-xl sm:rounded-2xl">
-          {isLoading ? (
-            <div className="p-12 text-center">
-              <div className="w-8 h-8 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin mx-auto mb-4"></div>
-              <p className="text-gray-400">Loading analyses...</p>
-            </div>
-          ) : filteredAnalyses.length === 0 ? (
-            <div className="p-12 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-violet-500/15 flex items-center justify-center mx-auto mb-4">
-                <FileText className="w-8 h-8 text-violet-400" />
-              </div>
-              <h3 className="text-lg font-semibold text-white mb-2">No analyses found</h3>
-              <p className="text-gray-400 mb-6">
-                {searchQuery || filterStatus !== 'all' 
-                  ? 'Try adjusting your search or filters' 
-                  : 'Upload your first email to start analyzing'
-                }
-              </p>
-              {(searchQuery || filterStatus !== 'all') && (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setSearchQuery('');
-                    setFilterStatus('all');
-                  }}
-                  className="border-violet-500/30 text-violet-400 hover:bg-violet-500/10"
-                >
-                  Clear Filters
-                </Button>
-              )}
-            </div>
-          ) : (
-            <div className="divide-y divide-violet-500/10">
-              {filteredAnalyses.map((analysis) => (
-                <Link
-                  key={analysis.id}
-                  to={`/analysis/${analysis.id}`}
-                  className="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 hover:bg-violet-500/5 transition-colors group"
-                >
-                  <div className={`w-9 sm:w-10 h-9 sm:h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    analysis.status === 'safe' ? 'bg-teal-500/15' :
-                    analysis.status === 'warning' ? 'bg-amber-500/15' :
-                    'bg-pink-500/15'
-                  }`}>
-                    {getStatusIcon(analysis.status)}
-                  </div>
-                  
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-3 sm:gap-4">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white truncate group-hover:text-violet-400 transition-colors mb-1">
-                          {analysis.subject}
-                        </p>
-                        <div className="flex items-center gap-3 sm:gap-4 text-xs sm:text-sm text-muted-foreground">
-                          <span>{analysis.sender}</span>
-                          <span>•</span>
-                          <span>{formatDate(analysis.date)}</span>
-                        </div>
-                      </div>
-                      
-                      <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-                        {getStatusBadge(analysis.status)}
-                        <span className={`text-sm font-mono font-medium ${getScoreColor(analysis.score)}`}>
-                          {analysis.score}%
-                        </span>
-                        <ArrowRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block" />
-                      </div>
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
+      {/* Search + filter */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-5">
+        <div className="relative flex-1">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+          <input
+            type="text"
+            placeholder="Search by subject, filename, or category…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="input-base pl-10 pr-9"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
+              <X className="w-4 h-4" />
+            </button>
           )}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {FILTER_OPTS.map(o => (
+            <button
+              key={o.value}
+              onClick={() => setFilter(o.value)}
+              className="px-3 py-1.5 rounded-lg text-xs font-600 transition-all border"
+              style={{
+                background:  filter === o.value ? 'var(--brand)' : 'var(--bg-surface)',
+                color:       filter === o.value ? '#fff' : 'var(--text-secondary)',
+                borderColor: filter === o.value ? 'var(--brand)' : 'var(--border)',
+              }}
+            >
+              {o.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      <style>{`
-        .glass-card {
-          background: rgba(255, 255, 255, 0.05);
-          backdrop-filter: blur(10px);
-          border: 1px solid rgba(139, 92, 246, 0.2);
-          border-radius: 1rem;
-        }
-      `}</style>
+      {/* Table */}
+      <div className="rounded-2xl overflow-hidden"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+        {loading && items.length === 0 ? (
+          <div className="p-12 text-center">
+            <Loader2 className="w-6 h-6 animate-spin mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading analysis history…</p>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-12 text-center">
+            <FileText className="w-10 h-10 mx-auto mb-4 opacity-25" style={{ color: 'var(--text-muted)' }} />
+            <p className="font-heading font-700 text-base mb-1" style={{ color: 'var(--text-primary)' }}>
+              {search || filter !== 'all' ? 'No results found' : 'No analyses yet'}
+            </p>
+            <p className="text-sm mb-5" style={{ color: 'var(--text-muted)' }}>
+              {search || filter !== 'all' ? 'Try adjusting your search or filter' : 'Upload your first email to get started'}
+            </p>
+            {!search && filter === 'all' && (
+              <Link to="/upload" className="btn-primary inline-flex">
+                <Upload className="w-4 h-4" /> Upload email
+              </Link>
+            )}
+          </div>
+        ) : (
+          <>
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Subject / File</th>
+                  <th className="hidden sm:table-cell">Category</th>
+                  <th>Risk</th>
+                  <th className="hidden md:table-cell">Score</th>
+                  <th className="hidden lg:table-cell">Analyzed</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(a => {
+                  const s       = score(a);
+                  const subject = a.subject ?? a.filename ?? a.email_subject ?? 'Untitled';
+                  const cat     = a.threat_category ?? a.category ?? '—';
+                  const date    = a.created_at ?? a.analyzed_at;
+                  return (
+                    <tr key={a.id} className="cursor-pointer" onClick={() => navigate(`/analysis/${a.id}`)}>
+                      <td>
+                        <p className="font-500 text-sm truncate max-w-[200px]" style={{ color: 'var(--text-primary)' }}>
+                          {subject}
+                        </p>
+                      </td>
+                      <td className="hidden sm:table-cell">
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{cat}</span>
+                      </td>
+                      <td><span className={riskBadge(s)}>{riskLabel(s)}</span></td>
+                      <td className="hidden md:table-cell">
+                        <span className="font-heading font-700 text-sm" style={{ color: riskColor(s) }}>{s}</span>
+                      </td>
+                      <td className="hidden lg:table-cell">
+                        <span className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+                          <Clock className="w-3 h-3" />{timeAgo(date)}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-500" style={{ color: 'var(--brand)' }}>View →</span>
+                          <button
+                            onClick={e => handleDelete(e, a.id)}
+                            disabled={deleting === a.id}
+                            className="text-xs font-500 hover:underline disabled:opacity-50"
+                            style={{ color: 'var(--danger)' }}
+                          >
+                            {deleting === a.id ? '…' : 'Delete'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {hasMore && (
+              <div className="p-4 text-center" style={{ borderTop: '1px solid var(--border)' }}>
+                <button
+                  onClick={() => load(page + 1, false)}
+                  disabled={loading}
+                  className="btn-ghost text-sm h-9 px-6"
+                >
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load more'}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -2,7 +2,6 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Toaster } from 'sonner'
 import { CheckCircle, AlertCircle, X } from 'lucide-react'
-import './index.css'
 import './styles/globals.css'
 import App from './App.jsx'
 

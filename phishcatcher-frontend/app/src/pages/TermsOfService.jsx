@@ -1,355 +1,159 @@
-import { useEffect } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { usePageVisitTracker } from "@/hooks/usePageVisitTracker";
-import { toast } from "sonner";
-import { setTokens } from "@/lib/api";
-
-export default function TermsOfService() {
-  const { markPageVisited } = usePageVisitTracker();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  
-  // Check if coming from Google signup
-  const fromGoogle = searchParams.get("from") === "google";
-  const fromGoogleOAuth = searchParams.get("fromGoogle") === "true";
-  const userEmail = searchParams.get("email");
-
-  useEffect(() => {
-    markPageVisited('terms');
-    
-    // Handle Google OAuth users
-    if (fromGoogleOAuth) {
-      // Get user info from temporary storage
-      const tempUserInfo = localStorage.getItem('temp_user_info');
-      const userInfo = tempUserInfo ? JSON.parse(tempUserInfo) : null;
-      
-      if (userInfo) {
-        // Mark terms as consented
-        localStorage.setItem('terms_consent', 'true');
-        localStorage.setItem('privacy_consent', 'true');
-        
-        // Store tokens permanently
-        const accessToken = searchParams.get('access_token');
-        const refreshToken = searchParams.get('refresh_token');
-        
-        if (accessToken && refreshToken) {
-          localStorage.setItem('access_token', accessToken);
-          localStorage.setItem('refresh_token', refreshToken);
-          localStorage.setItem('phishcatcher_email', userInfo.email);
-          localStorage.setItem('phishcatcher_role', userInfo.role || 'user');
-        }
-        
-        toast.success("Terms and Privacy accepted successfully!");
-        navigate('/dashboard');
-        return;
-      }
-    }
-    
-    // Handle legacy Google signup (from URL parameters)
-    if (fromGoogle && userEmail) {
-      const timer = setTimeout(() => {
-        // Mark terms as consented
-        localStorage.setItem('terms_consent', 'true');
-        
-        // Get tokens from URL (if they were passed)
-        const accessToken = searchParams.get("access_token");
-        const refreshToken = searchParams.get("refresh_token");
-        
-        if (accessToken && refreshToken) {
-          // Set tokens and redirect to dashboard
-          setTokens({ access_token: accessToken, refresh_token: refreshToken });
-          toast.success(`Welcome! Your Google account ${userEmail} has been connected.`);
-          navigate("/dashboard");
-        }
-      }, 3000);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [fromGoogle, fromGoogleOAuth, navigate, searchParams]);
+/**
+ * TermsOfService.jsx
+ * Full Terms of Service page — opens in new tab from RegisterPage/ActivateAccountPage.
+ */
+ 
+import { Link } from 'react-router-dom';
+import { Shield, ArrowLeft } from 'lucide-react';
+ 
+const TERMS_SECTIONS = [
+  {
+    title: '1. Acceptance of Terms',
+    body: `By creating a PhishCatcher account or using any of our services, you confirm that you are at least 16 years old (or the minimum age of digital consent in your jurisdiction), that you have the legal capacity to enter into a binding agreement, and that you have read, understood, and agree to be bound by these Terms of Service.
+ 
+If you are using PhishCatcher on behalf of an organisation, you represent and warrant that you are authorised to bind that organisation to these Terms.`,
+  },
+  {
+    title: '2. Description of Service',
+    body: `PhishCatcher is an AI-powered email threat detection platform that allows users to upload email files (.eml format) and receive threat analysis reports. The service includes Gmail inbox integration, weekly threat intelligence summaries, and account management features.
+ 
+The service is provided "as is" and is intended for cybersecurity awareness and threat analysis purposes only. PhishCatcher is not a substitute for professional security services or enterprise-grade email security gateways.`,
+  },
+  {
+    title: '3. Account Registration and Security',
+    body: `You must provide accurate and complete information when creating your account. You are responsible for maintaining the confidentiality of your login credentials and for all activity that occurs under your account.
+ 
+You agree to: (a) immediately notify us of any unauthorised use of your account; (b) enable multi-factor authentication when handling sensitive analysis data; (c) not share your account credentials with any third party; (d) use a strong, unique password for your PhishCatcher account.
+ 
+PhishCatcher employs OTP-based login verification, Redis-backed sessions, and MFA options to help protect your account. You agree to use these security features responsibly.`,
+  },
+  {
+    title: '4. Acceptable Use',
+    body: `You agree to use PhishCatcher only for lawful purposes and in a manner consistent with these Terms. You must not:
+ 
+• Upload email files that you do not have a right to analyse or that belong to individuals without their consent
+• Attempt to reverse-engineer, decompile, or extract the underlying machine learning models
+• Use the platform to facilitate any form of harassment, abuse, or illegal activity
+• Attempt to gain unauthorised access to any portion of our systems
+• Interfere with or disrupt the integrity or performance of the service
+• Use automated tools to scrape or extract data from our platform beyond what the API permits
+• Resell, sublicense, or otherwise commercially exploit the service without written permission`,
+  },
+  {
+    title: '5. Email Data and Privacy',
+    body: `When you upload an email file for analysis, you affirm that you have the right to share its contents with our service. PhishCatcher processes the email content solely for the purpose of threat detection.
+ 
+We do not permanently store the full body content of analysed emails. Metadata required for generating analysis reports (sender, subject, threat score, indicators) may be stored for up to 90 days to support your analysis history. You can delete your analysis history at any time.
+ 
+For details on how we collect, use, and protect your data, please review our Privacy Policy.`,
+  },
+  {
+    title: '6. Intellectual Property',
+    body: `All content, features, and functionality of PhishCatcher — including but not limited to the machine learning models, threat detection algorithms, user interface, and documentation — are owned by PhishCatcher and its licensors and are protected by applicable intellectual property laws.
+ 
+You are granted a limited, non-exclusive, non-transferable licence to access and use the service for its intended purpose. You retain ownership of any email data you upload and any reports generated from your data.`,
+  },
+  {
+    title: '7. Disclaimers and Limitation of Liability',
+    body: `PhishCatcher provides threat analysis on a best-effort basis. The service does not guarantee detection of every phishing attempt, and analysis results should be used as one input among several when making security decisions.
+ 
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, PHISHCATCHER SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING LOSS OF DATA, LOSS OF PROFITS, OR SECURITY INCIDENTS ARISING FROM YOUR USE OF THE SERVICE.
+ 
+Our total liability to you for any claim arising from these Terms shall not exceed the amount you paid for the service in the three months preceding the claim, or £50 (or local equivalent), whichever is greater.`,
+  },
+  {
+    title: '8. Service Modifications and Termination',
+    body: `We reserve the right to modify, suspend, or discontinue any part of the service at any time. We will provide reasonable notice of material changes where practicable.
+ 
+We may terminate or suspend your account immediately if you violate these Terms, engage in fraudulent activity, or for any other reason at our sole discretion. Upon termination, your right to use the service ceases immediately.
+ 
+You may close your account at any time by using the account deletion feature in Settings.`,
+  },
+  {
+    title: '9. Governing Law',
+    body: `These Terms shall be governed by and construed in accordance with applicable law, without regard to conflict of law principles. Any disputes arising from these Terms or your use of the service shall be subject to the exclusive jurisdiction of the relevant courts.`,
+  },
+  {
+    title: '10. Changes to These Terms',
+    body: `We may update these Terms from time to time. When we make material changes, we will notify you by email or by displaying a prominent notice in the application. Your continued use of the service after the effective date of the updated Terms constitutes your acceptance of those changes.
+ 
+If you do not agree to the updated Terms, you must stop using the service and may close your account.
+ 
+Last updated: March 2026`,
+  },
+];
+ 
+export function TermsOfService() {
   return (
-    <div className="min-h-screen bg-primary-60">
-      {/* Header */}
-      <header className="border-b border-violet-500/15">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <Link to="/" className="flex items-center gap-2">
-              <div className="w-15 h-15 rounded-xl bg-primary-60 flex items-center justify-center shadow-glow">
-                <img
-                  src="/phishcatcher.png"
-                  alt="PhishCatcher Logo"
-                  className="w-12 h-12 object-contain" // Adjusted size to fit comfortably like the icon
-                />{" "}
+    <div style={{ background: 'var(--bg-base)', color: 'var(--text-primary)', minHeight: '100dvh' }}>
+      {/* Nav */}
+      <nav className="sticky top-0 z-10 flex items-center justify-between px-6 h-14"
+        style={{ background: 'var(--bg-overlay)', backdropFilter: 'blur(12px)', borderBottom: '1px solid var(--border)' }}>
+        <Link to="/" className="flex items-center gap-2">
+          <img src="/phishcatcher.png" alt="PhishCatcher" className="w-6 h-6 object-contain" />
+          <span className="font-heading font-700 text-sm" style={{ color: 'var(--text-primary)' }}>PhishCatcher</span>
+        </Link>
+        <button
+          onClick={() => window.close()}
+          className="btn-ghost h-8 px-3 text-xs"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Close
+        </button>
+      </nav>
+ 
+      <div className="max-w-3xl mx-auto px-6 py-12">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-8 p-4 rounded-2xl"
+          style={{ background: 'var(--brand-dim)', border: '1px solid var(--brand)' }}>
+          <Shield className="w-6 h-6 shrink-0" style={{ color: 'var(--brand)' }} />
+          <div>
+            <h1 className="font-heading font-700 text-xl" style={{ color: 'var(--text-primary)' }}>
+              Terms of Service
+            </h1>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              Please read these terms carefully before creating an account
+            </p>
+          </div>
+        </div>
+ 
+        <p className="text-sm leading-relaxed mb-8" style={{ color: 'var(--text-secondary)' }}>
+          These Terms of Service ("Terms") govern your access to and use of PhishCatcher's email threat detection
+          platform and related services. By using PhishCatcher, you agree to these Terms.
+        </p>
+ 
+        <div className="space-y-8">
+          {TERMS_SECTIONS.map(section => (
+            <div key={section.title}>
+              <h2 className="font-heading font-700 text-base mb-3" style={{ color: 'var(--text-primary)' }}>
+                {section.title}
+              </h2>
+              <div className="space-y-3">
+                {section.body.split('\n\n').map((para, i) => (
+                  <p key={i} className="text-sm leading-relaxed whitespace-pre-wrap"
+                    style={{ color: 'var(--text-secondary)' }}>
+                    {para}
+                  </p>
+                ))}
               </div>
-              <span className="text-xl font-heading font-bold text-white">
-                PhishCatcher
-              </span>
-            </Link>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                console.log('Terms: Button clicked');
-                if (fromGoogle) {
-                  // Google users already handled by auto-proceed
-                  return;
-                }
-                navigate("/register");
-              }}
-              className="inline-flex items-center justify-center rounded-lg text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-violet-500/25 bg-transparent hover:bg-violet-500/10 px-4 py-2 text-white"
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              {fromGoogle ? "Processing..." : "Done"}
+              <div className="mt-6 h-px" style={{ background: 'var(--border)' }} />
+            </div>
+          ))}
+        </div>
+ 
+        <div className="mt-12 text-center">
+          <p className="text-sm mb-5" style={{ color: 'var(--text-muted)' }}>
+            By creating an account, you confirm you have read and agree to these Terms.
+          </p>
+          <div className="flex items-center justify-center gap-4">
+            <button onClick={() => window.close()} className="btn-primary h-10 px-6">
+              I understand — close
             </button>
+            <Link to="/privacy" className="btn-ghost h-10 px-5 text-sm">
+              View Privacy Policy
+            </Link>
           </div>
         </div>
-      </header>
-
-      {/* Content */}
-      <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="glass-card-strong rounded-2xl p-8 sm:p-12">
-          <h1 className="text-3xl sm:text-4xl font-heading font-bold text-white mb-4">
-            Terms of Service
-          </h1>
-          <p className="text-muted-foreground mb-8">
-            Last updated: January 2026
-          </p>
-
-          <div className="prose prose-invert max-w-none">
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                1. Acceptance of Terms
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                By accessing or using PhishCatcher (&quot;the Service&quot;),
-                you agree to be bound by these Terms of Service. If you do not
-                agree to these terms, please do not use the Service. These terms
-                apply to all visitors, users, and others who access or use the
-                Service.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                2. Description of Service
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                PhishCatcher is a machine learning-based email analysis platform
-                that helps users identify potential phishing attempts, malicious
-                attachments, and other email-borne threats. The Service
-                provides:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>Email file upload and analysis capabilities</li>
-                <li>Threat detection and risk scoring</li>
-                <li>Comprehensive analysis reports</li>
-                <li>Weekly threat intelligence summaries</li>
-                <li>API access for enterprise users</li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                3. User Accounts
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                To access certain features of the Service, you must register for
-                an account. You agree to:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>
-                  Provide accurate, current, and complete information during
-                  registration
-                </li>
-                <li>
-                  Maintain the security of your password and account credentials
-                </li>
-                <li>
-                  Promptly notify us of any unauthorized access or security
-                  breaches
-                </li>
-                <li>
-                  Accept responsibility for all activities that occur under your
-                  account
-                </li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                4. Acceptable Use
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                You agree not to use the Service to:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>
-                  Upload, analyze, or distribute malware, viruses, or malicious
-                  content
-                </li>
-                <li>
-                  Violate any applicable laws, including data protection
-                  regulations
-                </li>
-                <li>Infringe upon intellectual property rights of others</li>
-                <li>
-                  Attempt to gain unauthorized access to the Service or its
-                  systems
-                </li>
-                <li>
-                  Interfere with or disrupt the integrity or performance of the
-                  Service
-                </li>
-                <li>
-                  Harvest or collect email addresses or other personal data
-                  without consent
-                </li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                5. Data Processing and Privacy
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                Your use of the Service is also governed by our Privacy Policy.
-                By using the Service, you consent to the collection, processing,
-                and storage of your data as described in the Privacy Policy. We
-                comply with:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>General Data Protection Regulation (GDPR) - EU users</li>
-                <li>Kenya Data Protection Act, 2019 - Kenyan users</li>
-                <li>Applicable data protection laws in your jurisdiction</li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                6. Email Analysis and Data Retention
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                When you upload email files for analysis:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>
-                  Email content is processed solely for threat detection
-                  purposes
-                </li>
-                <li>
-                  We do not read, store, or analyze email content for any other
-                  purpose
-                </li>
-                <li>
-                  Uploaded files are retained for 30 days for quality assurance
-                  and model improvement
-                </li>
-                <li>You may request deletion of your data at any time</li>
-                <li>
-                  Analysis results are stored for the duration of your account
-                </li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                7. Disclaimer of Warranties
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                THE SERVICE IS PROVIDED &quot;AS IS&quot; AND &quot;AS
-                AVAILABLE&quot; WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS
-                OR IMPLIED. PhishCatcher:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>Does not guarantee 100% detection of all threats</li>
-                <li>May produce false positives or false negatives</li>
-                <li>Is not a substitute for comprehensive security measures</li>
-                <li>Does not block or prevent email delivery</li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                8. Limitation of Liability
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                TO THE MAXIMUM EXTENT PERMITTED BY LAW, PhishCatcher SHALL NOT
-                BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL,
-                OR PUNITIVE DAMAGES ARISING FROM YOUR USE OF THE SERVICE,
-                INCLUDING BUT NOT LIMITED TO:
-              </p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-2 ml-4">
-                <li>Loss of data or profits</li>
-                <li>Security breaches that occur despite our analysis</li>
-                <li>Reliance on analysis results</li>
-                <li>Service interruptions or downtime</li>
-              </ul>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                9. Termination
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                We may terminate or suspend your account immediately, without
-                prior notice or liability, for any reason, including breach of
-                these Terms. Upon termination, your right to use the Service
-                will immediately cease. You may also delete your account at any
-                time.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                10. Governing Law
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                These Terms shall be governed by and construed in accordance
-                with the laws of Kenya, without regard to its conflict of law
-                provisions. For EU users, mandatory provisions of EU consumer
-                protection law shall apply.
-              </p>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                11. Changes to Terms
-              </h2>
-              <p className="text-muted-foreground mb-4">
-                We reserve the right to modify these Terms at any time. We will
-                notify users of significant changes via email or through the
-                Service. Continued use of the Service after changes constitutes
-                acceptance of the modified Terms.
-              </p>
-            </section>
-
-            <section>
-              <h2 className="text-xl font-heading font-semibold text-white mb-4">
-                12. Contact Information
-              </h2>
-              <p className="text-muted-foreground">
-                For questions about these Terms, please contact us at:{" "}
-                <a
-                  href="mailto:legal@phishcatcher.io"
-                  className="text-violet-400 hover:text-violet-300"
-                >
-                  legal@phishcatcher.io
-                </a>
-              </p>
-            </section>
-          </div>
-        </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-violet-500/15 py-8">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            © 2026 PhishCatcher. All rights reserved.
-          </p>
-        </div>
-      </footer>
+      </div>
     </div>
   );
 }
