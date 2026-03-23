@@ -6,7 +6,7 @@
  */
 
 import { useState } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Link, useNavigate, useLocation, Outlet } from 'react-router-dom';
 import {
   Menu, X, LayoutDashboard, Upload, FileText, FileBarChart,
   Settings, User, ChevronDown, LogOut, ShieldAlert, Shield,
@@ -26,7 +26,7 @@ const ADMIN_NAV = [
   { path: '/admin', label: 'Admin Panel', icon: ShieldAlert },
 ];
 
-export default function Layout({ children }) {
+export default function Layout() {
   const { user, isAdmin, logout } = useAuth();
   const location  = useLocation();
   const navigate  = useNavigate();
@@ -254,7 +254,7 @@ export default function Layout({ children }) {
 
         {/* Page content */}
         <main className="flex-1 overflow-auto p-4 lg:p-8 animate-fade-in">
-          {children}
+          <Outlet />
         </main>
       </div>
     </div>

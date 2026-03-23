@@ -18,7 +18,7 @@ export default function PrivateRoute({ children, requireAdmin = false }) {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-base)' }}>
         <LoadingOrb size="large" text="Loading…" />
       </div>
     );
