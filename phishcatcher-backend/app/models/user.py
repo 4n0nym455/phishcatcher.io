@@ -36,6 +36,9 @@ class User(Base):
     # Profile fields
     full_name = Column(String(255), nullable=True)
     company = Column(String(255), nullable=True)
+    avatar_object_name = Column(String(500), nullable=True)
+    avatar_bucket = Column(String(100), nullable=True)
+    avatar_content_type = Column(String(100), nullable=True)
     
     # Role and permissions
     role = Column(String(50), default="user", nullable=False)  # user, admin
@@ -119,6 +122,7 @@ class User(Base):
             "is_verified": self.is_verified,
             "email_verified": self.email_verified,
             "mfa_enabled": self.mfa_enabled,
+            "has_avatar": bool(self.avatar_object_name),
             "last_login": self.last_login.isoformat() if self.last_login else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

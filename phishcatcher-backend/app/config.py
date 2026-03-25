@@ -6,7 +6,7 @@ Updated with MinIO-specific settings and production configurations.
 
 from functools import lru_cache
 from typing import Optional, List, Set
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, validator, field_validator
 import secrets
 import json
@@ -14,6 +14,12 @@ import json
 
 class Settings(BaseSettings):
     """Application settings with environment variable support."""
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
     
     # Application Settings
     APP_NAME: str = Field(default="PhishCatcher API", description="Application name")
@@ -33,10 +39,10 @@ class Settings(BaseSettings):
     OTP_EXPIRE_MINUTES: int = Field(default=10, description="OTP expiry in minutes")
     
     # Session Management Settings
-    SESSION_INACTIVITY_MINUTES: int = Field(default=5, description="Session inactivity timeout in minutes")
+    SESSION_INACTIVITY_MINUTES: int = Field(default=60, description="Session inactivity timeout in minutes")
     SESSION_MAX_DURATION_HOURS: int = Field(default=0, description="Maximum session duration in minutes (0 means use SESSION_MAX_DURATION_MINUTES)")
-    SESSION_MAX_DURATION_MINUTES: int = Field(default=15, description="Maximum session duration in minutes")
-    SESSION_CHECK_INTERVAL_MINUTES: int = Field(default=1, description="Session activity check interval in minutes")
+    SESSION_MAX_DURATION_MINUTES: int = Field(default=240, description="Maximum session duration in minutes")
+    SESSION_CHECK_INTERVAL_MINUTES: int = Field(default=15, description="Session activity check interval in minutes")
     
     # Password Policy
     MIN_PASSWORD_LENGTH: int = Field(default=12, description="Minimum password length")
@@ -85,7 +91,13 @@ class Settings(BaseSettings):
     MINIO_ENDPOINT: Optional[str] = Field(default=None, description="MinIO endpoint (e.g., minio:9000)")
     MINIO_ACCESS_KEY: Optional[str] = Field(default=None, description="MinIO access key")
     MINIO_SECRET_KEY: Optional[str] = Field(default=None, description="MinIO secret key")
-    MINIO_BUCKET_NAME: str = Field(default="phishcatcher", description="MinIO bucket name")
+    # Back-compat: older setups used a single MINIO_BUCKET_NAME
+    MINIO_BUCKET_NAME: Optional[str] = Field(default=None, description="(Deprecated) Single MinIO bucket name")
+    # Bucket strategy: separate buckets per data class (default matches docker-compose.dev.yml)
+    MINIO_BUCKET_EMAILS: str = Field(default="phishcatcher-emails", description="Bucket for uploaded emails/attachments")
+    MINIO_BUCKET_REPORTS: str = Field(default="phishcatcher-reports", description="Bucket for generated reports/exports")
+    MINIO_BUCKET_MODELS: str = Field(default="phishcatcher-models", description="Bucket for ML models/artifacts")
+    MINIO_BUCKET_AVATARS: str = Field(default="phishcatcher-avatars", description="Bucket for user profile pictures")
     MINIO_SECURE: bool = Field(default=False, description="Use HTTPS for MinIO")
     MINIO_REGION: str = Field(default="us-east-1", description="MinIO region")
     MINIO_PORT: int = Field(default=9000, description="MinIO port")
@@ -98,7 +110,7 @@ class Settings(BaseSettings):
     # File Upload Settings
     MAX_FILE_SIZE_MB: int = Field(default=50, description="Maximum file upload size in MB")
     ALLOWED_FILE_EXTENSIONS: List[str] = Field(
-        default=[".eml", ".msg", ".txt", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip"],
+        default=[".eml", ".msg", ".txt", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".png", ".jpg", ".jpeg", ".webp"],
         description="Allowed file extensions for upload"
     )
     
@@ -151,7 +163,7 @@ class Settings(BaseSettings):
     
     # CORS Settings
     CORS_ORIGINS: str = Field(
-        default="http://localhost:3000,http://localhost:5173",
+        default="http://localhost:3000,http://localhost:5173,http://localhost:5174",
         description="Allowed CORS origins"
     )
     CORS_ALLOW_CREDENTIALS: bool = Field(default=True, description="Allow CORS credentials")
@@ -183,7 +195,10 @@ class Settings(BaseSettings):
     # Gmail Integration Settings
     GMAIL_CLIENT_ID: Optional[str] = Field(default=None, description="Gmail OAuth client ID")
     GMAIL_CLIENT_SECRET: Optional[str] = Field(default=None, description="Gmail OAuth client secret")
-    GMAIL_REDIRECT_URI: str = Field(default="http://localhost:8000/api/v1/auth/gmail/callback", description="Gmail OAuth redirect URI")
+    GMAIL_REDIRECT_URI: str = Field(
+        default="http://localhost:5173/gmail/callback",
+        description="Gmail OAuth redirect URI"
+    )
     
     @validator("SECRET_KEY", pre=True, always=True)
     def validate_secret_key(cls, v):
@@ -260,6 +275,15 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 return [ext.strip() for ext in v.split(",")]
         return v
+
+    @field_validator("MINIO_BUCKET_EMAILS", mode="before")
+    @classmethod
+    def _default_emails_bucket_from_legacy(cls, v, info):
+        # If explicitly set, keep it.
+        if v not in (None, ""):
+            return v
+        legacy = (info.data or {}).get("MINIO_BUCKET_NAME")
+        return legacy or "phishcatcher-emails"
     
     @property
     def allowed_extensions_set(self) -> Set[str]:
@@ -279,17 +303,13 @@ class Settings(BaseSettings):
                 "endpoint": self.MINIO_ENDPOINT,
                 "access_key": self.MINIO_ACCESS_KEY,
                 "secret_key": self.MINIO_SECRET_KEY,
-                "bucket": self.MINIO_BUCKET_NAME,
                 "secure": self.MINIO_SECURE,
                 "region": self.MINIO_REGION,
                 "type": "minio"
             }
         return None
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    # NOTE: pydantic v2 uses `model_config` above (not inner Config)
 
 
 @lru_cache()

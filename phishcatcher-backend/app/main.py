@@ -228,6 +228,14 @@ def _include_routers(app: FastAPI):
         prefix=f"{api_prefix}/notifications",
         tags=["Notifications"]
     )
+    
+    # Task Monitoring
+    from app.routers import tasks as task_router
+    app.include_router(
+        task_router.router,
+        prefix=f"{api_prefix}",
+        tags=["Tasks"]
+    )
 
 
 # Create application instance
