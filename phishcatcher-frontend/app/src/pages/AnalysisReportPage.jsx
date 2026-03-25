@@ -73,7 +73,7 @@ function InfoRow({ label, value, warn }) {
 
 /* ─── Main ─────────────────────────────────────────────────────────────── */
 export default function AnalysisReportPage() {
-  const { id }   = useParams();
+  const { id } = useParams();
   const navigate = useNavigate();
 
   const [analysis, setAnalysis] = useState(null);
@@ -82,6 +82,13 @@ export default function AnalysisReportPage() {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
+    // Validate ID before making API call
+    if (!id || id === 'None' || id === 'null' || id === 'undefined' || id.length < 10) {
+      setError('Invalid analysis ID');
+      setLoading(false);
+      return;
+    }
+    
     (async () => {
       setLoading(true);
       try {

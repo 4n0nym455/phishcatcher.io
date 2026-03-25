@@ -9,30 +9,37 @@
  *   GOOGLE_AUTH_MFA        → { mfa_session_token, user }
  *   GOOGLE_AUTH_ACTIVATION → { email, full_name, message }
  *   GOOGLE_AUTH_ERROR      → { error: string }
+ *   GMAIL_CONNECTED        → { email }
+ *   GMAIL_ERROR            → { error }
  */
 
 import { useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { authApi } from '@/lib/api';
 import { oauthService } from '@/lib/oauthService';
 
 export default function GoogleCallbackPage() {
   const [params]  = useSearchParams();
+  const location = useLocation();
   const processed = useRef(false);
 
   const code  = params.get('code');
   const state = params.get('state');
-  const error = params.get('error');   // e.g. "access_denied"
+  const error = params.get('error');
+  const isGmail = location.pathname === '/gmail/callback';
 
   useEffect(() => {
     if (processed.current) return;
     processed.current = true;
 
     (async () => {
-      // User cancelled or Google returned an error
       if (error) {
-        oauthService.sendMessageToParent({ type: 'GOOGLE_AUTH_ERROR', error });
+        if (isGmail) {
+          oauthService.sendMessageToParent({ type: 'gmail-error', error });
+        } else {
+          oauthService.sendMessageToParent({ type: 'GOOGLE_AUTH_ERROR', error });
+        }
         oauthService.closePopup(1200);
         return;
       }
@@ -44,41 +51,54 @@ export default function GoogleCallbackPage() {
       }
 
       try {
-        const data = await authApi.googleCallback(code, state);
-
-        if (data.activation_required) {
-          oauthService.sendMessageToParent({
-            type:      'GOOGLE_AUTH_ACTIVATION',
-            email:     data.email,
-            full_name: data.full_name,
-            message:   data.message,
-          });
-        } else if (data.mfa_required) {
-          oauthService.sendMessageToParent({
-            type:              'GOOGLE_AUTH_MFA',
-            mfa_session_token: data.mfa_session_token,
-            user:              data.user,
-          });
-        } else if (data.access_token) {
-          oauthService.sendMessageToParent({
-            type:          'GOOGLE_AUTH_SUCCESS',
-            access_token:  data.access_token,
-            refresh_token: data.refresh_token,
-            user:          data.user,
-          });
+        if (isGmail) {
+          const data = await authApi.gmail.callback(code, state);
+          if (data.success) {
+            oauthService.sendMessageToParent({ type: 'gmail-connected', email: data.email });
+          } else {
+            oauthService.sendMessageToParent({ type: 'gmail-error', error: data.error });
+          }
         } else {
-          throw new Error('Unexpected response from server');
+          const data = await authApi.googleCallback(code, state);
+
+          if (data.activation_required) {
+            oauthService.sendMessageToParent({
+              type:      'GOOGLE_AUTH_ACTIVATION',
+              email:     data.email,
+              full_name: data.full_name,
+              message:   data.message,
+            });
+          } else if (data.mfa_required) {
+            oauthService.sendMessageToParent({
+              type:              'GOOGLE_AUTH_MFA',
+              mfa_session_token: data.mfa_session_token,
+              user:              data.user,
+            });
+          } else if (data.access_token) {
+            oauthService.sendMessageToParent({
+              type:          'GOOGLE_AUTH_SUCCESS',
+              access_token:  data.access_token,
+              refresh_token: data.refresh_token,
+              user:          data.user,
+            });
+          } else {
+            throw new Error('Unexpected response from server');
+          }
         }
       } catch (err) {
-        oauthService.sendMessageToParent({
-          type:  'GOOGLE_AUTH_ERROR',
-          error: err.message ?? 'Authentication failed',
-        });
+        if (isGmail) {
+          oauthService.sendMessageToParent({ type: 'gmail-error', error: err.message });
+        } else {
+          oauthService.sendMessageToParent({
+            type:  'GOOGLE_AUTH_ERROR',
+            error: err.message ?? 'Authentication failed',
+          });
+        }
       } finally {
         oauthService.closePopup(600);
       }
     })();
-  }, []); // run once
+  }, [isGmail]);
 
   return (
     <div

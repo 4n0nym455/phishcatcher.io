@@ -7,9 +7,57 @@
 
 import { useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, KeyRound, Loader2, CheckCircle, Eye, EyeOff, XCircle } from 'lucide-react';
+import { ArrowLeft, KeyRound, Loader2, CheckCircle, CheckCircle2, Eye, EyeOff, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
+
+/* ─── Password strength ─────────────────────────────────────────────────── */
+const PWD_RULES = [
+  { id: 'len',   label: '8+ chars',  test: p => p.length >= 8 },
+  { id: 'upper', label: 'Uppercase', test: p => /[A-Z]/.test(p) },
+  { id: 'num',   label: 'Number',    test: p => /\d/.test(p) },
+  { id: 'sym',   label: 'Symbol',    test: p => /[!@#$%^&*(),.?":{}|<>_\-]/.test(p) },
+];
+const STRENGTH_COLORS = ['', 'var(--danger)', 'var(--threat)', 'var(--threat)', 'var(--success)'];
+const STRENGTH_LABELS = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+
+function PasswordStrength({ password }) {
+  if (!password) return null;
+  const score = PWD_RULES.filter(r => r.test(password)).length;
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex gap-1">
+        {[1, 2, 3, 4].map(i => (
+          <div
+            key={i}
+            className="h-1 flex-1 rounded-full transition-all duration-300"
+            style={{ background: i <= score ? STRENGTH_COLORS[score] : 'var(--border)' }}
+          />
+        ))}
+      </div>
+      <div className="flex items-center justify-between flex-wrap gap-y-1">
+        {PWD_RULES.map(r => {
+          const ok = r.test(password);
+          return (
+            <span
+              key={r.id}
+              className="text-[11px] font-500 flex items-center gap-1"
+              style={{ color: ok ? 'var(--success)' : 'var(--text-muted)' }}
+            >
+              {ok ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+              {r.label}
+            </span>
+          );
+        })}
+        {score > 0 && (
+          <span className="text-[11px] font-700" style={{ color: STRENGTH_COLORS[score] }}>
+            {STRENGTH_LABELS[score]}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* ══════════════════════════════════════════════════════
    ForgotPasswordPage
@@ -137,7 +185,25 @@ export function ForgotPasswordPage() {
 export function ResetPasswordPage() {
   const [params]   = useSearchParams();
   const navigate   = useNavigate();
-  const token      = params.get('token') ?? '';
+  
+  // Extract token from URL parameter - handle nested URL case
+  let rawToken = params.get('token') ?? '';
+  
+  // If token contains a full URL, extract the token from that URL
+  if (rawToken.includes('http')) {
+    try {
+      const url = new URL(rawToken);
+      const urlParams = new URLSearchParams(url.search);
+      rawToken = urlParams.get('token') ?? '';
+    } catch (e) {
+      console.error('Failed to parse nested URL:', e);
+      // Fallback: extract token after last ?token=
+      const tokenMatch = rawToken.match(/token=([^&]+)/);
+      rawToken = tokenMatch ? tokenMatch[1] : '';
+    }
+  }
+  
+  const token = rawToken;
 
   const [password,  setPassword]  = useState('');
   const [confirm,   setConfirm]   = useState('');
@@ -237,11 +303,12 @@ export function ResetPasswordPage() {
                   {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+              <PasswordStrength password={password} />
             </div>
 
             {/* Confirm password */}
             <div>
-              <label className="form-label">Confirm new password</label>
+              <label className="form-label">Confirm password</label>
               <div className="relative">
                 <input
                   type={showConf ? 'text' : 'password'}
@@ -253,6 +320,9 @@ export function ResetPasswordPage() {
                   className="input-base pr-10"
                   style={confirmDirty ? {
                     borderColor: passwordsMatch ? 'var(--success)' : 'var(--danger)',
+                    boxShadow: passwordsMatch
+                      ? '0 0 0 3px rgba(16,185,129,0.12)'
+                      : '0 0 0 3px rgba(239,68,68,0.12)',
                   } : {}}
                 />
                 <button type="button" tabIndex={-1} onClick={() => setShowConf(v => !v)}
@@ -261,8 +331,13 @@ export function ResetPasswordPage() {
                 </button>
               </div>
               {confirmDirty && !passwordsMatch && (
-                <p className="text-xs mt-1.5 font-500" style={{ color: 'var(--danger)' }}>
-                  Passwords do not match
+                <p className="text-xs mt-1.5 font-500 flex items-center gap-1" style={{ color: 'var(--danger)' }}>
+                  <XCircle className="w-3.5 h-3.5" /> Passwords do not match
+                </p>
+              )}
+              {confirmDirty && passwordsMatch && (
+                <p className="text-xs mt-1.5 font-500 flex items-center gap-1" style={{ color: 'var(--success)' }}>
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Passwords match
                 </p>
               )}
             </div>

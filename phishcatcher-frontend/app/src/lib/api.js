@@ -170,10 +170,26 @@ export const authApi = {
 
   getMe:          ()     => apiFetch('/auth/me'),
   updateProfile:  (data) => apiFetch('/auth/me', { method: 'PUT', body: JSON.stringify(data) }),
+  uploadAvatar: async (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    const { accessToken } = getTokens();
+    const res = await fetch(`${API_BASE}/auth/me/avatar`, {
+      method: 'POST',
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      body: form,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Avatar upload failed' }));
+      throw new Error(err.detail ?? `Avatar upload failed: ${res.status}`);
+    }
+    return res.json();
+  },
+  getAvatarUrl: () => apiFetch('/auth/me/avatar'),
   deleteAccount:  (pwd)  => apiFetch('/auth/me/delete', {
     method:  'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body:    new URLSearchParams({ password: pwd }),
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ password: pwd }),
   }),
 
   // ── Password ─────────────────────────────────────────────────────────────
@@ -248,15 +264,20 @@ export const authApi = {
 
   gmail: {
     getAuthUrl:      ()        => apiFetch('/gmail/auth/url'),
+    callback:        (code, state) => apiFetch('/gmail/callback', { method: 'POST', body: JSON.stringify({ code, state }) }),
     getStatus:       ()        => apiFetch('/gmail/status'),
     disconnect:      ()        => apiFetch('/gmail/disconnect', { method: 'POST' }),
-    scanEmails:      (n = 10)  => apiFetch(`/gmail/scan?max_results=${n}`, { method: 'POST' }),
-    toggleAutoScan:  (enabled) => apiFetch('/gmail/auto-scan', {
-      method: 'PUT',
-      body:   JSON.stringify({ enabled }),
+    listEmails:      (page = 1, maxResults = 20) => apiFetch(`/gmail/emails?page=${page}&max_results=${maxResults}`),
+    analyzeEmails:   (messageIds) => apiFetch('/gmail/emails/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ message_ids: messageIds }),
     }),
+    scanEmails:      (n = 10)  => apiFetch(`/gmail/scan?max_results=${n}`, { method: 'POST' }),
     markSafe:        (id) => apiFetch(`/gmail/emails/${id}/safe`,     { method: 'POST' }),
     reportPhishing:  (id) => apiFetch(`/gmail/emails/${id}/phishing`, { method: 'POST' }),
+    getQueue:        ()        => apiFetch('/gmail/queue'),
+    processQueueItem: (messageId) => apiFetch(`/gmail/queue/${messageId}/process`, { method: 'POST' }),
+    clearQueue:      ()        => apiFetch('/gmail/queue/clear', { method: 'POST' }),
   },
 };
 
@@ -314,7 +335,13 @@ export const analysisApi = {
     return apiFetch(`/analysis/history?${q}`);
   },
 
-  getAnalysis:  (id)     => apiFetch(`/analysis/${id}`),
+  getAnalysis:  (id) => {
+    // Validate ID before making API call
+    if (!id || id === 'None' || id === 'null' || id === 'undefined' || typeof id !== 'string' || id.length < 10) {
+      return Promise.reject(new Error('Invalid analysis ID'));
+    }
+    return apiFetch(`/analysis/${id}`);
+  },
   getStatus:    (id)     => apiFetch(`/analysis/${id}/status`),
   deleteAnalysis:(id)    => apiFetch(`/analysis/${id}`, { method: 'DELETE' }),
   downloadReport:(id, fmt='pdf') => apiFetch(`/analysis/${id}/download?format=${fmt}`),

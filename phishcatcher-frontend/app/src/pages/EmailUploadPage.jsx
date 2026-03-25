@@ -3,11 +3,11 @@
  * Drag-and-drop .eml upload with simulated progress, validation, and analysis redirect.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, CheckCircle, X, Loader2, Zap, Shield, BarChart3, Info } from 'lucide-react';
+import { Upload, CheckCircle, X, Loader2, Zap, Shield, BarChart3, Info, Mail, RefreshCw, Layers } from 'lucide-react';
 import { toast } from 'sonner';
-import { analysisApi } from '@/lib/api';
+import { analysisApi, authApi } from '@/lib/api';
 
 export default function EmailUploadPage() {
   const navigate = useNavigate();
@@ -17,6 +17,56 @@ export default function EmailUploadPage() {
   const [loading,  setLoading]  = useState(false);
   const [progress, setProgress] = useState(0);
   const [error,    setError]    = useState('');
+
+  /* ── Gmail state ── */
+  const [gmailConnected, setGmailConnected] = useState(false);
+  const [gmailLoading, setGmailLoading] = useState(false);
+  const [gmailEmails, setGmailEmails] = useState([]);
+  const [selectedEmails, setSelectedEmails] = useState([]);
+  const [activeTab, setActiveTab] = useState('upload');
+
+  useEffect(() => {
+    authApi.gmail.getStatus()
+      .then(res => setGmailConnected(res.connected))
+      .catch(() => setGmailConnected(false));
+  }, []);
+
+  const handleLoadGmailEmails = async () => {
+    setGmailLoading(true);
+    try {
+      const data = await authApi.gmail.listEmails(1, 20);
+      setGmailEmails(data.emails || []);
+    } catch (err) { toast.error(err.message ?? 'Failed to load emails'); }
+    finally { setGmailLoading(false); }
+  };
+
+  const handleToggleEmail = (msgId) => {
+    setSelectedEmails(prev => 
+      prev.includes(msgId) 
+        ? prev.filter(id => id !== msgId)
+        : [...prev, msgId]
+    );
+  };
+
+  const handleSendToQueue = async () => {
+    if (selectedEmails.length === 0 && !file) return;
+    setLoading(true);
+    try {
+      if (selectedEmails.length > 0) {
+        await authApi.gmail.analyzeEmails(selectedEmails);
+        toast.success(`${selectedEmails.length} emails queued for analysis`);
+      }
+      if (file) {
+        const result = await analysisApi.uploadEmail(file);
+        localStorage.setItem('pending_analysis_id', result.id ?? result.analysis_id);
+      }
+      setSelectedEmails([]);
+      setGmailEmails([]);
+      setFile(null);
+      navigate('/analysis');
+    } catch (err) { toast.error(err.message ?? 'Failed to queue'); }
+    finally { setLoading(false); }
+  };
 
   const MAX_SIZE_MB = 10;
 
@@ -84,9 +134,106 @@ export default function EmailUploadPage() {
 
       <div className="page-header">
         <h1 className="page-title">Analyze Email</h1>
-        <p className="page-subtitle">Upload an .eml file to detect phishing threats in real time</p>
+        <p className="page-subtitle">Upload an .eml file or select from Gmail to detect phishing threats</p>
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setActiveTab('upload')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-500 transition-all ${
+            activeTab === 'upload' ? 'btn-primary' : 'btn-ghost'
+          }`}
+        >
+          <Upload className="w-4 h-4" /> Upload .eml
+        </button>
+        <button
+          onClick={() => { setActiveTab('gmail'); if (!gmailConnected) toast.error('Connect Gmail in Settings first'); }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-500 transition-all ${
+            activeTab === 'gmail' ? 'btn-primary' : 'btn-ghost'
+          }`}
+        >
+          <Mail className="w-4 h-4" /> Gmail
+        </button>
+      </div>
+
+      {activeTab === 'gmail' && (
+        <div className="rounded-2xl p-5" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+          {!gmailConnected ? (
+            <div className="text-center py-6">
+              <Mail className="w-10 h-10 mx-auto mb-3 opacity-30" style={{ color: 'var(--text-muted)' }} />
+              <p className="text-sm mb-3" style={{ color: 'var(--text-muted)' }}>Connect Gmail in Settings to load emails</p>
+              <button onClick={() => navigate('/settings')} className="btn-secondary text-sm">Go to Settings</button>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-500" style={{ color: 'var(--text-primary)' }}>Select emails to analyze</p>
+                <button 
+                  onClick={handleLoadGmailEmails} 
+                  disabled={gmailLoading}
+                  className="btn-ghost h-8 px-3 text-xs"
+                >
+                  {gmailLoading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <RefreshCw className="w-3 h-3 mr-1" />}
+                  Load
+                </button>
+              </div>
+              {gmailEmails.length > 0 ? (
+                <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border)', maxHeight: '300px', overflowY: 'auto' }}>
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0" style={{ background: 'var(--bg-elevated)' }}>
+                      <tr>
+                        <th className="p-2 text-left w-8"></th>
+                        <th className="p-2 text-left">From</th>
+                        <th className="p-2 text-left">Subject</th>
+                        <th className="p-2 text-left">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gmailEmails.map(email => (
+                        <tr 
+                          key={email.id}
+                          style={{ 
+                            background: selectedEmails.includes(email.id) ? 'var(--brand-dim)' : 'transparent',
+                            borderBottom: '1px solid var(--border)'
+                          }}
+                        >
+                          <td className="p-2">
+                            <input 
+                              type="checkbox" 
+                              checked={selectedEmails.includes(email.id)}
+                              onChange={() => handleToggleEmail(email.id)}
+                              className="rounded"
+                            />
+                          </td>
+                          <td className="p-2 truncate max-w-[120px]" style={{ color: 'var(--text-primary)' }}>{email.from || '—'}</td>
+                          <td className="p-2 truncate max-w-[180px]" style={{ color: 'var(--text-primary)' }}>{email.subject || 'No Subject'}</td>
+                          <td className="p-2" style={{ color: 'var(--text-muted)' }}>{email.date || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>Click "Load" to fetch recent emails</p>
+              )}
+              {selectedEmails.length > 0 && (
+                <button
+                  onClick={handleSendToQueue}
+                  disabled={loading}
+                  className="btn-primary w-full h-10 justify-center mt-4 text-sm"
+                >
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Layers className="w-4 h-4 mr-2" />}
+                  Send to Queue ({selectedEmails.length})
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'upload' && (
+      <>
       {/* Drop zone */}
       <div
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
@@ -178,12 +325,23 @@ export default function EmailUploadPage() {
       {error && <div className="alert-error mt-4">{error}</div>}
 
       {file && !loading && (
-        <button
-          onClick={handleAnalyze}
-          className="btn-primary w-full h-12 justify-center mt-5 text-[15px]"
-        >
-          <Zap className="w-5 h-5" /> Analyze email now
-        </button>
+        <div className="flex gap-2 mt-5">
+          <button
+            onClick={handleAnalyze}
+            className="btn-primary flex-1 h-12 justify-center text-[15px]"
+          >
+            <Zap className="w-5 h-5" /> Analyze now
+          </button>
+          <button
+            onClick={handleSendToQueue}
+            disabled={loading}
+            className="btn-secondary flex-1 h-12 justify-center text-[15px]"
+          >
+            <Layers className="w-5 h-5" /> Send to Queue
+          </button>
+        </div>
+      )}
+      </>
       )}
 
       {/* Stats strip */}

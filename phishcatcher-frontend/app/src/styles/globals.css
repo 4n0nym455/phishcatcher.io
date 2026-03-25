@@ -170,6 +170,12 @@
 
 /* ─── Component utilities ──────────────────────────────────────────────────── */
 @layer components {
+  .hero-gradient-text {
+    background: linear-gradient(135deg, var(--brand) 0%, #67e8f9 45%, var(--threat) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 
   /* Card */
   .card {

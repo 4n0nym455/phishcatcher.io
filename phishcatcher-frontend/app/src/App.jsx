@@ -58,14 +58,38 @@ export default function App() {
           <Toaster
             position="top-right"
             richColors
-            closeButton
             toastOptions={{
               style: {
-                background:   'var(--bg-surface)',
-                border:       '1px solid var(--border)',
-                color:        'var(--text-primary)',
                 borderRadius: '12px',
-                boxShadow:    'var(--shadow-lg)',
+                boxShadow: 'var(--shadow-lg)',
+              },
+              success: {
+                style: {
+                  background: '#10b981',
+                  color: '#ffffff',
+                  border: '1px solid #10b981',
+                },
+              },
+              error: {
+                style: {
+                  background: '#ef4444',
+                  color: '#ffffff',
+                  border: '1px solid #ef4444',
+                },
+              },
+              info: {
+                style: {
+                  background: '#3b82f6',
+                  color: '#ffffff',
+                  border: '1px solid #3b82f6',
+                },
+              },
+              warning: {
+                style: {
+                  background: '#f59e0b',
+                  color: '#ffffff',
+                  border: '1px solid #f59e0b',
+                },
               },
             }}
           />
@@ -106,6 +130,7 @@ function AppRoutes() {
       {/* ── Google OAuth callback (popup window) ─────────────────────── */}
       <Route path="/google/callback"      element={<GoogleCallbackPage />} />
       <Route path="/auth/google/callback" element={<GoogleCallbackPage />} />
+      <Route path="/gmail/callback"      element={<GoogleCallbackPage />} />
 
       {/* ── Account activation ───────────────────────────────────────── */}
       <Route path="/activate"            element={<ActivateAccountPage />} />

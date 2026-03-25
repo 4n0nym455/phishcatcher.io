@@ -123,9 +123,26 @@ export function AuthProvider({ children }) {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
-  return ctx;
+  const context = useContext(AuthContext);
+  if (!context) {
+    // During development with React refresh, this can happen temporarily
+    if (import.meta.env.DEV) {
+      console.warn('useAuth must be used inside <AuthProvider>. This might be a React refresh issue.');
+      // Return a fallback during development
+      return {
+        user: null,
+        loading: true,
+        isAdmin: false,
+        login: async () => {},
+        loginWithTokens: async () => {},
+        logout: async () => {},
+        refreshUser: async () => {},
+        patchUser: () => {},
+      };
+    }
+    throw new Error('useAuth must be used inside <AuthProvider>');
+  }
+  return context;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

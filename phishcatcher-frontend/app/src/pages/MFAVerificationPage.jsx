@@ -138,8 +138,9 @@ export default function MFAVerificationPage() {
                 <input
                   type="text"
                   value={backupCode}
-                  onChange={e => setBackupCode(e.target.value)}
-                  placeholder="XXXX-XXXX"
+                  onChange={e => setBackupCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+                  placeholder="XXXXXXXX"
+                  maxLength={8}
                   autoFocus
                   autoComplete="off"
                   className="input-base font-mono tracking-widest text-center text-lg"

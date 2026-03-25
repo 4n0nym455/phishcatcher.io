@@ -8,7 +8,7 @@
  * to avoid a flash of the login page for returning users.
  */
 
-import { Navigate, useLocation } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import LoadingOrb from '@/components/LoadingOrb';
 
@@ -32,5 +32,5 @@ export default function PrivateRoute({ children, requireAdmin = false }) {
     return <Navigate to="/dashboard" replace />;
   }
 
-  return children;
+  return children ?? <Outlet />;
 }

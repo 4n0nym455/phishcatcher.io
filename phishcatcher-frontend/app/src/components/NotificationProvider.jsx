@@ -104,7 +104,7 @@ export function NotificationProvider({ children }) {
       await fetch('/api/notifications/unsubscribe', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('phishcatcher_access_token')}`
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`
         }
       });
       

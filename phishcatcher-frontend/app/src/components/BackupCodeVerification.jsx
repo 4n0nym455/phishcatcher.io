@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-import { authApi } from '@/lib/api';
+import { authApi, storeTokens } from '@/lib/api';
 
 export default function BackupCodeVerification({ onSuccess, onCancel }) {
   const [backupCode, setBackupCode] = useState('');
@@ -40,8 +40,10 @@ export default function BackupCodeVerification({ onSuccess, onCancel }) {
         
         // Store tokens and user data
         if (response.access_token && response.refresh_token) {
-          localStorage.setItem('access_token', response.access_token);
-          localStorage.setItem('refresh_token', response.refresh_token);
+          storeTokens({
+            access_token: response.access_token,
+            refresh_token: response.refresh_token,
+          });
         }
         
         if (response.user) {

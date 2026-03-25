@@ -7,11 +7,59 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   User, Lock, Shield, Mail, Trash2,
-  Eye, EyeOff, Loader2, ChevronRight, AlertTriangle,
+  Eye, EyeOff, Loader2, ChevronRight, AlertTriangle, CheckCircle2, XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { authApi } from '@/lib/api';
+import { authApi, clearTokens } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+
+/* ─── Password strength ─────────────────────────────────────────────────── */
+const PWD_RULES = [
+  { id: 'len',   label: '8+ chars',  test: p => p.length >= 8 },
+  { id: 'upper', label: 'Uppercase', test: p => /[A-Z]/.test(p) },
+  { id: 'num',   label: 'Number',    test: p => /\d/.test(p) },
+  { id: 'sym',   label: 'Symbol',    test: p => /[!@#$%^&*(),.?":{}|<>_\-]/.test(p) },
+];
+const STRENGTH_COLORS = ['', 'var(--danger)', 'var(--threat)', 'var(--threat)', 'var(--success)'];
+const STRENGTH_LABELS = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+
+function PasswordStrength({ password }) {
+  if (!password) return null;
+  const score = PWD_RULES.filter(r => r.test(password)).length;
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex gap-1">
+        {[1, 2, 3, 4].map(i => (
+          <div
+            key={i}
+            className="h-1 flex-1 rounded-full transition-all duration-300"
+            style={{ background: i <= score ? STRENGTH_COLORS[score] : 'var(--border)' }}
+          />
+        ))}
+      </div>
+      <div className="flex items-center justify-between flex-wrap gap-y-1">
+        {PWD_RULES.map(r => {
+          const ok = r.test(password);
+          return (
+            <span
+              key={r.id}
+              className="text-[11px] font-500 flex items-center gap-1"
+              style={{ color: ok ? 'var(--success)' : 'var(--text-muted)' }}
+            >
+              {ok ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+              {r.label}
+            </span>
+          );
+        })}
+        {score > 0 && (
+          <span className="text-[11px] font-700" style={{ color: STRENGTH_COLORS[score] }}>
+            {STRENGTH_LABELS[score]}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* ─── Section wrapper ──────────────────────────────────────────────────── */
 function Section({ title, subtitle, icon: Icon, iconColor, iconBg, children }) {
@@ -39,6 +87,8 @@ export default function AccountSettingsPage() {
   const [name,       setName]      = useState(user?.full_name ?? '');
   const [company,    setCompany]   = useState(user?.company ?? '');
   const [profSaving, setProfSave]  = useState(false);
+  const [avatarUrl, setAvatarUrl]  = useState(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   /* ── Password change state ── */
   const [currentPwd, setCurrentPwd] = useState('');
@@ -50,7 +100,7 @@ export default function AccountSettingsPage() {
   const [pwdSaving,  setPwdSaving]  = useState(false);
 
   /* ── Gmail state ── */
-  const [gmailStatus,  setGmailStatus]  = useState(null);
+  const [gmailStatus, setGmailStatus] = useState(null);
   const [gmailLoading, setGmailLoading] = useState(false);
 
   /* ── MFA status ── */
@@ -64,10 +114,48 @@ export default function AccountSettingsPage() {
 
   /* Load Gmail + MFA status */
   useEffect(() => {
-    Promise.allSettled([authApi.gmail.getStatus(), authApi.getMfaStatus()]).then(([g, m]) => {
-      if (g.status === 'fulfilled') setGmailStatus(g.value);
-      if (m.status === 'fulfilled') setMfaStatus(m.value);
-    });
+    const fetchData = () => {
+      Promise.allSettled([authApi.gmail.getStatus(), authApi.getMfaStatus()]).then(([g, m]) => {
+        if (g.status === 'fulfilled') setGmailStatus(g.value);
+        if (m.status === 'fulfilled') setMfaStatus(m.value);
+      });
+      authApi.getAvatarUrl()
+        .then((res) => setAvatarUrl(res?.avatar_url ?? null))
+        .catch(() => setAvatarUrl(null));
+    };
+
+    fetchData();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    };
+
+    const handleFocus = () => {
+      fetchData();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+
+    const handleGmailMessage = (event) => {
+      if (event.data?.type === 'gmail-connected') {
+        setGmailLoading(false);
+        setGmailStatus({ connected: true, email: event.data.email });
+        toast.success('Gmail connected successfully!');
+      } else if (event.data?.type === 'gmail-error') {
+        setGmailLoading(false);
+        toast.error(event.data.error || 'Failed to connect Gmail');
+      }
+    };
+    window.addEventListener('message', handleGmailMessage);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('message', handleGmailMessage);
+    };
   }, []);
 
   /* ── Profile save ── */
@@ -80,6 +168,26 @@ export default function AccountSettingsPage() {
       toast.success('Profile updated');
     } catch (err) { toast.error(err.message ?? 'Failed to update profile'); }
     finally { setProfSave(false); }
+  };
+
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAvatarUploading(true);
+    try {
+      const res = await authApi.uploadAvatar(file);
+      setAvatarUrl(res.avatar_url ?? null);
+      
+      // Update user context with new avatar URL
+      refreshUser();
+      
+      toast.success('Profile picture updated');
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to upload profile picture');
+    } finally {
+      setAvatarUploading(false);
+      e.target.value = '';
+    }
   };
 
   /* ── Password change ── */
@@ -103,7 +211,19 @@ export default function AccountSettingsPage() {
     setGmailLoading(true);
     try {
       const data = await authApi.gmail.getAuthUrl();
-      window.location.href = data.auth_url;
+      const popup = window.open(
+        data.auth_url,
+        'Gmail OAuth',
+        'width=500,height=600,scrollbars=yes,resizable=yes'
+      );
+      
+      const checkClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkClosed);
+          authApi.gmail.getStatus().then(setGmailStatus).catch(() => {});
+          setGmailLoading(false);
+        }
+      }, 500);
     } catch (err) { toast.error(err.message ?? 'Failed to initiate Gmail connection'); setGmailLoading(false); }
   };
 
@@ -125,9 +245,15 @@ export default function AccountSettingsPage() {
     setDeleting(true);
     try {
       await authApi.deleteAccount(deletePwd);
-      toast.success('Account deleted');
-      await logout();
-    } catch (err) { toast.error(err.message ?? 'Failed to delete account'); setDeleting(false); }
+      toast.success('Account deleted successfully');
+      // Clear auth tokens and redirect immediately
+      clearTokens();
+      sessionStorage.clear();
+      window.location.href = '/login';
+    } catch (err) { 
+      toast.error(err.message ?? 'Failed to delete account'); 
+      setDeleting(false); 
+    }
   };
 
   const gmailConnected = gmailStatus?.connected ?? false;
@@ -141,6 +267,21 @@ export default function AccountSettingsPage() {
 
       {/* ── Profile ── */}
       <Section title="Profile" subtitle="Your personal information" icon={User}>
+        <div className="flex items-center gap-4 pb-2">
+          <div className="w-16 h-16 rounded-full overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+            {avatarUrl ? (
+              <img src={avatarUrl} alt="Profile avatar" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-lg font-700" style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}>
+                {(user?.full_name || user?.email || 'U')[0].toUpperCase()}
+              </div>
+            )}
+          </div>
+          <label className="btn-ghost h-9 px-3 text-sm cursor-pointer">
+            {avatarUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Upload picture'}
+            <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleAvatarUpload} disabled={avatarUploading} />
+          </label>
+        </div>
         <form onSubmit={handleProfileSave} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -189,21 +330,34 @@ export default function AccountSettingsPage() {
                 {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
+            <PasswordStrength password={newPwd} />
           </div>
           <div>
-            <label className="form-label">Confirm new password</label>
+            <label className="form-label">Confirm password</label>
             <div className="relative">
               <input type={showConf ? 'text' : 'password'} value={confirmPwd}
                 onChange={e => setConfirmPwd(e.target.value)} required
                 autoComplete="new-password" className="input-base pr-10"
-                style={confirmDirty ? { borderColor: passwordsMatch ? 'var(--success)' : 'var(--danger)' } : {}} />
+                style={confirmDirty ? {
+                  borderColor: passwordsMatch ? 'var(--success)' : 'var(--danger)',
+                  boxShadow: passwordsMatch
+                    ? '0 0 0 3px rgba(16,185,129,0.12)'
+                    : '0 0 0 3px rgba(239,68,68,0.12)',
+                } : {}} />
               <button type="button" tabIndex={-1} onClick={() => setShowConf(v => !v)}
                 className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
                 {showConf ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
             {confirmDirty && !passwordsMatch && (
-              <p className="text-xs mt-1 font-500" style={{ color: 'var(--danger)' }}>Passwords do not match</p>
+              <p className="text-xs mt-1.5 font-500 flex items-center gap-1" style={{ color: 'var(--danger)' }}>
+                <XCircle className="w-3.5 h-3.5" /> Passwords do not match
+              </p>
+            )}
+            {confirmDirty && passwordsMatch && (
+              <p className="text-xs mt-1.5 font-500 flex items-center gap-1" style={{ color: 'var(--success)' }}>
+                <CheckCircle2 className="w-3.5 h-3.5" /> Passwords match
+              </p>
             )}
           </div>
           <button type="submit" disabled={pwdSaving || (confirmDirty && !passwordsMatch)} className="btn-primary h-10">
@@ -264,19 +418,25 @@ export default function AccountSettingsPage() {
         </div>
 
         {gmailConnected && (
-          <div className="grid grid-cols-3 gap-3 mt-2">
-            {[
-              { label: 'Emails scanned', value: gmailStatus?.emails_scanned ?? '—' },
-              { label: 'Threats found',  value: gmailStatus?.threats_found  ?? '—' },
-              { label: 'Auto-scan',      value: gmailStatus?.auto_scan ? 'On' : 'Off' },
-            ].map(s => (
-              <div key={s.label} className="rounded-xl p-3 text-center"
-                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
-                <div className="font-heading font-700 text-lg" style={{ color: 'var(--brand)' }}>{s.value}</div>
-                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-2 gap-3 mt-2">
+              {[
+                { label: 'Emails scanned', value: gmailStatus?.emails_scanned ?? '—' },
+                { label: 'Threats found',  value: gmailStatus?.threats_found  ?? '—' },
+              ].map(s => (
+                <div key={s.label} className="rounded-xl p-3 text-center"
+                  style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                  <div className="font-heading font-700 text-lg" style={{ color: 'var(--brand)' }}>{s.value}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3">
+              <Link to="/upload" className="text-xs font-500 inline-flex items-center gap-1" style={{ color: 'var(--brand)' }}>
+                Load and analyze emails <ChevronRight className="w-3 h-3" />
+              </Link>
+            </div>
+          </>
         )}
       </Section>
 

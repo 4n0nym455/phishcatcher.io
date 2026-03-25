@@ -16,6 +16,7 @@ export default function MFASettings({ embedded = false }) {
   const [setupData, setSetupData] = useState(null);
   const [verificationCode, setVerificationCode] = useState('');
   const [disableCode, setDisableCode] = useState('');
+  const [disablePassword, setDisablePassword] = useState('');
   const [isSetupDialogOpen, setIsSetupDialogOpen] = useState(false);
   const [isDisableDialogOpen, setIsDisableDialogOpen] = useState(false);
   const [mfaSessionToken, setMfaSessionToken] = useState(null);
@@ -56,11 +57,9 @@ export default function MFASettings({ embedded = false }) {
     }
 
     try {
-      await authApi.verifyMfa({
-        token: verificationCode,
-        secret: setupData.secret,
-        backup_codes: setupData.backup_codes || [],
-        mfa_session_token: mfaSessionToken
+      await authApi.verifyMfaSetup({
+        mfa_session_token: mfaSessionToken,
+        code: verificationCode
       });
       
       toast.success('MFA enabled successfully');
@@ -79,15 +78,21 @@ export default function MFASettings({ embedded = false }) {
       toast.error('Verification code is required');
       return;
     }
+    if (!disablePassword) {
+      toast.error('Password is required');
+      return;
+    }
 
     try {
       await authApi.disableMfa({
-        token: disableCode
+        token: disableCode,
+        password: disablePassword
       });
       
       toast.success('MFA disabled successfully');
       setIsDisableDialogOpen(false);
       setDisableCode('');
+      setDisablePassword('');
       fetchMfaStatus();
     } catch (error) {
       toast.error(error.message || 'Failed to disable MFA');
@@ -335,11 +340,23 @@ export default function MFASettings({ embedded = false }) {
                   maxLength={6}
                 />
               </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="disable-password" className="text-white">Password</Label>
+                <Input
+                  id="disable-password"
+                  type="password"
+                  placeholder="Enter your password"
+                  value={disablePassword}
+                  onChange={(e) => setDisablePassword(e.target.value)}
+                  className="bg-black/30 border-violet-500/25 text-white placeholder:text-muted-foreground"
+                />
+              </div>
               
               <div className="flex gap-2">
                 <Button 
                   onClick={handleDisableMfa}
-                  disabled={!disableCode || disableCode.length !== 6}
+                  disabled={!disableCode || disableCode.length !== 6 || !disablePassword}
                   className="flex-1 bg-red-500 hover:bg-red-600"
                 >
                   Disable MFA
@@ -349,6 +366,7 @@ export default function MFASettings({ embedded = false }) {
                   onClick={() => {
                     setIsDisableDialogOpen(false);
                     setDisableCode('');
+                    setDisablePassword('');
                   }}
                   className="flex-1 bg-transparent border-violet-500/25"
                 >

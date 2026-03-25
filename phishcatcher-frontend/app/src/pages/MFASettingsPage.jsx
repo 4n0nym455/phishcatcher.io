@@ -29,11 +29,38 @@ export default function MFASettingsPage() {
   const [disableLoading, setDisableLoading] = useState(false);
 
   useEffect(() => {
-    authApi.getMfaStatus()
-      .then(setStatus)
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    const fetchMfaStatus = () => {
+      authApi.getMfaStatus()
+        .then(setStatus)
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    };
+
+    // Initial fetch
+    fetchMfaStatus();
+
+    // Refresh when page gains focus (navigation back, tab switch, etc.)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && !loading) {
+        fetchMfaStatus();
+      }
+    };
+
+    // Also refresh when window gains focus
+    const handleFocus = () => {
+      if (!loading) {
+        fetchMfaStatus();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [loading]);
 
   /* ── Initiate setup ── */
   const handleSetup = async () => {
@@ -62,6 +89,7 @@ export default function MFASettingsPage() {
       setStatus({ enabled: true, setup_completed: true, has_backup_codes: true });
       await refreshUser();
     } catch (err) {
+      console.error('MFA verification error:', err);
       toast.error(err.message ?? 'Invalid code. Try again.');
       setSetupCode('');
     } finally {

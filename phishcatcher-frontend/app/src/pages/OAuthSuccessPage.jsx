@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { authApi } from '@/lib/api';
+import { authApi, storeTokens } from '@/lib/api';
 
 export default function OAuthSuccessPage() {
   const navigate = useNavigate();
@@ -30,8 +30,10 @@ export default function OAuthSuccessPage() {
         
         // Store tokens and user data
         if (response.access_token) {
-          localStorage.setItem('access_token', response.access_token);
-          localStorage.setItem('refresh_token', response.refresh_token);
+          storeTokens({
+            access_token: response.access_token,
+            refresh_token: response.refresh_token,
+          });
         }
         
         // Store user info

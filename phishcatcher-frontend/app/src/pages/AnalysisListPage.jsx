@@ -1,16 +1,80 @@
 /**
  * AnalysisListPage.jsx
  * Searchable, filterable table of all email analyses with delete and load-more.
+ * Also handles queued analyses from Gmail integration.
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Search, Upload, FileText, Clock, RefreshCw, Loader2,
-  X, AlertTriangle, CheckCircle, Shield,
+  X, AlertTriangle, CheckCircle, Shield, Play, Layers,
+  CheckSquare, Square, Settings, FileJson, File, FileCode, Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { analysisApi } from '@/lib/api';
+import { analysisApi, authApi } from '@/lib/api';
+
+/* ─── Analysis Format Dialog ─────────────────────────────────────────────── */
+function FormatDialog({ open, onClose, onSubmit, selectedCount }) {
+  const [format, setFormat] = useState('detailed');
+  const [analyzing, setAnalyzing] = useState(false);
+
+  const formats = [
+    { value: 'detailed', label: 'Detailed', icon: FileCode, desc: 'Full analysis with all checks' },
+    { value: 'quick', label: 'Quick Scan', icon: Zap, desc: 'Fast analysis, basic checks' },
+    { value: 'deep', label: 'Deep Analysis', icon: Shield, desc: 'Comprehensive analysis' },
+  ];
+
+  const handleSubmit = async () => {
+    setAnalyzing(true);
+    try {
+      await onSubmit(format);
+      onClose();
+    } catch (err) { toast.error(err.message ?? 'Analysis failed'); }
+    finally { setAnalyzing(false); }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-md mx-4 shadow-2xl">
+        <h3 className="text-lg font-600 mb-1" style={{ color: 'var(--text-primary)' }}>Analysis Options</h3>
+        <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+          {selectedCount} item{selectedCount > 1 ? 's' : ''} selected
+        </p>
+
+        <div className="space-y-2 mb-6">
+          {formats.map(f => (
+            <button
+              key={f.value}
+              onClick={() => setFormat(f.value)}
+              className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all ${
+                format === f.value ? 'border-brand bg-brand/10' : 'border-transparent'
+              }`}
+              style={{ background: format === f.value ? 'var(--brand-dim)' : 'var(--bg-surface)' }}
+            >
+              {format === f.value ? <CheckSquare className="w-5 h-5" style={{ color: 'var(--brand)' }} /> : <Square className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />}
+              <div className="text-left">
+                <p className="text-sm font-500" style={{ color: 'var(--text-primary)' }}>{f.label}</p>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{f.desc}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={onClose} className="btn-ghost flex-1">Cancel</button>
+          <button onClick={handleSubmit} disabled={analyzing} className="btn-primary flex-1">
+            {analyzing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Play className="w-4 h-4 mr-2" />}
+            Analyze
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
 function score(a)     { return a.threat_score ?? a.risk_score ?? 0; }
@@ -47,6 +111,107 @@ export default function AnalysisListPage() {
   const [page,     setPage]     = useState(1);
   const [hasMore,  setHasMore]  = useState(false);
   const [deleting, setDeleting] = useState(null);
+
+  /* ── Queue state ── */
+  const [queueData, setQueueData] = useState({ pending: [], processing: [], completed: [], counts: {} });
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [showFormatDialog, setShowFormatDialog] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [activeTab, setActiveTab] = useState('results');
+  const [queueLoading, setQueueLoading] = useState(false);
+
+  useEffect(() => {
+    const pendingId = localStorage.getItem('pending_analysis_id');
+    if (pendingId) {
+      localStorage.removeItem('pending_analysis_id');
+      navigate(`/analysis/${pendingId}`);
+    }
+    loadQueue();
+  }, []);
+
+  const loadQueue = async () => {
+    setQueueLoading(true);
+    try {
+      const data = await authApi.gmail.getQueue();
+      setQueueData(data);
+    } catch { /* silent */ }
+    finally { setQueueLoading(false); }
+  };
+
+  const handleSelectAll = () => {
+    const allPending = queueData.pending.map(q => q.message_id);
+    if (selectedIds.length === allPending.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(allPending);
+    }
+  };
+
+  const handleToggleSelect = (id) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleAnalyzeAll = () => {
+    if (selectedIds.length === 0) {
+      setSelectedIds(queueData.pending.map(q => q.message_id));
+    }
+    setShowFormatDialog(true);
+  };
+
+  const handleAnalyzeSingle = async (item) => {
+    try {
+      const result = await authApi.gmail.processQueueItem(item.message_id);
+      const analysisId = result.analysis_id;
+      if (analysisId && analysisId !== 'None' && analysisId !== 'null') {
+        navigate(`/analysis/${analysisId}`);
+      } else {
+        toast.success('Analysis completed');
+        loadQueue();
+      }
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to start analysis');
+    }
+  };
+
+  const handleAnalyze = async (format) => {
+    setAnalyzing(true);
+    try {
+      for (const id of selectedIds) {
+        await authApi.gmail.processQueueItem(id);
+      }
+      toast.success(`${selectedIds.length} analyses started`);
+      setSelectedIds([]);
+      loadQueue();
+      setActiveTab('results');
+      load(1, true);
+    } catch (err) {
+      throw err;
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const handleClearCompleted = async () => {
+    if (!window.confirm('Clear completed items from queue?')) return;
+    try {
+      await authApi.gmail.clearQueue();
+      toast.success('Queue cleared');
+      loadQueue();
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to clear queue');
+    }
+  };
+
+  const handleViewResult = (item) => {
+    const analysisId = item.analysis_id;
+    if (analysisId && analysisId !== 'None' && analysisId !== 'null' && analysisId !== undefined) {
+      navigate(`/analysis/${analysisId}`);
+    } else {
+      toast.error('Analysis result not available yet');
+    }
+  };
 
   const load = useCallback(async (pg = 1, reset = true) => {
     setLoading(true);
@@ -103,13 +268,194 @@ export default function AnalysisListPage() {
       {/* Header */}
       <div className="page-header flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <h1 className="page-title">Analysis History</h1>
+          <h1 className="page-title">Analysis</h1>
           <p className="page-subtitle">{items.length} total analyses</p>
         </div>
         <Link to="/upload" className="btn-primary h-9 px-4 text-sm self-start sm:self-auto">
           <Upload className="w-4 h-4" /> New analysis
         </Link>
       </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setActiveTab('results')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-500 transition-all ${
+            activeTab === 'results' ? 'btn-primary' : 'btn-ghost'
+          }`}
+        >
+          <FileText className="w-4 h-4" /> Results
+        </button>
+        <button
+          onClick={() => { setActiveTab('queue'); loadQueue(); }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-500 transition-all ${
+            activeTab === 'queue' ? 'btn-primary' : 'btn-ghost'
+          }`}
+        >
+          <Layers className="w-4 h-4" /> Queue
+          {(queueData.counts.pending > 0 || queueData.counts.processing > 0) && (
+            <span className="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-brand text-white">
+              {queueData.counts.pending + queueData.counts.processing}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Queue Tab */}
+      {activeTab === 'queue' && (
+        <div className="rounded-2xl p-5" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+          {queueLoading ? (
+            <div className="text-center py-10">
+              <Loader2 className="w-8 h-8 mx-auto animate-spin" style={{ color: 'var(--brand)' }} />
+              <p className="text-sm mt-3" style={{ color: 'var(--text-muted)' }}>Loading queue...</p>
+            </div>
+          ) : queueData.counts.pending === 0 && queueData.counts.processing === 0 && queueData.counts.completed === 0 ? (
+            <div className="text-center py-10">
+              <Layers className="w-12 h-12 mx-auto mb-3 opacity-30" style={{ color: 'var(--text-muted)' }} />
+              <p className="text-sm mb-1" style={{ color: 'var(--text-primary)' }}>Queue is empty</p>
+              <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>Select emails from Gmail or upload .eml files</p>
+              <Link to="/upload" className="btn-primary text-sm">Go to Upload</Link>
+            </div>
+          ) : (
+            <>
+              {/* Queue Stats */}
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="rounded-xl p-3 text-center" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                  <div className="font-heading font-700 text-lg" style={{ color: 'var(--warning)' }}>{queueData.counts.pending}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Pending</div>
+                </div>
+                <div className="rounded-xl p-3 text-center" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                  <div className="font-heading font-700 text-lg" style={{ color: 'var(--brand)' }}>{queueData.counts.processing}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Processing</div>
+                </div>
+                <div className="rounded-xl p-3 text-center" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                  <div className="font-heading font-700 text-lg" style={{ color: 'var(--success)' }}>{queueData.counts.completed}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Completed</div>
+                </div>
+              </div>
+
+              {/* Pending Items */}
+              {queueData.pending.length > 0 && (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-600 text-sm" style={{ color: 'var(--text-primary)' }}>Pending Analysis</h3>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleSelectAll}
+                        className="flex items-center gap-1 text-xs"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        {selectedIds.length === queueData.pending.length ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+                        Select All
+                      </button>
+                      <button
+                        onClick={handleAnalyzeAll}
+                        disabled={selectedIds.length === 0}
+                        className="btn-primary h-8 px-3 text-xs"
+                      >
+                        <Play className="w-3 h-3 mr-1" /> Analyze ({selectedIds.length})
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-2 mb-4">
+                    {queueData.pending.map(item => (
+                      <div
+                        key={item.message_id}
+                        className="flex items-center gap-3 p-3 rounded-lg"
+                        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.includes(item.message_id)}
+                          onChange={() => handleToggleSelect(item.message_id)}
+                          className="rounded"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate" style={{ color: 'var(--text-primary)' }}>{item.subject || 'No Subject'}</p>
+                          <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{item.from || 'Unknown sender'}</p>
+                        </div>
+                        <button
+                          onClick={() => handleAnalyzeSingle(item)}
+                          className="btn-ghost h-8 px-3 text-xs"
+                        >
+                          Analyze
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Processing Items */}
+              {queueData.processing.length > 0 && (
+                <>
+                  <h3 className="font-600 text-sm mb-3" style={{ color: 'var(--text-primary)' }}>Processing</h3>
+                  <div className="space-y-2 mb-4">
+                    {queueData.processing.map(item => (
+                      <div
+                        key={item.message_id}
+                        className="flex items-center gap-3 p-3 rounded-lg"
+                        style={{ background: 'var(--brand-dim)', border: '1px solid var(--brand)' }}
+                      >
+                        <Loader2 className="w-4 h-4 animate-spin" style={{ color: 'var(--brand)' }} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate" style={{ color: 'var(--text-primary)' }}>{item.subject || 'No Subject'}</p>
+                          <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>Analyzing...</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Completed Items */}
+              {queueData.completed.length > 0 && (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-600 text-sm" style={{ color: 'var(--text-primary)' }}>Completed</h3>
+                    <button
+                      onClick={handleClearCompleted}
+                      className="text-xs"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      Clear completed
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {queueData.completed.map(item => (
+                      <div
+                        key={item.message_id}
+                        className="flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:opacity-80"
+                        style={{ background: item.status === 'failed' ? 'var(--danger-dim)' : 'var(--success-dim)', border: `1px solid ${item.status === 'failed' ? 'var(--danger)' : 'var(--success)'}` }}
+                        onClick={() => handleViewResult(item)}
+                      >
+                        {item.status === 'failed' ? (
+                          <AlertTriangle className="w-4 h-4" style={{ color: 'var(--danger)' }} />
+                        ) : (
+                          <CheckCircle className="w-4 h-4" style={{ color: 'var(--success)' }} />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate" style={{ color: 'var(--text-primary)' }}>{item.subject || 'No Subject'}</p>
+                          <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+                            {item.status === 'failed' ? (item.error || 'Analysis failed') : 'Analysis complete'}
+                          </p>
+                        </div>
+                        {item.analysis_id && (
+                          <span className="text-xs font-500" style={{ color: 'var(--brand)' }}>View Result</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Results Tab */}
+      {activeTab === 'results' && (
+      <>
 
       {/* Mini stats */}
       {items.length > 0 && (
@@ -264,6 +610,15 @@ export default function AnalysisListPage() {
           </>
         )}
       </div>
+      </>
+      )}
+
+      <FormatDialog
+        open={showFormatDialog}
+        onClose={() => setShowFormatDialog(false)}
+        onSubmit={handleAnalyze}
+        selectedCount={selectedIds.length}
+      />
     </div>
   );
 }

@@ -1,5 +1,4 @@
 import { Navigate } from 'react-router-dom';
-import LoadingOrb from './LoadingOrb';
 
 const ProtectedRoute = ({ children, isAuthenticated, userRole, userData, onLogout }) => {
   if (!isAuthenticated) {

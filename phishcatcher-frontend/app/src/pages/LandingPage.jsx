@@ -4,13 +4,14 @@
  * Logo: /phishcatcher.png  — no orb image needed, uses CSS blobs.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Shield, Zap, BarChart3, Mail, Lock, CheckCircle,
   AlertTriangle, ArrowRight, ChevronRight, Eye, TrendingUp,
   Menu, X,
 } from 'lucide-react';
+import { gsap } from 'gsap';
 
 /* ─── Background orb ─────────────────────────────────────────────────────── */
 function CssOrb({ style = {} }) {
@@ -19,6 +20,47 @@ function CssOrb({ style = {} }) {
       className="absolute rounded-full pointer-events-none select-none"
       style={{ filter: 'blur(90px)', ...style }}
     />
+  );
+}
+
+/* ─── Animated Orb Component ─────────────────────────────────────────────────── */
+function AnimatedOrb() {
+  const orbRef = useRef(null);
+  const heroRef = useRef(null);
+
+  useEffect(() => {
+    const ctx = gsap.context(() => {
+      const tl = gsap.timeline({ defaults: { ease: 'power2.out' } });
+      
+      tl.fromTo(orbRef.current,
+        { opacity: 0, scale: 0.85, y: 40 },
+        { opacity: 1, scale: 1, y: 0, duration: 1 }
+      )
+
+      gsap.to(orbRef.current, {
+        y: -15,
+        duration: 4,
+        repeat: -1,
+        yoyo: true,
+        ease: 'sine.inOut'
+      });
+    }, heroRef);
+
+    return () => ctx.revert();
+  }, []);
+
+  return (
+    <div ref={heroRef} className="absolute inset-0 pointer-events-none z-10">
+      {/* Orb positioned lower and more centered */}
+      <div className="absolute top-12 left-1/2 transform -translate-x-1/2">
+        <img 
+          ref={orbRef}
+          src="/orb_glow_sphere.png" 
+          alt="Security Orb" 
+          className="w-24 h-24 sm:w-32 sm:h-32 md:w-40 md:h-40 lg:w-48 lg:h-48"
+        />
+      </div>
+    </div>
   );
 }
 
@@ -170,18 +212,29 @@ export default function LandingPage() {
       <NavBar />
 
       {/* ═══ HERO ════════════════════════════════════════════════════════════ */}
-      <section className="relative pt-36 pb-28 px-5 overflow-hidden">
+      <section className="relative pt-56 pb-32 px-5 overflow-hidden">
         <CssOrb style={{ width: 700, height: 700, top: -200, left: -200, background: 'var(--brand)', opacity: 0.12 }} />
         <CssOrb style={{ width: 500, height: 500, top: -50, right: -100, background: 'var(--threat)', opacity: 0.09 }} />
+        <AnimatedOrb />
+        <div
+          aria-hidden
+          className="absolute inset-0"
+          style={{
+            backgroundImage:
+              'linear-gradient(rgba(148,163,184,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.08) 1px, transparent 1px)',
+            backgroundSize: '36px 36px',
+            maskImage: 'radial-gradient(circle at center, black, transparent 75%)',
+          }}
+        />
 
-        <div className="max-w-5xl mx-auto text-center relative z-10">
+        <div className="max-w-5xl mx-auto text-center relative z-20">
           {/* Badge */}
           <div
             className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-600 mb-8 animate-fade-in"
             style={{ background: 'var(--brand-dim)', color: 'var(--brand)', border: '1px solid var(--brand)' }}
           >
             <Zap className="w-3 h-3" />
-            AI-powered phishing detection · 97.4% accuracy
+            ML-based phishing detection and analysis ·
           </div>
 
           <h1
@@ -189,7 +242,7 @@ export default function LandingPage() {
             style={{ fontSize: 'clamp(2.4rem, 6vw, 4.2rem)', lineHeight: 1.08, color: 'var(--text-primary)' }}
           >
             Stop phishing attacks<br />
-            <span style={{ color: 'var(--brand)' }}>before they land</span>
+            <span className="hero-gradient-text">before they land</span>
           </h1>
 
           <p
@@ -219,10 +272,13 @@ export default function LandingPage() {
               </span>
             ))}
           </div>
+          <p className="mt-6 text-xs uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted)' }}>
+            Trusted by security teams and independent analysts
+          </p>
         </div>
 
         {/* Demo card */}
-        <div className="max-w-3xl mx-auto mt-16 relative z-10 animate-slide-up animate-stagger-4">
+        <div className="max-w-3xl mx-auto mt-20 relative z-20 animate-slide-up animate-stagger-4">
           <div
             className="rounded-2xl overflow-hidden"
             style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}

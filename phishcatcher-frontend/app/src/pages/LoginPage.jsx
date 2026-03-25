@@ -8,7 +8,7 @@
 
 import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Eye, EyeOff, ArrowRight, Loader2, Shield } from 'lucide-react';
+import { Eye, EyeOff, ArrowRight, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
@@ -234,7 +234,12 @@ export default function LoginPage() {
           className="flex items-center justify-center gap-2 mt-6 text-xs"
           style={{ color: 'var(--text-muted)' }}
         >
-          <Shield className="w-3.5 h-3.5" style={{ color: 'var(--brand)' }} />
+          <img
+            src="/phishcatcher-logo.png"
+            alt="PhishCatcher"
+            className="w-4 h-4"
+            style={{ color: 'var(--brand)' }}
+          />
           Protected by enterprise-grade phishing detection
         </p>
       </div>

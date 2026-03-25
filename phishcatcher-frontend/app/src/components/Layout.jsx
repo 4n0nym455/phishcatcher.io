@@ -5,18 +5,21 @@
  * Fully CSS-variable driven: works in both light and dark mode.
  */
 
-import { useState } from 'react';
-import { Link, useNavigate, useLocation, Outlet } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom';
 import {
-  Menu, X, LayoutDashboard, Upload, FileText, FileBarChart,
-  Settings, User, ChevronDown, LogOut, ShieldAlert, Shield,
+  Menu, X, Home, Upload, FileText, Calendar, Settings,
+  LogOut, User, ChevronDown, Bell, Search, Filter,
+  Shield, AlertTriangle, CheckCircle, Clock, TrendingUp,
+  Users, BarChart3, Lock, Eye, EyeOff, Loader2,
+  Database, Mail, Smartphone, Globe, Cpu, HardDrive, FileBarChart, ShieldAlert
 } from 'lucide-react';
-import { useAuth }       from '@/context/AuthContext';
+import { useAuth } from '@/context/AuthContext';
 import { ThemeToggle }   from './ThemeToggle';
 import { toast }         from 'sonner';
 
 const USER_NAV = [
-  { path: '/dashboard',      label: 'Dashboard',       icon: LayoutDashboard },
+  { path: '/dashboard',      label: 'Dashboard',       icon: Home },
   { path: '/upload',         label: 'Email Upload',     icon: Upload },
   { path: '/analysis',       label: 'Analysis History', icon: FileText },
   { path: '/weekly-reports', label: 'Weekly Reports',   icon: FileBarChart },
@@ -27,11 +30,16 @@ const ADMIN_NAV = [
 ];
 
 export default function Layout() {
-  const { user, isAdmin, logout } = useAuth();
+  const { user, logout, refreshUser, isAdmin } = useAuth();
   const location  = useLocation();
   const navigate  = useNavigate();
-  const [sidebar, setSidebar] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profile, setProfile] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [notifications, setNotifications] = useState([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef(null);
 
   const navItems = [...USER_NAV, ...(isAdmin ? ADMIN_NAV : [])];
 
@@ -49,10 +57,10 @@ export default function Layout() {
     <div className="flex min-h-screen" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
 
       {/* Mobile overlay */}
-      {sidebar && (
+      {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 lg:hidden"
-          onClick={() => setSidebar(false)}
+          onClick={() => setSidebarOpen(false)}
         />
       )}
 
@@ -61,7 +69,7 @@ export default function Layout() {
         className={`
           fixed lg:static inset-y-0 left-0 z-50 w-64 flex flex-col
           transition-transform duration-300 ease-out
-          ${sidebar ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         `}
         style={{
           background: 'var(--sidebar-bg)',
@@ -76,14 +84,13 @@ export default function Layout() {
           <Link
             to="/dashboard"
             className="flex items-center gap-3"
-            onClick={() => setSidebar(false)}
+            onClick={() => setSidebarOpen(false)}
           >
-            <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-              style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}
-            >
-              <Shield className="w-5 h-5" />
-            </div>
+            <img
+              src="/phishcatcher-logo.png"
+              alt="PhishCatcher"
+              className="w-7 h-7 shrink-0"
+            />
             <div>
               <p className="font-heading font-700 text-sm leading-tight" style={{ color: 'var(--text-primary)' }}>
                 PhishCatcher
@@ -103,7 +110,7 @@ export default function Layout() {
             <Link
               key={path}
               to={path}
-              onClick={() => setSidebar(false)}
+              onClick={() => setSidebarOpen(false)}
               className={`nav-item theme-transition ${isActive(path) ? 'active' : ''}`}
             >
               <Icon className="w-4 h-4 shrink-0" />
@@ -118,11 +125,17 @@ export default function Layout() {
           style={{ borderTop: '1px solid var(--sidebar-border)' }}
         >
           <div className="flex items-center gap-3">
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-              style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}
-            >
-              {(user?.full_name || user?.email || 'U')[0].toUpperCase()}
+            <div className="w-10 h-10 rounded-full overflow-hidden shrink-0">
+              {user?.avatar_url ? (
+                <img src={user.avatar_url} alt="Profile avatar" className="w-full h-full object-cover" />
+              ) : (
+                <div
+                  className="w-full h-full flex items-center justify-center text-xs font-bold"
+                  style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}
+                >
+                  {(user?.full_name || user?.email || 'U')[0].toUpperCase()}
+                </div>
+              )}
             </div>
             <div className="min-w-0">
               <p className="text-xs font-600 truncate" style={{ color: 'var(--text-primary)' }}>
@@ -152,9 +165,9 @@ export default function Layout() {
           <button
             className="lg:hidden p-2 rounded-lg transition-colors"
             style={{ color: 'var(--text-muted)' }}
-            onClick={() => setSidebar(v => !v)}
+            onClick={() => setSidebarOpen(v => !v)}
           >
-            {sidebar ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
 
           {/* Page breadcrumb (desktop) */}
@@ -178,12 +191,15 @@ export default function Layout() {
                   color: 'var(--text-primary)',
                 }}
               >
-                <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
-                  style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}
-                >
-                  {(user?.full_name || user?.email || 'U')[0].toUpperCase()}
-                </div>
+                <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold">
+                {user?.avatar_url ? (
+                  <img src={user.avatar_url} alt="Profile avatar" className="w-full h-full object-cover" />
+                ) : (
+                  <div style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}>
+                    {(user?.full_name || user?.email || 'U')[0].toUpperCase()}
+                  </div>
+                )}
+              </div>
                 <span className="hidden lg:block text-sm font-500">
                   {user?.full_name?.split(' ')[0] || user?.email?.split('@')[0] || 'User'}
                 </span>

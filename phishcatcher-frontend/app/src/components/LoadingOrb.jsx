@@ -1,18 +1,15 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
+import { gsap } from 'gsap';
 
 const LoadingOrb = ({ size = 'large', text = 'Loading...' }) => {
+  const orbRef = useRef(null);
+  const containerRef = useRef(null);
+
   const sizeClasses = {
     small: 'w-8 h-8',
     medium: 'w-16 h-16', 
     large: 'w-24 h-24',
     mini: 'w-5 h-5'
-  };
-
-  const particleSizes = {
-    small: 'w-1 h-1',
-    medium: 'w-1.5 h-1.5',
-    large: 'w-2 h-2',
-    mini: 'w-1 h-1'
   };
 
   const textSizeClasses = {
@@ -22,31 +19,44 @@ const LoadingOrb = ({ size = 'large', text = 'Loading...' }) => {
     mini: 'text-xs'
   };
 
+  useEffect(() => {
+    const ctx = gsap.context(() => {
+      // Entrance animation
+      gsap.fromTo(orbRef.current,
+        { opacity: 0, scale: 0.85, y: 20 },
+        { opacity: 1, scale: 1, y: 0, duration: 1, ease: 'power2.out' }
+      );
+
+      // Continuous floating animation
+      gsap.to(orbRef.current, {
+        y: -8,
+        duration: 4,
+        repeat: -1,
+        yoyo: true,
+        ease: 'sine.inOut'
+      });
+
+      // Gentle rotation
+      gsap.to(orbRef.current, {
+        rotation: 360,
+        duration: 20,
+        repeat: -1,
+        ease: 'none'
+      });
+    }, containerRef);
+
+    return () => ctx.revert();
+  }, []);
+
   return (
-    <div className="flex flex-col items-center justify-center">
+    <div ref={containerRef} className="flex flex-col items-center justify-center">
       <div className={`relative ${sizeClasses[size]}`}>
-        {/* Outer glow */}
-        <div className="absolute inset-0 rounded-full bg-violet-500/20 blur-xl animate-pulse"></div>
-        
-        {/* Middle ring */}
-        <div className="absolute inset-2 rounded-full border-2 border-violet-500/30 animate-spin"></div>
-        
-        {/* Inner core */}
-        <div className="absolute inset-4 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 shadow-lg">
-          <div className="absolute inset-0 rounded-full bg-white/20 blur-sm"></div>
-        </div>
-        
-        {/* Orbiting particles */}
-        <div className="absolute inset-0 rounded-full">
-          <div className={`absolute top-0 left-1/2 ${particleSizes[size]} bg-violet-400 rounded-full -translate-x-1/2 -translate-y-1/2 animate-pulse`}></div>
-          <div className={`absolute bottom-0 left-1/2 ${particleSizes[size]} bg-purple-400 rounded-full -translate-x-1/2 translate-y-1/2 animate-pulse`} style={{animationDelay: '0.5s'}}></div>
-          <div className={`absolute left-0 top-1/2 ${particleSizes[size]} bg-indigo-400 rounded-full -translate-y-1/2 -translate-x-1/2 animate-pulse`} style={{animationDelay: '1s'}}></div>
-          <div className={`absolute right-0 top-1/2 ${particleSizes[size]} bg-blue-400 rounded-full -translate-y-1/2 translate-x-1/2 animate-pulse`} style={{animationDelay: '1.5s'}}></div>
-        </div>
-        
-        {/* Pulsing waves */}
-        <div className="absolute inset-0 rounded-full border border-violet-500/20 animate-ping"></div>
-        <div className="absolute inset-0 rounded-full border border-violet-500/10 animate-ping" style={{animationDelay: '1s'}}></div>
+        <img 
+          ref={orbRef}
+          src="/orb_glow_sphere.png" 
+          alt="Loading Orb" 
+          className={`w-full h-full object-contain`}
+        />
       </div>
       
       {text && (

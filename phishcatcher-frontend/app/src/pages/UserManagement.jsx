@@ -6,24 +6,98 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, UserCheck, UserX, Edit2, Trash2,
-  X, Loader2, Users,
+  X, Loader2, Users, AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { adminApi } from '@/lib/api';
 
 const PAGE_SIZE = 25;
 
+/* ─── Delete Confirmation Modal ──────────────────────────────────────────── */
+function DeleteModal({ user, onClose, onConfirm }) {
+  const [password, setPassword] = useState('');
+  const [confirming, setConfirming] = useState(false);
+
+  const handleConfirm = async () => {
+    if (!password.trim()) {
+      toast.error('Admin password is required');
+      return;
+    }
+    setConfirming(true);
+    try {
+      await onConfirm(user.id, { password });
+      onClose();
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to delete user');
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[98] bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div
+        className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[99] max-w-md mx-auto rounded-2xl p-6 space-y-4"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center"
+            style={{ background: 'var(--danger-dim)', color: 'var(--danger)' }}>
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="font-heading font-700 text-lg" style={{ color: 'var(--text-primary)' }}>Delete User</h3>
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>This action cannot be undone</p>
+          </div>
+        </div>
+        
+        <div className="space-y-3">
+          <div className="p-3 rounded-xl"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+            <p className="text-sm font-500" style={{ color: 'var(--text-primary)' }}>{user.email}</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {user.full_name || 'No name provided'}
+            </p>
+          </div>
+          
+          <div>
+            <label className="form-label">Admin Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="Enter your password to confirm"
+              className="input-base"
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className="btn-ghost flex-1 h-10 justify-center text-sm">Cancel</button>
+          <button
+            onClick={handleConfirm}
+            disabled={confirming || !password.trim()}
+            className="btn-danger flex-1 h-10 justify-center text-sm"
+          >
+            {confirming ? <><Loader2 className="w-4 h-4 animate-spin mr-1" />Deleting...</> : 'Delete User'}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 /* ─── Edit modal ────────────────────────────────────────────────────────── */
 function EditModal({ user, onClose, onSave }) {
   const [name,    setName]    = useState(user.full_name ?? '');
-  const [role,    setRole]    = useState(user.role ?? 'user');
   const [saving,  setSaving]  = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await adminApi.updateUser(user.id, { full_name: name, role });
-      onSave({ ...user, full_name: name, role });
+      await adminApi.updateUser(user.id, { full_name: name });
+      onSave({ ...user, full_name: name });
       toast.success('User updated');
       onClose();
     } catch (err) {
@@ -52,13 +126,6 @@ function EditModal({ user, onClose, onSave }) {
           <label className="form-label">Full name</label>
           <input type="text" value={name} onChange={e => setName(e.target.value)} className="input-base" />
         </div>
-        <div>
-          <label className="form-label">Role</label>
-          <select value={role} onChange={e => setRole(e.target.value)} className="input-base">
-            <option value="user">User</option>
-            <option value="admin">Admin</option>
-          </select>
-        </div>
         <div className="flex gap-3 pt-1">
           <button onClick={onClose} className="btn-ghost flex-1 h-10 justify-center text-sm">Cancel</button>
           <button onClick={handleSave} disabled={saving} className="btn-primary flex-1 h-10 justify-center text-sm">
@@ -80,6 +147,7 @@ export default function UserManagement() {
   const [editing,  setEditing] = useState(null);
   const [toggling, setToggling]= useState(null);
   const [deleting, setDeleting]= useState(null);
+  const [deleteModal, setDeleteModal] = useState(null);
 
   const load = useCallback(async (pg = 1, reset = true, q = search) => {
     setLoading(true);
@@ -114,18 +182,21 @@ export default function UserManagement() {
     }
   };
 
-  const handleDelete = async user => {
-    if (!window.confirm(`Delete account for ${user.email}? This is permanent.`)) return;
-    setDeleting(user.id);
+  const handleDelete = async (userId, passwordData) => {
+    setDeleting(userId);
     try {
-      await adminApi.deleteUser(user.id, { reason: 'admin_deletion' });
-      setUsers(prev => prev.filter(u => u.id !== user.id));
+      await adminApi.deleteUser(userId, passwordData);
+      setUsers(prev => prev.filter(u => u.id !== userId));
       toast.success('User deleted');
     } catch (err) {
       toast.error(err.message ?? 'Failed to delete user');
     } finally {
       setDeleting(null);
     }
+  };
+
+  const handleDeleteClick = user => {
+    setDeleteModal(user);
   };
 
   const handleSaveEdit = updated => {
@@ -140,6 +211,15 @@ export default function UserManagement() {
           user={editing}
           onClose={() => setEditing(null)}
           onSave={handleSaveEdit}
+        />
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteModal && (
+        <DeleteModal
+          user={deleteModal}
+          onClose={() => setDeleteModal(null)}
+          onConfirm={handleDelete}
         />
       )}
 
@@ -253,7 +333,7 @@ export default function UserManagement() {
                         </button>
                         {/* Delete */}
                         <button
-                          onClick={() => handleDelete(u)}
+                          onClick={() => handleDeleteClick(u)}
                           disabled={deleting === u.id}
                           title="Delete user"
                           className="p-1.5 rounded-lg transition-opacity hover:opacity-70 disabled:opacity-40"
