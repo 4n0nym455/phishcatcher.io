@@ -27,17 +27,35 @@ PhishCatcher is an advanced security solution that helps identify and protect ag
 ### 📧 Gmail Integration
 - **OAuth 2.0 authentication** for secure access
 - **Email fetching and synchronization**
-- **Push notifications** for new analysis results
-- **Automatic token refresh** for seamless operation
 - **Batch analysis** of multiple emails
+- **Queue-based processing** for scalable analysis
 
 ### 🏗️ Architecture
-- **Microservices design** with FastAPI backend
-- **React frontend** with modern UI components
-- **PostgreSQL** for user data and metadata
-- **MongoDB** for analysis results and ML data
-- **Redis** for caching and session management
-- **Docker containerization** for easy deployment
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Local Development                            │
+│  ┌──────────────┐     ┌──────────────┐                       │
+│  │   Backend    │     │   Frontend   │                       │
+│  │  (Python)    │     │   (React)    │                       │
+│  │  localhost:   │     │  localhost:   │                       │
+│  │   8000       │     │    5173       │                       │
+│  └──────────────┘     └──────────────┘                       │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Docker Infrastructure                        │
+│  ┌────────────┐ ┌────────────┐ ┌────────┐ ┌───────────────┐  │
+│  │ PostgreSQL │ │  MongoDB   │ │ Redis  │ │    MinIO     │  │
+│  │  :5432    │ │  :27017    │ │ :6379  │ │ :9000/:9001  │  │
+│  └────────────┘ └────────────┘ └────────┘ └───────────────┘  │
+│  ┌──────────────────┐ ┌────────────┐                         │
+│  │  Celery Worker   │ │   Flower   │                         │
+│  │  (Background)   │ │  :5555     │                         │
+│  └──────────────────┘ └────────────┘                         │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## 🚀 Quick Start
 
@@ -54,51 +72,93 @@ PhishCatcher is an advanced security solution that helps identify and protect ag
    cd phishcatcher
    ```
 
-2. **Environment Setup**
+2. **Setup Environment**
    ```bash
-   cp phishcatcher-backend/.env.example phishcatcher-backend/.env
+   # Copy the environment template
+   cp phishcatcher-backend/env-template phishcatcher-backend/.env
+   
    # Edit .env with your configuration
+   nano phishcatcher-backend/.env
    ```
 
-3. **Start with Docker**
+3. **Start Infrastructure Services**
    ```bash
    docker-compose up -d
    ```
 
-4. **Create Admin User**
+4. **Run Migrations & Create Admin**
    ```bash
-   docker-compose exec backend python scripts/create_admin.py
+   cd phishcatcher-backend
+   source .venv/bin/activate
+   alembic upgrade head
+   python scripts/create_admin.py
    ```
 
-5. **Access the Application**
-   - Frontend: http://localhost:3000
+5. **Start Development Servers**
+
+   **Backend:**
+   ```bash
+   cd phishcatcher-backend
+   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
+
+   **Frontend:**
+   ```bash
+   cd phishcatcher-frontend/app
+   npm run dev
+   ```
+
+6. **Access the Application**
+   - Frontend: http://localhost:5173
    - Backend API: http://localhost:8000
    - API Docs: http://localhost:8000/docs
+   - Flower (Celery): http://localhost:5555
+
+### Using Quick-Start Script
+
+```bash
+cd phishcatcher
+./quick-start.sh
+```
+
+This will:
+- Start all Docker services (PostgreSQL, MongoDB, Redis, MinIO, Celery)
+- Setup Python virtual environment
+- Run database migrations
+- Start backend and frontend locally
 
 ## 📁 Project Structure
 
 ```
 phishcatcher/
-├── phishcatcher-backend/          # FastAPI backend
-│   ├── app/                       # Main application code
-│   │   ├── core/                  # Core functionality
-│   │   ├── ml/                    # Machine learning models
-│   │   ├── models/                # Database models
-│   │   ├── routers/               # API endpoints
-│   │   ├── services/              # Business logic
-│   │   └── schemas/               # Pydantic schemas
-│   ├── alembic/                   # Database migrations
+├── docker-compose.yml              # Docker configuration
+├── quick-start.sh                # Quick start script
+├── README.md                      # This file
+│
+├── phishcatcher-backend/         # FastAPI backend
+│   ├── app/                      # Main application
+│   │   ├── routers/              # API endpoints
+│   │   ├── services/             # Business logic
+│   │   ├── models/               # SQLAlchemy models
+│   │   ├── schemas/               # Pydantic schemas
+│   │   ├── ml/                   # ML models
+│   │   └── tasks/                 # Celery tasks
+│   ├── alembic/                  # Database migrations
+│   │   └── versions/              # Migration files
 │   ├── scripts/                   # Utility scripts
-│   └── tests/                     # Test files
-├── phishcatcher-frontend/         # React frontend
-│   ├── app/                       # Main application
-│   │   ├── components/            # React components
-│   │   ├── pages/                 # Page components
-│   │   ├── hooks/                 # Custom hooks
-│   │   └── utils/                 # Utility functions
-│   └── public/                    # Static assets
-├── docs/                          # Documentation
-└── docker-compose.yml             # Docker configuration
+│   ├── env-template              # Environment template
+│   └── requirements.txt          # Python dependencies
+│
+├── phishcatcher-frontend/        # React frontend
+│   └── app/                      # React application
+│       ├── src/
+│       │   ├── pages/            # Page components
+│       │   ├── components/        # UI components
+│       │   ├── lib/              # API & utilities
+│       │   └── hooks/            # Custom hooks
+│       └── package.json
+│
+└── docs/                          # Documentation
 ```
 
 ## 🔧 Development
@@ -106,52 +166,68 @@ phishcatcher/
 ### Backend Development
 ```bash
 cd phishcatcher-backend
+
+# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Run migrations
+alembic upgrade head
+
+# Start server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### Frontend Development
 ```bash
 cd phishcatcher-frontend/app
+
+# Install dependencies
 npm install
+
+# Start development server
 npm run dev
 ```
 
 ### Database Migrations
+
+The project uses Alembic for database migrations. Migrations are organized by table:
+
 ```bash
 cd phishcatcher-backend
+
+# Create a new migration
+alembic revision --autogenerate -m "description"
+
+# Run migrations
 alembic upgrade head
+
+# Rollback last migration
+alembic downgrade -1
 ```
 
-## 📚 Documentation
+## 🐳 Docker Services
 
-- [API Documentation](docs/API.md) - Complete API reference
-- [Development Guide](docs/DEVELOPMENT.md) - Development setup and guidelines
-- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment instructions
-- [Architecture Overview](docs/ARCHITECTURE.md) - System architecture and design
-- [Security Guide](docs/SECURITY.md) - Security features and best practices
+| Service | Port | Description |
+|---------|------|-------------|
+| PostgreSQL | 5432 | User data & metadata |
+| MongoDB | 27017 | Analysis results |
+| Redis | 6379 | Cache & Celery broker |
+| MinIO | 9000/9001 | File storage |
+| Flower | 5555 | Celery monitoring |
 
-## 🔍 API Endpoints
+## 🔐 Default Admin Credentials
 
-### Authentication
-- `POST /api/auth/register` - User registration
-- `POST /api/auth/login` - User login
-- `POST /api/auth/refresh` - Token refresh
-- `POST /api/auth/logout` - User logout
-- `POST /api/auth/verify-otp` - OTP verification
+After running the setup, create an admin user using:
+```bash
+cd phishcatcher-backend
+PYTHONPATH=. python scripts/create_admin.py
+```
 
-### Email Analysis
-- `POST /api/analysis/upload` - Upload email for analysis
-- `GET /api/analysis/{job_id}` - Get analysis results
-- `GET /api/analysis/history` - Get user analysis history
-
-### Gmail Integration
-- `GET /api/gmail/auth-url` - Get OAuth URL
-- `POST /api/gmail/callback` - OAuth callback
-- `GET /api/gmail/emails` - Fetch Gmail emails
-- `POST /api/gmail/analyze` - Analyze Gmail emails
+Or check the admin creation output in the setup script.
 
 ## 🧪 Testing
 
@@ -166,6 +242,52 @@ pytest tests/ -v
 cd phishcatcher-frontend/app
 npm test
 ```
+
+## 📚 API Endpoints
+
+### Authentication
+- `POST /api/v1/auth/register` - User registration
+- `POST /api/v1/auth/login` - User login
+- `POST /api/v1/auth/refresh` - Token refresh
+- `POST /api/v1/auth/logout` - User logout
+- `POST /api/v1/auth/verify-otp` - OTP verification
+
+### Email Analysis
+- `POST /api/v1/analysis/upload` - Upload email for analysis
+- `GET /api/v1/analysis/{job_id}` - Get analysis results
+- `GET /api/v1/analysis/history` - Get analysis history
+- `GET /api/v1/analysis/{job_id}/status` - Get job status
+
+### Gmail Integration
+- `GET /api/v1/gmail/auth-url` - Get OAuth URL
+- `POST /api/v1/gmail/callback` - OAuth callback
+- `GET /api/v1/gmail/emails` - Fetch Gmail emails
+- `POST /api/v1/gmail/emails/analyze` - Analyze Gmail emails
+- `GET /api/v1/gmail/queue` - Get analysis queue
+- `POST /api/v1/gmail/queue/{id}/process` - Process queued email
+
+### Tasks
+- `GET /api/v1/tasks/{task_id}` - Get task status
+- `GET /api/v1/tasks` - List user tasks
+- `POST /api/v1/tasks/{task_id}/revoke` - Revoke task
+
+## 🔧 Environment Variables
+
+Key environment variables to configure:
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `MONGODB_URL` | MongoDB connection string |
+| `REDIS_URL` | Redis connection string |
+| `SECRET_KEY` | JWT secret key |
+| `JWT_SECRET_KEY` | JWT access token secret |
+| `JWT_REFRESH_SECRET_KEY` | JWT refresh token secret |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `MINIO_ENDPOINT` | MinIO server endpoint |
+| `MINIO_ACCESS_KEY` | MinIO access key |
+| `MINIO_SECRET_KEY` | MinIO secret key |
 
 ## 🛡️ Security Features
 
@@ -192,29 +314,6 @@ The phishing detection model uses the following features:
 - Recall: 95.6%
 - F1-Score: 95.2%
 
-## 🚀 Deployment
-
-### Production Deployment
-```bash
-# Build and deploy
-docker-compose -f docker-compose.prod.yml up -d
-
-# Run database migrations
-docker-compose exec backend alembic upgrade head
-
-# Create admin user
-docker-compose exec backend python scripts/create_admin.py
-```
-
-### Environment Variables
-Key environment variables to configure:
-- `DATABASE_URL` - PostgreSQL connection string
-- `MONGODB_URL` - MongoDB connection string
-- `REDIS_URL` - Redis connection string
-- `SECRET_KEY` - JWT secret key
-- `GOOGLE_CLIENT_ID` - Google OAuth client ID
-- `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
-
 ## 🤝 Contributing
 
 1. Fork the repository
@@ -240,16 +339,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [ ] Custom ML model training
 - [ ] Enterprise SSO integration
 - [ ] Advanced reporting and analytics
-- [ ] API rate limiting and quotas
 - [ ] Multi-language support
-
-## 📈 Performance
-
-- **API Response Time**: <200ms average
-- **Analysis Processing**: <5 seconds per email
-- **Database Query Time**: <50ms average
-- **Memory Usage**: <512MB per container
-- **CPU Usage**: <50% under normal load
 
 ---
 

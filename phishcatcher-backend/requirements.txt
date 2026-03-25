@@ -11,6 +11,7 @@ asyncpg
 alembic
 motor
 redis
+minio
 
 # ML and Data Science
 xgboost

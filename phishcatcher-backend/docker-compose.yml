@@ -35,7 +35,10 @@ services:
       - MINIO_ENDPOINT=localhost:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME:-phishcatcher}
+      - MINIO_BUCKET_EMAILS=${MINIO_BUCKET_EMAILS:-phishcatcher-emails}
+      - MINIO_BUCKET_REPORTS=${MINIO_BUCKET_REPORTS:-phishcatcher-reports}
+      - MINIO_BUCKET_MODELS=${MINIO_BUCKET_MODELS:-phishcatcher-models}
+      - MINIO_BUCKET_AVATARS=${MINIO_BUCKET_AVATARS:-phishcatcher-avatars}
       - MINIO_SECURE=false
       - FRONTEND_URL=http://localhost:5173
       - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-redis_secret}@localhost:6379/0
@@ -141,7 +144,6 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DB:-phishcatcher}
     volumes:
       - mongodb_data:/data/db
-      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
     ports:
       - "127.0.0.1:27017:27017"
     networks:

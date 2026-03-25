@@ -1,19 +1,28 @@
-# Environment variables
+# =====================
+# PhishCatcher .gitignore
+# =====================
+
+# ---------------------
+# Environment Variables
+# ---------------------
 .env
-.env.test
 .env.local
-.env.production
-.venv
-.env.*
+.env.*.local
+*.pem
 
-# Script
-scripts
+# ---------------------
+# Scripts & Config
+# ---------------------
 mongo-init.js
-setup.sh
 Dockerfile
-#docker-compose.yml
+docker-compose*.yml
+!docker-compose.yml.example
+!docker-compose.backup.yml
+!phishcatcher-backend/docker-compose.yml
 
+# ---------------------
 # Python
+# ---------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -25,14 +34,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-# Python lib directories (only in Python contexts)
-phishcatcher-backend/.venv/**/lib/
-phishcatcher-backend/**/lib/
-*.egg-info/lib/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -43,16 +44,26 @@ MANIFEST
 venv/
 env/
 ENV/
+env.bak/
+venv.bak/
 
+# Python lib directories
+phishcatcher-backend/.venv/**/lib/
+phishcatcher-backend/**/lib/
+
+# ---------------------
 # IDEs
+# ---------------------
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
+
+# ---------------------
+# OS
+# ---------------------
 .DS_Store?
 ._*
 .Spotlight-V100
@@ -60,16 +71,23 @@ ENV/
 ehthumbs.db
 Thumbs.db
 
+# ---------------------
 # Logs
+# ---------------------
 *.log
 logs/
+phishcatcher-backend/logs/
 
+# ---------------------
 # Database
+# ---------------------
 *.db
 *.sqlite
 *.sqlite3
 
-# Node.js (Frontend)
+# ---------------------
+# Node.js / Frontend
+# ---------------------
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -77,13 +95,19 @@ yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
 
-# Frontend build artifacts
+# Frontend build
 dist/
 build/
 .next/
 out/
 
-# Coverage reports
+# Frontend env
+phishcatcher-frontend/.env
+phishcatcher-frontend/app/.env.local
+
+# ---------------------
+# Coverage & Testing
+# ---------------------
 htmlcov/
 .coverage
 .coverage.*
@@ -91,30 +115,63 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+*.pytest_cache/
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Jupyter
+.ipynb_checkpoints/
 
-# pyenv
-.python-version
+# ---------------------
+# Python Tools
+# ---------------------
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+pyrightconfig.json
 
-# Temporary files
+# ---------------------
+# Temporary Files
+# ---------------------
 *.tmp
 *.temp
 .cache/
+*.bak
+*.swp
 
-# Uploads and user data
+# ---------------------
+# Uploads & Backups
+# ---------------------
 uploads/
 backups/
 
-# Docker
-.dockerignore
 
-# Documentation
-IMPLEMENTATION_DOCS/
-API_DOCUMENTATION.md
-DEPLOYMENT_GUIDE.md
-PROJECT_SUMMARY.md
-PhishCatcher_*.md
-PUSH_N*.md
-info.md
+# Backend scripts (local utilities)
+phishcatcher-backend/scripts/
+phishcatcher-backend/create_sample_data.py
+
+# Frontend dist (build output)
+phishcatcher-frontend/app/dist/
+
+
+
+# ---------------------
+# ML Models (Trained locally)
+# ---------------------
+*.pkl
+*.model
+*.h5
+*.pb
+models/*.pkl
+models/*.model
+
+# ---------------------
+# MinIO 
+# ---------------------
+.minio/
+minio-data/
+
+# ---------------------
+# Celery
+# ---------------------
+celerybeat-schedule
+celerybeat.pid
