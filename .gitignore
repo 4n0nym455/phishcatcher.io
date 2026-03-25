@@ -15,10 +15,7 @@
 # ---------------------
 mongo-init.js
 Dockerfile
-docker-compose*.yml
-!docker-compose.yml.example
 !docker-compose.backup.yml
-!phishcatcher-backend/docker-compose.yml
 
 # ---------------------
 # Python

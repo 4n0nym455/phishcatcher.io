@@ -30,7 +30,6 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DB:-phishcatcher}
     volumes:
       - mongodb_data:/data/db
-      - ./phishcatcher-backend/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
     ports:
       - "27017:27017"
     networks:
@@ -104,6 +103,75 @@ services:
       exit 0;
       "
     restart: "no"
+
+  # Celery Worker for background tasks
+  celery-worker:
+    build:
+      context: ./phishcatcher-backend
+      dockerfile: Dockerfile
+    container_name: phishcatcher-celery-worker
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-phishcatcher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-phishcatcher}
+      MONGODB_URL: mongodb://${MONGO_USER:-phishcatcher}:${MONGO_PASSWORD}@mongodb:27017/${MONGO_DB:-phishcatcher}?authSource=admin
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    volumes:
+      - ./phishcatcher-backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - phishcatcher-network
+    restart: unless-stopped
+
+  # Celery Beat for scheduled tasks
+  celery-beat:
+    build:
+      context: ./phishcatcher-backend
+      dockerfile: Dockerfile
+    container_name: phishcatcher-celery-beat
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-phishcatcher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-phishcatcher}
+      MONGODB_URL: mongodb://${MONGO_USER:-phishcatcher}:${MONGO_PASSWORD}@mongodb:27017/${MONGO_DB:-phishcatcher}?authSource=admin
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+    volumes:
+      - ./phishcatcher-backend:/app
+    depends_on:
+      - celery-worker
+    networks:
+      - phishcatcher-network
+    restart: unless-stopped
+
+  # Flower for Celery monitoring
+  flower:
+    build:
+      context: ./phishcatcher-backend
+      dockerfile: Dockerfile
+    container_name: phishcatcher-flower
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+    depends_on:
+      - redis
+      - celery-worker
+    networks:
+      - phishcatcher-network
+    command: celery -A app.tasks.celery_app flower --port=5555
+    restart: unless-stopped
 
 volumes:
   postgres_data:
