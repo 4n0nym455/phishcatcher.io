@@ -32,8 +32,9 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Request, status, Depends, Body
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import APIRouter, HTTPException, Request, status, Depends, Body, Form
+from fastapi import UploadFile, File
+from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,16 +52,19 @@ from app.services.email_service import EmailService
 from app.services.password_history import check_password_reuse, save_password_to_history
 from app.services.google_oauth import google_oauth_service
 from app.services.activation_service import activation_service
+from app.services.storage import StorageService, storage_service
 from app.services.security import (
-    verify_password, get_password_hash, validate_password_strength,
-    generate_totp_secret, generate_totp_uri, generate_qr_code,
-    verify_totp_token, encrypt_mfa_secret, decrypt_mfa_secret,
-    create_access_token, create_refresh_token, verify_token, get_token_expiry,
-    generate_otp,
-    encrypt_backup_codes, decrypt_backup_codes,
+    verify_password, get_password_hash, generate_otp,
+    encrypt_mfa_secret, decrypt_mfa_secret, encrypt_backup_codes, decrypt_backup_codes,
+    create_access_token, create_refresh_token, create_password_reset_token, verify_token, get_token_expiry,
     should_lock_account, should_lock_otp_account, calculate_lock_time,
     check_mfa_rate_limit, clear_mfa_rate_limit,
     create_mfa_session_token,
+    should_lock_ip_based, increment_ip_failed_attempts, is_ip_locked,
+    lock_ip_address, reset_ip_failed_attempts,
+    verify_totp_token,
+    validate_password_strength,
+    generate_totp_secret, generate_totp_uri, generate_qr_code,
 )
 from app.schemas.auth import (
     UserCreate, UserResponse, Token, TokenRefresh,
@@ -70,7 +74,9 @@ from app.schemas.auth import (
     MFASetupRequest, MFASetupResponse, MFAVerifyRequest,
     MFAEnableRequest, MFADisableRequest, MFAStatusResponse,
     MFAVerification, GoogleAuthUrl, GoogleCallback,
+    DeleteAccountRequest,
 )
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -130,8 +136,11 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 async def register(user_data: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
     normalized = normalize_email(user_data.email)
 
-    # Duplicate check via indexed normalized_email column
-    dup = await db.execute(select(User).where(User.normalized_email == normalized))
+    # Duplicate check via indexed normalized_email column (exclude deleted accounts)
+    dup = await db.execute(select(User).where(
+        User.normalized_email == normalized,
+        User.deleted_at.is_(None)
+    ))
     if dup.scalar_one_or_none():
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "This email address (or an alias of it) is already registered.")
@@ -182,32 +191,56 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
 
 # ─── Login (step 1) ───────────────────────────────────────────────────────────
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login", response_model=None)
 async def login(
-    request:   Request,
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db:        AsyncSession = Depends(get_db),
-    redis      = Depends(get_redis),
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis = Depends(get_redis),
+    username: str = Form(...),
+    password: str = Form(...),
 ):
     """Validate credentials and send OTP. Returns { email, mfa_required, [mfa_session_token] }."""
     settings = get_settings()
+    
+    # Get client IP
+    client_ip = request.client.host if request.client else None
+    
+    # Check if IP is locked
+    if is_ip_locked(redis, client_ip):
+        raise HTTPException(status.HTTP_423_LOCKED,
+                            f"Too many failed attempts. This IP is temporarily locked. Try again later.")
 
-    # Find user
-    result = await db.execute(select(User).where(User.email == form_data.username))
+    # Find user (exclude deleted accounts)
+    result = await db.execute(select(User).where(
+        User.email == username,
+        User.deleted_at.is_(None)
+    ))
     user   = result.scalar_one_or_none()
 
     def _bad_creds(reason: str):
         db.add(AuditLog(
             user_id=user.id if user else None,
-            user_email=form_data.username,
+            user_email=username,
             action=AuditAction.LOGIN,
-            ip_address=request.client.host if request.client else None,
+            ip_address=client_ip,
             user_agent=request.headers.get("user-agent"),
             status="failure",
             details={"reason": reason, "failed_attempts": getattr(user, "failed_login_attempts", 0)},
         ))
 
-    if not user or not verify_password(form_data.password, user.password_hash):
+    if not user or not verify_password(password, user.password_hash):
+        # Increment IP-based failed attempts
+        ip_attempts = increment_ip_failed_attempts(redis, client_ip)
+        
+        # Lock IP if too many failed attempts
+        if should_lock_ip_based(redis, client_ip):
+            lock_ip_address(redis, client_ip)
+            _bad_creds("ip_locked")
+            await db.commit()
+            raise HTTPException(status.HTTP_423_LOCKED,
+                                "Too many failed attempts. This IP is temporarily locked. Try again later.")
+        
+        # Still track user-specific attempts for account lockout (but IP lockout is primary)
         if user:
             user.failed_login_attempts += 1
             if should_lock_account(user.failed_login_attempts):
@@ -218,23 +251,23 @@ async def login(
                                     "Account locked due to multiple failed attempts. Try again in 5 minutes.")
             _bad_creds("invalid_credentials")
         else:
-            _bad_creds("user_not_found")
+            _bad_creds("invalid_credentials")  # Always use same reason to prevent user enumeration
         await db.commit()
-        remaining = max(0, 5 - (user.failed_login_attempts if user else 0))
-        msg = f"Invalid email or password. {remaining} attempts remaining before lockout." if remaining else "Invalid email or password."
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, msg,
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password.",
                             headers={"WWW-Authenticate": "Bearer"})
 
+    # Check if user account is locked
     if user.is_locked:
         raise HTTPException(status.HTTP_423_LOCKED,
                             f"Account locked until {user.locked_until.strftime('%H:%M:%S')} UTC.")
 
     if not user.is_active:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is deactivated.")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your account has been deactivated. Please contact an administrator for assistance.")
 
     # Reset failed attempts on successful credential check
     user.failed_login_attempts = 0
     user.locked_until = None
+    reset_ip_failed_attempts(redis, client_ip)  # Reset IP attempts on success
 
     # Generate & store OTP
     otp     = generate_otp()
@@ -287,10 +320,17 @@ async def verify_otp(
     db:      AsyncSession = Depends(get_db),
     redis    = Depends(get_redis),
 ):
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(select(User).where(
+        User.email == body.email,
+        User.deleted_at.is_(None)
+    ))
     user   = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        # Don't reveal if email exists or not
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid OTP.")
+
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your account has been deactivated. Please contact an administrator for assistance.")
 
     if user.is_locked:
         raise HTTPException(status.HTTP_423_LOCKED,
@@ -306,9 +346,7 @@ async def verify_otp(
             raise HTTPException(status.HTTP_423_LOCKED,
                                 "Account locked due to multiple failed OTP attempts. Try again in 5 minutes.")
         await db.commit()
-        remaining = max(0, 3 - user.failed_otp_attempts)
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            f"Invalid OTP. {remaining} attempts remaining." if remaining else "Invalid OTP.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid OTP.")
 
     # OTP valid – clean up
     await redis.delete(f"otp:{body.email}")
@@ -367,7 +405,8 @@ async def resend_otp(
     result   = await db.execute(select(User).where(User.email == body.email))
     user     = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        # Don't reveal if email exists or not
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No active login session found.")
     if user.is_locked:
         raise HTTPException(status.HTTP_423_LOCKED, "Account is locked.")
 
@@ -406,8 +445,15 @@ async def refresh_token(body: TokenRefresh, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(select(User).where(User.id == payload.get("sub")))
     user   = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found or inactive.")
+    if not user:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token.")
+    
+    if not user.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your account has been deactivated. Please contact an administrator for assistance.")
+    
+    if user.is_locked:
+        raise HTTPException(status.HTTP_423_LOCKED,
+                            f"Account locked until {user.locked_until.strftime('%H:%M:%S')} UTC.")
 
     settings = get_settings()
     return Token(
@@ -445,11 +491,14 @@ async def forgot_password(
     db:    AsyncSession = Depends(get_db),
     redis  = Depends(get_redis),
 ):
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(select(User).where(
+        User.email == body.email,
+        User.deleted_at.is_(None)
+    ))
     user   = result.scalar_one_or_none()
     # Always return 200 to prevent email enumeration
     if user:
-        reset_token = create_access_token(
+        reset_token = create_password_reset_token(
             {"sub": str(user.id), "type": "password_reset"},
             expires_delta=timedelta(hours=1),
         )
@@ -457,7 +506,7 @@ async def forgot_password(
         settings = get_settings()
         await send_password_reset_email(
             user.email,
-            f"{settings.FRONTEND_URL}/reset-password?token={reset_token}",
+            reset_token,
         )
     return {"message": "If that email is registered, a reset link has been sent."}
 
@@ -468,14 +517,26 @@ async def reset_password(
     db:    AsyncSession = Depends(get_db),
     redis  = Depends(get_redis),
 ):
-    payload = verify_token(body.token)
+    payload = verify_token(body.token, token_type="password_reset")
     if not payload or payload.get("type") != "password_reset":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired reset token.")
 
     user_id = payload.get("sub")
     stored  = await redis.get(f"password_reset:{user_id}")
-    if not stored or not secrets.compare_digest(stored, body.token):
+    
+    # Debug logging
+    logger.info(f"Token verification successful: user_id={user_id}")
+    logger.info(f"Stored token: {stored}")
+    logger.info(f"Provided token: {body.token}")
+    logger.info(f"Token match: {stored == body.token}")
+    
+    if not stored:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Reset token already used or expired.")
+    
+    # Verify that stored token matches the provided token (prevent token reuse)
+    if stored != body.token:
+        logger.error(f"Token mismatch: stored={stored}, provided={body.token}")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid reset token.")
 
     result = await db.execute(select(User).where(User.id == user_id))
     user   = result.scalar_one_or_none()
@@ -503,8 +564,118 @@ async def reset_password(
 # ─── Profile ──────────────────────────────────────────────────────────────────
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_active_user)):
-    return current_user
+async def get_me(current_user: User = Depends(get_current_active_user), storage_service: StorageService = Depends(StorageService)):
+    # Add avatar URL to user response if available
+    user_data = {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "company": current_user.company,
+        "role": current_user.role,
+        "is_active": current_user.is_active,
+        "is_verified": current_user.is_verified,
+        "email_verified": current_user.email_verified,
+        "mfa_enabled": current_user.mfa_enabled,
+        "last_login": current_user.last_login,
+        "created_at": current_user.created_at,
+        "avatar_url": None
+    }
+    
+    # Add avatar URL if user has one
+    if current_user.avatar_object_name and current_user.avatar_bucket:
+        try:
+            url = storage_service.get_presigned_url(
+                current_user.avatar_object_name,
+                expires=timedelta(hours=1),
+                bucket=current_user.avatar_bucket,
+            )
+            user_data["avatar_url"] = url
+        except Exception:
+            # If we can't get the URL, just return None
+            pass
+    
+    return user_data
+
+
+class ProfileUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    company: Optional[str] = None
+
+
+@router.put("/me")
+async def update_me(
+    body: ProfileUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.full_name is not None:
+        current_user.full_name = body.full_name.strip() or None
+    if body.company is not None:
+        current_user.company = body.company.strip() or None
+    await db.commit()
+    return {"message": "Profile updated successfully"}
+
+
+@router.post("/me/avatar")
+async def upload_avatar(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    settings = get_settings()
+
+    # Tight allowlist for avatars
+    allowed = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+    if file.content_type not in allowed:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid image type. Use PNG, JPEG, or WEBP.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty file.")
+
+    # Delete previous avatar if it exists
+    if current_user.avatar_object_name and current_user.avatar_bucket:
+        try:
+            await storage_service.delete_object(
+                current_user.avatar_object_name,
+                bucket=current_user.avatar_bucket
+            )
+        except Exception:
+            # Ignore deletion errors, continue with upload
+            pass
+
+    # Store under user folder; keep private and serve via presigned URL
+    upload = await storage_service.upload_bytes(
+        data=content,
+        filename=file.filename or f"avatar.{allowed[file.content_type]}",
+        content_type=file.content_type,
+        folder=f"avatars/{current_user.id}",
+        is_public=False,
+        bucket=settings.MINIO_BUCKET_AVATARS,
+        metadata={"user_id": str(current_user.id), "kind": "avatar"},
+    )
+
+    current_user.avatar_object_name = upload["object_name"]
+    current_user.avatar_bucket = upload["bucket"]
+    current_user.avatar_content_type = file.content_type
+    await db.commit()
+
+    return {"message": "Avatar uploaded", "avatar_url": upload["url"]}
+
+
+@router.get("/me/avatar")
+async def get_avatar_url(
+    current_user: User = Depends(get_current_active_user),
+):
+    if not current_user.avatar_object_name or not current_user.avatar_bucket:
+        return {"avatar_url": None}
+
+    url = storage_service.get_presigned_url(
+        current_user.avatar_object_name,
+        expires=timedelta(hours=1),
+        bucket=current_user.avatar_bucket,
+    )
+    return {"avatar_url": url}
 
 
 @router.put("/me/password")
@@ -552,25 +723,47 @@ async def change_password(
 
 @router.post("/me/delete")
 async def delete_account(
-    password:     str,
-    request:      Request = None,
+    delete_request: DeleteAccountRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
-    db:           AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
+    redis = Depends(get_redis),
 ):
-    if not verify_password(password, current_user.password_hash):
+    if not verify_password(delete_request.password, current_user.password_hash):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Incorrect password.")
 
     # Soft delete
+    # Delete user's avatar if it exists
+    if current_user.avatar_object_name and current_user.avatar_bucket:
+        try:
+            await storage_service.delete_object(
+                current_user.avatar_object_name,
+                bucket=current_user.avatar_bucket
+            )
+        except Exception:
+            # Ignore deletion errors
+            pass
+
     db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
                     action=AuditAction.USER_DELETED, resource_type="user",
                     resource_id=str(current_user.id), status="success",
-                    details={"reason": "self-requested"}))
+                    details={"reason": "self-requested"},
+                    ip_address=request.client.host if request.client else None))
     current_user.deleted_at   = datetime.utcnow()
     current_user.is_active    = False
     current_user.email        = f"deleted_{current_user.id}@deleted.phishcatcher"
     current_user.password_hash = "deleted"
     current_user.gmail_credentials = None
     current_user.mfa_secret   = None
+    current_user.mfa_backup_codes = None
+    current_user.avatar_object_name = None
+    current_user.avatar_bucket = None
+    current_user.avatar_content_type = None
+    
+    # Clear all sessions for this user (Redis session manager has one session per user)
+    session_mgr = get_session_manager(redis)
+    await session_mgr.destroy_session(str(current_user.id))
+    
     await db.commit()
     return {"message": "Account deleted successfully."}
 
@@ -597,7 +790,10 @@ async def google_callback(
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             token_data.get("error", "Google authentication failed."))
 
-    result = await db.execute(select(User).where(User.email == token_data["email"]))
+    result = await db.execute(select(User).where(
+        User.email == token_data["email"],
+        User.deleted_at.is_(None)
+    ))
     user   = result.scalar_one_or_none()
 
     if not user:
@@ -734,7 +930,7 @@ async def mfa_verify(
     - Called during MFA setup (with token from /mfa/setup).
     Returns tokens on success (login) or {"message": "MFA enabled"} (setup).
     """
-    payload = verify_token(body.mfa_session_token, token_type="mfa_session")
+    payload = verify_token(body.mfa_session_token)
     if not payload:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired MFA session.")
 
@@ -745,10 +941,23 @@ async def mfa_verify(
     user   = result.scalar_one_or_none()
     if not user or not user.mfa_secret:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA not configured for this account.")
+    
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your account has been deactivated. Please contact an administrator for assistance.")
+    
+    if user.is_locked:
+        raise HTTPException(status.HTTP_423_LOCKED,
+                            f"Account locked until {user.locked_until.strftime('%H:%M:%S')} UTC.")
 
     secret   = decrypt_mfa_secret(user.mfa_secret)
     is_valid = verify_totp_token(secret, body.code)
     if not is_valid:
+        allowed, msg = check_mfa_rate_limit(user_id, "verify", max_attempts=5, window_minutes=15)
+        db.add(AuditLog(user_id=user.id, user_email=user.email,
+                        action=AuditAction.MFA_FAILURE, status="failure"))
+        await db.commit()
+        if not allowed:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, msg)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid MFA code.")
 
     # --- Setup flow ---

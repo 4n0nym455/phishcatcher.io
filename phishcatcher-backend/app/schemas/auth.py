@@ -7,7 +7,7 @@ Pydantic models for authentication-related requests and responses.
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, EmailStr, Field, field_validator, validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, validator, AliasChoices
 import re
 
 
@@ -68,6 +68,7 @@ class UserResponse(UserBase):
     mfa_enabled: bool
     last_login: Optional[datetime] = None
     created_at: datetime
+    avatar_url: Optional[str] = None
     
     @field_validator('id', mode='before')
     @classmethod
@@ -121,17 +122,34 @@ class PasswordResetRequest(BaseModel):
 
 class PasswordReset(BaseModel):
     """Password reset schema."""
+    model_config = ConfigDict(populate_by_name=True)
+    
     token: str
-    new_password: str = Field(..., min_length=12, max_length=128)
+    new_password: str = Field(..., min_length=12, max_length=128, validation_alias=AliasChoices("new_password", "newPassword"))
+    
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v):
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one digit")
+        if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", v):
+            raise ValueError("Password must contain at least one special character")
+        return v
 
 
 class PasswordResetVerify(BaseModel):
     """Password reset verification schema."""
-    token: str
-    new_password: str = Field(..., min_length=12, max_length=128)
-    confirm_password: str
+    model_config = ConfigDict(populate_by_name=True)
     
-    @validator("new_password")
+    token: str
+    new_password: str = Field(..., min_length=12, max_length=128, validation_alias=AliasChoices("new_password", "newPassword"))
+    
+    @field_validator("new_password")
+    @classmethod
     def validate_password(cls, v):
         """Validate password strength."""
         if not re.search(r"[A-Z]", v):
@@ -142,13 +160,6 @@ class PasswordResetVerify(BaseModel):
             raise ValueError("Password must contain at least one digit")
         if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", v):
             raise ValueError("Password must contain at least one special character")
-        return v
-    
-    @validator("confirm_password")
-    def passwords_match(cls, v, values):
-        """Ensure passwords match."""
-        if "new_password" in values and v != values["new_password"]:
-            raise ValueError("Passwords do not match")
         return v
 
 

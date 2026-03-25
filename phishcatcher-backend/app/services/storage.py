@@ -14,6 +14,7 @@ from pathlib import Path
 from minio import Minio
 from minio.error import MinioException
 from minio.helpers import ObjectWriteResult
+from urllib.parse import urlparse
 
 from app.config import get_settings
 import logging
@@ -57,59 +58,68 @@ class StorageService:
         endpoint = settings.MINIO_ENDPOINT
         access_key = settings.MINIO_ACCESS_KEY
         secret_key = settings.MINIO_SECRET_KEY
-        bucket_name = settings.MINIO_BUCKET_NAME
         secure = settings.MINIO_SECURE
         region = settings.MINIO_REGION
         
         if not all([endpoint, access_key, secret_key]):
             raise ValueError("Incomplete MinIO configuration. Set MINIO_ENDPOINT, MINIO_ACCESS_KEY, and MINIO_SECRET_KEY")
         
-        try:
-            # Remove protocol if present in endpoint
-            if endpoint.startswith("http://"):
-                endpoint = endpoint[7:]
-                secure = False
-            elif endpoint.startswith("https://"):
-                endpoint = endpoint[8:]
-                secure = True
-            
-            self._client = Minio(
-                endpoint,
-                access_key=access_key,
-                secret_key=secret_key,
-                secure=secure,
-                region=region
-            )
-            self.bucket_name = bucket_name
-            self._ensure_bucket_exists()
-            logger.info(f"MinIO client initialized: {endpoint} (bucket: {self.bucket_name})")
-        except Exception as e:
-            logger.error(f"Failed to initialize MinIO client: {e}")
-            raise
+        # Build endpoint candidates:
+        # - configured endpoint (e.g. minio:9000 in Docker)
+        # - localhost fallback for host-run backend
+        endpoint_candidates = []
+        raw_endpoint = endpoint
+        if raw_endpoint.startswith("http://") or raw_endpoint.startswith("https://"):
+            parsed = urlparse(raw_endpoint)
+            host = parsed.hostname or ""
+            port = parsed.port or 9000
+            endpoint_candidates.append((f"{host}:{port}", parsed.scheme == "https"))
+        else:
+            endpoint_candidates.append((raw_endpoint, secure))
+            host_port = raw_endpoint.split(":")
+            host = host_port[0]
+            port = host_port[1] if len(host_port) > 1 else "9000"
+            if host in {"minio", "minio.local"}:
+                endpoint_candidates.append((f"localhost:{port}", False))
+
+        last_error = None
+        for candidate, candidate_secure in endpoint_candidates:
+            try:
+                client = Minio(
+                    candidate,
+                    access_key=access_key,
+                    secret_key=secret_key,
+                    secure=candidate_secure,
+                    region=region
+                )
+                # Force connectivity test early so failures are explicit.
+                client.list_buckets()
+                self._client = client
+                logger.info(f"MinIO client initialized: {candidate} (secure={candidate_secure})")
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(f"MinIO endpoint failed ({candidate}): {e}")
+
+        logger.error(f"Failed to initialize MinIO client: {last_error}")
+        raise last_error
     
-    def _ensure_bucket_exists(self):
-        """Ensure the bucket exists with proper policies."""
+    def _ensure_bucket_exists(self, bucket_name: str):
+        """Ensure a bucket exists (private by default)."""
         try:
-            if not self._client.bucket_exists(self.bucket_name):
-                self._client.make_bucket(self.bucket_name)
-                logger.info(f"Created bucket: {self.bucket_name}")
-                
-                # Set bucket policy for public read of specific paths (adjust as needed)
-                policy = {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Principal": {"AWS": "*"},
-                            "Action": ["s3:GetObject"],
-                            "Resource": [f"arn:aws:s3:::{self.bucket_name}/public/*"]
-                        }
-                    ]
-                }
-                self._client.set_bucket_policy(self.bucket_name, policy)
+            if not self._client.bucket_exists(bucket_name):
+                self._client.make_bucket(bucket_name)
+                logger.info(f"Created bucket: {bucket_name}")
         except MinioException as e:
             logger.error(f"MinIO error ensuring bucket exists: {e}")
             raise
+
+    def _get_bucket(self, bucket: Optional[str]) -> str:
+        settings = get_settings()
+        if bucket:
+            return bucket
+        # Back-compat default: treat uploads as "emails" bucket.
+        return settings.MINIO_BUCKET_EMAILS
     
     async def upload_file(
         self,
@@ -118,7 +128,8 @@ class StorageService:
         content_type: Optional[str] = None,
         metadata: Optional[Dict[str, str]] = None,
         folder: Optional[str] = None,
-        is_public: bool = False
+        is_public: bool = False,
+        bucket: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Upload a file to storage.
@@ -146,14 +157,14 @@ class StorageService:
         
         # Generate unique object name
         file_id = str(uuid.uuid4())
-        safe_filename = Path(filename).name.replace(" ", "_")
+        ext = Path(filename).suffix.lower()
         
-        # Build path
+        # Build path - use only UUID + extension, no original filename
         base_path = "public" if is_public else "private"
         if folder:
-            object_name = f"{base_path}/{folder}/{file_id}_{safe_filename}"
+            object_name = f"{base_path}/{folder}/{file_id}{ext}"
         else:
-            object_name = f"{base_path}/{file_id}_{safe_filename}"
+            object_name = f"{base_path}/{file_id}{ext}"
         
         # Auto-detect content type
         if not content_type:
@@ -169,6 +180,9 @@ class StorageService:
             **(metadata or {})
         }
         
+        target_bucket = self._get_bucket(bucket)
+        self._ensure_bucket_exists(target_bucket)
+
         try:
             # Convert bytes to BytesIO if needed
             if isinstance(file_data, bytes):
@@ -184,7 +198,7 @@ class StorageService:
             
             # Upload to storage
             result: ObjectWriteResult = self._client.put_object(
-                bucket_name=self.bucket_name,
+                bucket_name=target_bucket,
                 object_name=object_name,
                 data=file_data,
                 length=file_size,
@@ -196,13 +210,13 @@ class StorageService:
             
             # Generate URL
             if is_public:
-                url = self.get_public_url(object_name)
+                url = self.get_public_url(object_name, bucket=target_bucket)
             else:
-                url = self.get_presigned_url(object_name, expires=timedelta(days=7))
+                url = self.get_presigned_url(object_name, expires=timedelta(days=7), bucket=target_bucket)
             
             return {
                 "object_name": object_name,
-                "bucket": self.bucket_name,
+                "bucket": target_bucket,
                 "etag": result.etag,
                 "version_id": result.version_id,
                 "size": file_size,
@@ -226,7 +240,8 @@ class StorageService:
         content_type: Optional[str] = None,
         metadata: Optional[Dict[str, str]] = None,
         folder: Optional[str] = None,
-        is_public: bool = False
+        is_public: bool = False,
+        bucket: Optional[str] = None
     ) -> Dict[str, Any]:
         """Upload bytes directly to storage."""
         return await self.upload_file(
@@ -235,13 +250,15 @@ class StorageService:
             content_type=content_type,
             metadata=metadata,
             folder=folder,
-            is_public=is_public
+            is_public=is_public,
+            bucket=bucket
         )
     
-    def get_file(self, object_name: str) -> bytes:
+    def get_file(self, object_name: str, bucket: Optional[str] = None) -> bytes:
         """Download a file from storage."""
+        target_bucket = self._get_bucket(bucket)
         try:
-            response = self._client.get_object(self.bucket_name, object_name)
+            response = self._client.get_object(target_bucket, object_name)
             data = response.read()
             response.close()
             response.release_conn()
@@ -250,10 +267,11 @@ class StorageService:
             logger.error(f"Failed to get file {object_name}: {e}")
             raise
     
-    def get_file_stream(self, object_name: str):
+    def get_file_stream(self, object_name: str, bucket: Optional[str] = None):
         """Get a file stream for chunked reading."""
+        target_bucket = self._get_bucket(bucket)
         try:
-            response = self._client.get_object(self.bucket_name, object_name)
+            response = self._client.get_object(target_bucket, object_name)
             for chunk in response.stream(32*1024):  # 32KB chunks
                 yield chunk
             response.close()
@@ -266,12 +284,14 @@ class StorageService:
         self,
         object_name: str,
         expires: timedelta = timedelta(hours=1),
-        response_headers: Optional[Dict[str, str]] = None
+        response_headers: Optional[Dict[str, str]] = None,
+        bucket: Optional[str] = None
     ) -> str:
         """Generate a presigned URL for temporary access."""
+        target_bucket = self._get_bucket(bucket)
         try:
             url = self._client.presigned_get_object(
-                self.bucket_name,
+                target_bucket,
                 object_name,
                 expires=expires,
                 response_headers=response_headers
@@ -281,8 +301,9 @@ class StorageService:
             logger.error(f"Failed to generate presigned URL for {object_name}: {e}")
             raise
     
-    def get_public_url(self, object_name: str) -> str:
+    def get_public_url(self, object_name: str, bucket: Optional[str] = None) -> str:
         """Get public URL for public objects."""
+        target_bucket = self._get_bucket(bucket)
         # Build public URL based on endpoint
         settings = get_settings()
         endpoint = settings.MINIO_ENDPOINT
@@ -296,22 +317,24 @@ class StorageService:
         elif endpoint.startswith("https://"):
             endpoint = endpoint[8:]
         
-        return f"{protocol}://{endpoint}/{self.bucket_name}/{object_name}"
+        return f"{protocol}://{endpoint}/{target_bucket}/{object_name}"
     
     def get_presigned_upload_url(
         self,
         object_name: str,
         expires: timedelta = timedelta(minutes=15),
-        content_type: Optional[str] = None
+        content_type: Optional[str] = None,
+        bucket: Optional[str] = None
     ) -> str:
         """Generate a presigned URL for direct browser upload."""
+        target_bucket = self._get_bucket(bucket)
         try:
             conditions = []
             if content_type:
                 conditions.append(["eq", "$Content-Type", content_type])
             
             policy = self._client.presigned_put_object(
-                self.bucket_name,
+                target_bucket,
                 object_name,
                 expires=expires
             )
@@ -320,10 +343,11 @@ class StorageService:
             logger.error(f"Failed to generate presigned upload URL: {e}")
             raise
     
-    def delete_file(self, object_name: str) -> bool:
+    def delete_file(self, object_name: str, bucket: Optional[str] = None) -> bool:
         """Delete a file from storage."""
+        target_bucket = self._get_bucket(bucket)
         try:
-            self._client.remove_object(self.bucket_name, object_name)
+            self._client.remove_object(target_bucket, object_name)
             logger.info(f"Deleted file: {object_name}")
             return True
         except MinioException as e:
@@ -333,12 +357,14 @@ class StorageService:
     def list_files(
         self,
         prefix: Optional[str] = None,
-        recursive: bool = True
+        recursive: bool = True,
+        bucket: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """List files in bucket with optional prefix filter."""
+        target_bucket = self._get_bucket(bucket)
         try:
             objects = self._client.list_objects(
-                self.bucket_name,
+                target_bucket,
                 prefix=prefix,
                 recursive=recursive
             )
@@ -358,10 +384,11 @@ class StorageService:
             logger.error(f"Failed to list files: {e}")
             raise
     
-    def get_file_info(self, object_name: str) -> Optional[Dict[str, Any]]:
+    def get_file_info(self, object_name: str, bucket: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Get metadata for a file without downloading."""
+        target_bucket = self._get_bucket(bucket)
         try:
-            stat = self._client.stat_object(self.bucket_name, object_name)
+            stat = self._client.stat_object(target_bucket, object_name)
             return {
                 "object_name": stat.object_name,
                 "size": stat.size,
@@ -379,12 +406,13 @@ class StorageService:
             logger.error(f"Failed to get file info for {object_name}: {e}")
             raise
     
-    def copy_file(self, source_object: str, dest_object: str) -> bool:
+    def copy_file(self, source_object: str, dest_object: str, bucket: Optional[str] = None) -> bool:
         """Copy a file within the bucket."""
+        target_bucket = self._get_bucket(bucket)
         try:
-            source = f"{self.bucket_name}/{source_object}"
+            source = f"{target_bucket}/{source_object}"
             self._client.copy_object(
-                self.bucket_name,
+                target_bucket,
                 dest_object,
                 source
             )
@@ -394,10 +422,10 @@ class StorageService:
             logger.error(f"Failed to copy file: {e}")
             return False
     
-    def move_file(self, source_object: str, dest_object: str) -> bool:
+    def move_file(self, source_object: str, dest_object: str, bucket: Optional[str] = None) -> bool:
         """Move a file (copy then delete)."""
-        if self.copy_file(source_object, dest_object):
-            return self.delete_file(source_object)
+        if self.copy_file(source_object, dest_object, bucket=bucket):
+            return self.delete_file(source_object, bucket=bucket)
         return False
 
 # Singleton instance

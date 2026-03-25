@@ -11,7 +11,7 @@ This module handles email analysis endpoints including:
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
@@ -69,11 +69,13 @@ async def upload_email(
     storage_result = None
     try:
         # Upload file to MinIO storage
+        settings = get_settings()
         storage_result = await storage_service.upload_bytes(
             data=content,
             filename=file.filename,
             folder=f"emails/{current_user.id}",
             is_public=False,
+            bucket=settings.MINIO_BUCKET_EMAILS,
             metadata={
                 "user_id": str(current_user.id),
                 "user_email": current_user.email,
@@ -91,11 +93,11 @@ async def upload_email(
         else:
             raise
     except Exception as e:
-        logger.error(f"Failed to upload file to MinIO: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to store file. Please try again."
-        )
+        # Degrade gracefully when object storage is unreachable (e.g. local API run
+        # with Docker-only endpoint like "minio:9000"). Analysis can still proceed
+        # with in-memory file content.
+        logger.warning(f"MinIO upload failed, continuing without storage: {e}")
+        storage_result = None
     
     # Create analysis job
     job = AnalysisJob(
@@ -203,6 +205,23 @@ async def get_analysis(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get analysis results by ID."""
+    # Validate analysis_id
+    if not analysis_id or analysis_id in ('None', 'null', 'undefined', ''):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID"
+        )
+    
+    # Validate UUID format
+    try:
+        import uuid
+        uuid.UUID(analysis_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID format"
+        )
+    
     result = await db.execute(
         select(AnalysisJob).where(AnalysisJob.id == analysis_id)
     )
@@ -275,6 +294,23 @@ async def get_analysis_status(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get analysis status (lightweight endpoint for polling)."""
+    # Validate analysis_id
+    if not analysis_id or analysis_id in ('None', 'null', 'undefined', ''):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID"
+        )
+    
+    # Validate UUID format
+    try:
+        import uuid
+        uuid.UUID(analysis_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID format"
+        )
+    
     result = await db.execute(
         select(AnalysisJob).where(AnalysisJob.id == analysis_id)
     )
@@ -309,6 +345,23 @@ async def delete_analysis(
     current_user: User = Depends(get_current_active_user)
 ):
     """Delete an analysis."""
+    # Validate analysis_id
+    if not analysis_id or analysis_id in ('None', 'null', 'undefined', ''):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID"
+        )
+    
+    # Validate UUID format
+    try:
+        import uuid
+        uuid.UUID(analysis_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID format"
+        )
+    
     result = await db.execute(
         select(AnalysisJob).where(AnalysisJob.id == analysis_id)
     )
@@ -357,6 +410,23 @@ async def download_report(
     current_user: User = Depends(get_current_active_user)
 ):
     """Download analysis report."""
+    # Validate analysis_id
+    if not analysis_id or analysis_id in ('None', 'null', 'undefined', ''):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID"
+        )
+    
+    # Validate UUID format
+    try:
+        import uuid
+        uuid.UUID(analysis_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid analysis ID format"
+        )
+    
     result = await db.execute(
         select(AnalysisJob).where(AnalysisJob.id == analysis_id)
     )

@@ -45,8 +45,9 @@ async def server_google_login():
             "expires_at": datetime.utcnow() + timedelta(minutes=5)
         }
 
-        existing_callback_uri = "http://localhost:5173/auth/google/callback"
-        auth_url_data = google_oauth_service.get_auth_url(redirect_uri=existing_callback_uri)
+        from app.config import get_settings
+        settings = get_settings()
+        auth_url_data = google_oauth_service.get_auth_url(redirect_uri=settings.GOOGLE_REDIRECT_URI)
         auth_url = auth_url_data["auth_url"]
         auth_url = auth_url.replace(f"state={auth_url_data['state']}", f"state={state}")
 

@@ -10,14 +10,20 @@ This router handles all email-related endpoints including:
 """
 
 import logging
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.user import User
+from app.models.audit_log import AuditLog, AuditAction
 from app.services.email_service import email_service
 from app.services.security_service import security_service
+from app.services.password_history import check_password_reuse, save_password_to_history
+from app.services.security import verify_password, get_password_hash, validate_password_strength
 from app.database import get_db
-from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -154,10 +160,12 @@ async def request_password_reset(request: PasswordResetRequest):
 
 
 @router.post("/email/confirm-password-reset")
-async def confirm_password_reset(request: PasswordResetConfirm):
-    """Confirm password reset with code."""
+async def confirm_password_reset(
+    request: PasswordResetConfirm,
+    db: AsyncSession = Depends(get_db)
+):
+    """Confirm password reset with code and update password."""
     try:
-        # Verify the reset code
         is_valid = security_service.verify_email_code(request.email, request.code)
         
         if not is_valid:
@@ -166,11 +174,51 @@ async def confirm_password_reset(request: PasswordResetConfirm):
                 detail="Invalid or expired reset code"
             )
         
-        # Here you would typically update the user's password in the database
-        # For now, we'll just return success
+        result = await db.execute(
+            select(User).where(User.email == request.email, User.deleted_at.is_(None))
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        is_valid, err = validate_password_strength(request.new_password)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=err
+            )
+        
+        new_hash = get_password_hash(request.new_password)
+        is_reused, reuse_err = await check_password_reuse(db, user, new_hash)
+        if is_reused:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=reuse_err
+            )
+        
+        await save_password_to_history(db, user, user.password_hash)
+        user.password_hash = new_hash
+        user.password_changed_at = datetime.utcnow()
+        user.failed_login_attempts = 0
+        
+        audit_log = AuditLog(
+            user_id=user.id,
+            user_email=user.email,
+            action=AuditAction.PASSWORD_RESET_COMPLETED,
+            details={"ip_source": "password_reset_flow"}
+        )
+        db.add(audit_log)
+        
+        await db.commit()
+        
+        del security_service.verification_codes[request.email]
         
         return {
-            "message": "Password reset verified successfully",
+            "message": "Password reset successfully",
             "email": request.email
         }
         

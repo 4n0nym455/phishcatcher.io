@@ -275,3 +275,104 @@ def _update_job_status(job_id: str, status: str, **kwargs):
         asyncio.run(_update())
     except Exception as e:
         logger.error(f"Failed to update job status: {e}")
+
+
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
+def analyze_gmail_email_task(self, user_id: str, message_id: str):
+    """
+    Celery task for analyzing a Gmail email.
+    
+    Args:
+        user_id: User ID who owns the Gmail account
+        message_id: Gmail message ID to analyze
+    """
+    import asyncio
+    from app.services.gmail_service import gmail_service
+    from app.ml.email_parser import EmailParser
+    from app.ml.risk_scorer import get_risk_scorer
+    from app.database import get_mongodb_database
+    import base64
+    
+    logger.info(f"Starting Gmail analysis task for message {message_id}")
+    
+    async def _analyze():
+        email_raw = await gmail_service.get_email_by_id(user_id, message_id)
+        if not email_raw:
+            return {"status": "error", "message": "Failed to fetch email from Gmail"}
+        
+        raw_bytes = base64.urlsafe_b64decode(email_raw['raw'])
+        
+        parser = EmailParser(raw_bytes)
+        parsed_email = parser.parse()
+        
+        risk_scorer = get_risk_scorer()
+        analysis_result = risk_scorer.analyze(parsed_email)
+        
+        mongodb = get_mongodb_database()
+        detailed_result = {
+            "job_id": message_id,
+            "user_id": user_id,
+            "source": "gmail",
+            "gmail_message_id": message_id,
+            "email_metadata": {
+                "subject": parsed_email.get("headers", {}).get("subject"),
+                "sender": parsed_email.get("headers", {}).get("from"),
+                "recipient": parsed_email.get("headers", {}).get("to"),
+                "date": parsed_email.get("headers", {}).get("date"),
+                "message_id": parsed_email.get("headers", {}).get("message_id")
+            },
+            "risk_assessment": {
+                "overall_score": analysis_result["risk_score"],
+                "category": analysis_result["threat_category"],
+                "confidence": analysis_result["confidence"]
+            },
+            "findings": analysis_result["findings"],
+            "links_analyzed": parsed_email.get("links", []),
+            "attachments_analyzed": parsed_email.get("attachments", []),
+            "risk_factors": analysis_result["risk_factors"],
+            "ml_prediction": analysis_result["ml_prediction"],
+            "created_at": datetime.utcnow()
+        }
+        
+        mongodb.analysis_results.insert_one(detailed_result)
+        
+        await mongodb.gmail_analysis_queue.update_one(
+            {"user_id": user_id, "message_id": message_id},
+            {"$set": {
+                "status": "completed",
+                "completed_at": datetime.utcnow(),
+                "analysis_id": str(detailed_result["_id"]),
+                "risk_score": analysis_result["risk_score"],
+                "threat_category": analysis_result["threat_category"]
+            }}
+        )
+        
+        logger.info(f"Gmail analysis completed for message {message_id}. Risk score: {analysis_result['risk_score']}")
+        
+        return {
+            "status": "completed",
+            "message_id": message_id,
+            "risk_score": analysis_result["risk_score"],
+            "threat_category": analysis_result["threat_category"]
+        }
+    
+    try:
+        return asyncio.run(_analyze())
+    except Exception as exc:
+        logger.error(f"Gmail analysis failed for message {message_id}: {exc}")
+        try:
+            from app.database import get_mongodb_database
+            mongodb = get_mongodb_database()
+            mongodb.gmail_analysis_queue.update_one(
+                {"user_id": user_id, "message_id": message_id},
+                {"$set": {
+                    "status": "failed",
+                    "completed_at": datetime.utcnow(),
+                    "error": str(exc)
+                }}
+            )
+        except Exception as update_error:
+            logger.error(f"Failed to update queue status: {update_error}")
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+        raise

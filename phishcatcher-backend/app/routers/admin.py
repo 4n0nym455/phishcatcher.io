@@ -142,6 +142,7 @@ async def list_users(
                 "role": u.role,
                 "is_active": u.is_active,
                 "is_verified": u.is_verified,
+                "mfa_enabled": u.mfa_enabled,
                 "last_login": u.last_login,
                 "created_at": u.created_at
             }

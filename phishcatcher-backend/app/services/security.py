@@ -129,12 +129,36 @@ def validate_password_strength(password: str) -> tuple[bool, Optional[str]]:
 
 
 # JWT Token Management
+def create_password_reset_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a JWT password reset token.
+    
+    Args:
+        data: Data to encode in token (must include "sub" and "type": "password_reset")
+        expires_delta: Optional custom expiration time (default 1 hour)
+        
+    Returns:
+        JWT password reset token
+    """
+    settings = get_settings()
+    to_encode = data.copy()
+    
+    expire = datetime.utcnow() + (expires_delta or timedelta(hours=1))
+    
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.utcnow(),
+    })
+    
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
 def create_mfa_session_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """
     Create a JWT MFA session token.
     
     Args:
-        data: Data to encode in token
+        data: Data to encode in token (should include "sub" and optionally "type")
         expires_delta: Optional custom expiration time
         
     Returns:
@@ -146,13 +170,14 @@ def create_mfa_session_token(data: Dict[str, Any], expires_delta: Optional[timed
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)  # Default 15 minutes for MFA
+        expire = datetime.utcnow() + timedelta(minutes=15)
     
     to_encode.update({
         "exp": expire,
         "iat": datetime.utcnow(),
-        "type": "mfa_session"
     })
+    # Don't overwrite type if already set (e.g., "mfa_setup")
+    to_encode.setdefault("type", "mfa_session")
     
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
@@ -573,6 +598,95 @@ def should_lock_account(failed_attempts: int) -> bool:
         True if account should be locked
     """
     return failed_attempts >= 5  # Lock after 5 failed login attempts
+
+
+def should_lock_ip_based(redis_client, ip_address: str, max_attempts: int = 10) -> bool:
+    """
+    Check if IP address should be locked based on failed attempts.
+    
+    Args:
+        redis_client: Redis client instance
+        ip_address: IP address to check
+        max_attempts: Maximum attempts before lockout
+        
+    Returns:
+        True if IP should be locked
+    """
+    if not ip_address or ip_address in ['127.0.0.1', 'localhost', '::1']:
+        return False  # Never lock localhost
+    
+    key = f"failed_attempts:ip:{ip_address}"
+    attempts = redis_client.get(key)
+    return int(attempts or 0) >= max_attempts
+
+
+def increment_ip_failed_attempts(redis_client, ip_address: str) -> int:
+    """
+    Increment failed attempts for an IP address.
+    
+    Args:
+        redis_client: Redis client instance
+        ip_address: IP address to increment
+        
+    Returns:
+        Current failed attempts count
+    """
+    if not ip_address or ip_address in ['127.0.0.1', 'localhost', '::1']:
+        return 0  # Don't track localhost
+    
+    key = f"failed_attempts:ip:{ip_address}"
+    count = redis_client.incr(key)
+    redis_client.expire(key, 3600)  # Expire after 1 hour
+    return count
+
+
+def is_ip_locked(redis_client, ip_address: str) -> bool:
+    """
+    Check if IP address is currently locked.
+    
+    Args:
+        redis_client: Redis client instance
+        ip_address: IP address to check
+        
+    Returns:
+        True if IP is locked
+    """
+    if not ip_address or ip_address in ['127.0.0.1', 'localhost', '::1']:
+        return False  # Never lock localhost
+    
+    key = f"ip_locked:{ip_address}"
+    return redis_client.exists(key)
+
+
+def lock_ip_address(redis_client, ip_address: str, lock_minutes: int = 15) -> None:
+    """
+    Lock an IP address for specified duration.
+    
+    Args:
+        redis_client: Redis client instance
+        ip_address: IP address to lock
+        lock_minutes: Duration to lock in minutes
+    """
+    if not ip_address or ip_address in ['127.0.0.1', 'localhost', '::1']:
+        return  # Don't lock localhost
+    
+    key = f"ip_locked:{ip_address}"
+    redis_client.setex(key, lock_minutes * 60, "locked")
+
+
+def reset_ip_failed_attempts(redis_client, ip_address: str) -> None:
+    """
+    Reset failed attempts for an IP address (on successful login).
+    
+    Args:
+        redis_client: Redis client instance
+        ip_address: IP address to reset
+    """
+    if not ip_address or ip_address in ['127.0.0.1', 'localhost', '::1']:
+        return  # Don't track localhost
+    
+    key = f"failed_attempts:ip:{ip_address}"
+    redis_client.delete(key)
 
 
 def should_lock_otp_account(failed_otp_attempts: int) -> bool:

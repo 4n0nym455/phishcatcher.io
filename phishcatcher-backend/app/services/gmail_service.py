@@ -54,17 +54,31 @@ class GmailService:
             }
         }
 
-    def get_auth_url(self, user_id: str) -> str:
+    def get_auth_url(self, user_id: str, email: str = None) -> str:
         flow = Flow.from_client_config(
             self.client_config,
             scopes=SCOPES,
             redirect_uri=self.settings.GMAIL_REDIRECT_URI
         )
-        flow.state = user_id
-        auth_url, _ = flow.authorization_url(access_type='offline', include_granted_scopes='true', prompt='consent')
+        auth_params = {
+            'access_type': 'offline', 
+            'include_granted_scopes': 'true',
+            'state': user_id  # Pass user_id as state for CSRF
+        }
+        if email:
+            auth_params['login_hint'] = email
+        auth_url, _ = flow.authorization_url(**auth_params)
         return auth_url
 
     async def handle_oauth_callback(self, code: str, state: str) -> Dict[str, Any]:
+        try:
+            import uuid
+            user_id = uuid.UUID(state)
+            user_id_str = str(user_id)
+        except (ValueError, AttributeError) as e:
+            logger.error(f"Invalid state parameter (not a valid UUID): {state}")
+            return {"success": False, "error": f"Invalid state parameter: {str(e)}"}
+        
         flow = Flow.from_client_config(
             self.client_config,
             scopes=SCOPES,
@@ -76,7 +90,7 @@ class GmailService:
             credentials = flow.credentials
             service = build('gmail', 'v1', credentials=credentials)
             user_info = service.users().getProfile(userId='me').execute()
-            await self._store_credentials(state, credentials, user_info)
+            await self._store_credentials(user_id_str, credentials, user_info)
             return {"success": True, "email": user_info.get('emailAddress'), "historyId": user_info.get('historyId')}
         except Exception as e:
             logger.error(f"Gmail OAuth callback error: {e}")
@@ -92,9 +106,9 @@ class GmailService:
             'scopes': list(credentials.scopes) if credentials.scopes else [],
             'expiry': credentials.expiry.isoformat() if credentials.expiry else None
         }
-        # FIX: get_db_session() is the proper asynccontextmanager; get_db() is just a generator
+        import uuid
         async with get_db_session() as db:
-            result = await db.execute(select(User).where(User.email == user_id))
+            result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
             user = result.scalar_one_or_none()
             if user:
                 user.gmail_credentials = json.dumps(credentials_data)
@@ -104,8 +118,9 @@ class GmailService:
 
     async def disconnect_gmail(self, user_id: str) -> bool:
         try:
+            import uuid
             async with get_db_session() as db:
-                result = await db.execute(select(User).where(User.id == user_id))
+                result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
                 user = result.scalar_one_or_none()
                 if user:
                     user.gmail_credentials = None
@@ -119,9 +134,9 @@ class GmailService:
 
     async def get_gmail_credentials(self, user_id: str) -> Optional[Credentials]:
         try:
-            # FIX: use select() and get_db_session() properly
+            import uuid
             async with get_db_session() as db:
-                result = await db.execute(select(User).where(User.id == user_id))
+                result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
                 user = result.scalar_one_or_none()
                 if not user or not user.gmail_credentials:
                     return None
@@ -160,6 +175,46 @@ class GmailService:
         except HttpError as e:
             logger.error(f"Gmail API error: {e}")
             return []
+
+    async def fetch_emails_paginated(self, user_id: str, max_results: int = 20, page_token: str = None) -> Dict[str, Any]:
+        credentials = await self.get_gmail_credentials(user_id)
+        if not credentials:
+            return {"emails": [], "next_page_token": None}
+        try:
+            service = build('gmail', 'v1', credentials=credentials)
+            kwargs = {"userId": 'me', "maxResults": max_results}
+            if page_token:
+                kwargs["pageToken"] = page_token
+            results = service.users().messages().list(**kwargs).execute()
+            messages = results.get('messages', [])
+            next_token = results.get('nextPageToken')
+            
+            emails = []
+            for message in messages:
+                msg = service.users().messages().get(userId='me', id=message['id'], format='full').execute()
+                email_data = self._parse_email(msg)
+                emails.append(email_data)
+            
+            return {
+                "emails": emails,
+                "next_page_token": next_token,
+                "count": len(emails)
+            }
+        except HttpError as e:
+            logger.error(f"Gmail API error: {e}")
+            return {"emails": [], "next_page_token": None, "error": str(e)}
+
+    async def get_email_by_id(self, user_id: str, message_id: str) -> Optional[Dict]:
+        credentials = await self.get_gmail_credentials(user_id)
+        if not credentials:
+            return None
+        try:
+            service = build('gmail', 'v1', credentials=credentials)
+            msg = service.users().messages().get(userId='me', id=message_id, format='raw').execute()
+            return msg
+        except HttpError as e:
+            logger.error(f"Gmail API error: {e}")
+            return None
 
     def _parse_email(self, message: Dict) -> Dict:
         headers = message['payload']['headers']
