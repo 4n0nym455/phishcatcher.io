@@ -1,15 +1,15 @@
 """Create audit_logs table
 
-Revision ID: 20250223_0005_create_audit_logs
-Revises: 20250223_0004_create_analysis_jobs
+Revision ID: 005_create_audit_logs
+Revises: 004_create_analysis_jobs
 Create Date: 2025-02-23 00:00:04.000000
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = '20250223_0005_create_audit_logs'
-down_revision = '20250223_0004_create_analysis_jobs'
+revision = '005_create_audit_logs'
+down_revision = '004_create_analysis_jobs'
 branch_labels = None
 depends_on = None
 

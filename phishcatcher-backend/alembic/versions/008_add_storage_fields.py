@@ -1,14 +1,14 @@
 """Add MinIO storage fields to analysis_jobs
 
-Revision ID: 20250223_0008_add_storage_fields
-Revises: 20250223_0007_add_avatar_fields
+Revision ID: 008_add_storage_fields
+Revises: 007_add_avatar_fields
 Create Date: 2025-02-23 00:00:08.000000
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = '20250223_0008_add_storage_fields'
-down_revision = '20250223_0007_add_avatar_fields'
+revision = '008_add_storage_fields'
+down_revision = '007_add_avatar_fields'
 branch_labels = None
 depends_on = None
 

@@ -1,14 +1,14 @@
 """Add avatar fields to users table
 
-Revision ID: 20250223_0007_add_avatar_fields
-Revises: 20250223_0006_create_notifications
+Revision ID: 007_add_avatar_fields
+Revises: 006_create_notifications
 Create Date: 2025-02-23 00:00:07.000000
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = '20250223_0007_add_avatar_fields'
-down_revision = '20250223_0006_create_notifications'
+revision = '007_add_avatar_fields'
+down_revision = '006_create_notifications'
 branch_labels = None
 depends_on = None
 

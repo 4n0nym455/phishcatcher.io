@@ -1,6 +1,6 @@
 """Create users table
 
-Revision ID: 20250223_0001_create_users
+Revision ID: 001_create_users
 Revises: 
 Create Date: 2025-02-23 00:00:00.000000
 """
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = '20250223_0001_create_users'
+revision = '001_create_users'
 down_revision = None
 branch_labels = None
 depends_on = None

@@ -1,15 +1,15 @@
 """Create password_history table
 
-Revision ID: 20250223_0002_create_password_history
-Revises: 20250223_0001_create_users
+Revision ID: 002_create_password_history
+Revises: 001_create_users
 Create Date: 2025-02-23 00:00:01.000000
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = '20250223_0002_create_password_history'
-down_revision = '20250223_0001_create_users'
+revision = '002_create_password_history'
+down_revision = '001_create_users'
 branch_labels = None
 depends_on = None
 
