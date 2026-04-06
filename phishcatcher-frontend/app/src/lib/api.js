@@ -395,4 +395,16 @@ export const analysisApi = {
   },
 };
 
+// ─── ML Prediction API ───────────────────────────────────────────────────────────
+
+export const mlApi = {
+  predict: (subject, body, useHybrid = false) =>
+    apiFetch('/ml/predict', {
+      method: 'POST',
+      body: JSON.stringify({ subject, body, use_hybrid: useHybrid }),
+    }),
+
+  getModelsStatus: () => apiFetch('/ml/models'),
+};
+
 export default authApi;

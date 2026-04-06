@@ -164,6 +164,9 @@ class Settings(BaseSettings):
     ML_FEATURE_NAMES_PATH: str = Field(default="models/feature_names.json", description="Path to feature names")
     TEXT_CLASSIFIER_PATH: str = Field(default="models/text_classifier.pkl", description="Path to text classifier model")
     TFIDF_VECTORIZER_PATH: str = Field(default="models/tfidf_vectorizer.pkl", description="Path to TF-IDF vectorizer")
+    ML_MODELS_DIR: str = Field(default="models", description="Directory containing trained ML models")
+    ML_BEST_MODEL: str = Field(default="svm", description="Best performing model (svm, logistic_regression, xgboost)")
+    ML_ENABLE_HYBRID: bool = Field(default=False, description="Enable BERT hybrid model (requires GPU)")
     
     # Celery Settings
     CELERY_BROKER_URL: str = Field(default="redis://localhost:6379/0", description="Celery broker URL")

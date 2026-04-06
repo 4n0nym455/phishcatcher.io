@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.config import get_settings
 from app.database import init_databases, close_databases, check_database_health
-from app.routers import auth, analysis, providers, admin, health, gmail, notifications, security, email, activation, server_oauth, session
+from app.routers import auth, analysis, providers, admin, health, gmail, notifications, security, email, activation, server_oauth, session, ml
 
 # Configure logging
 logging.basicConfig(
@@ -171,6 +171,13 @@ def _include_routers(app: FastAPI):
         analysis.router,
         prefix=f"{api_prefix}/analysis",
         tags=["Analysis"]
+    )
+    
+    # ML Predictions
+    app.include_router(
+        ml.router,
+        prefix=f"{api_prefix}/ml",
+        tags=["ML Prediction"]
     )
     
     # Email Providers
