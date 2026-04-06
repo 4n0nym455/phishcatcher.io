@@ -5,7 +5,7 @@ This module contains Celery tasks for Gmail integration including
 email syncing and analysis.
 """
 
-from celery_app import celery_app
+from app.tasks.celery_app import celery_app
 from celery import Task
 import logging
 

@@ -21,6 +21,9 @@ from app.models import User, EmailProvider, AnalysisJob, AuditLog
 # this is the Alembic Config object
 config = context.config
 
+# Configure version table to support longer revision IDs
+config.set_main_option('version_table', 'alembic_version')
+
 # Interpret the config file for Python logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -28,6 +31,9 @@ if config.config_file_name is not None:
 # Get database URL from settings
 settings = get_settings()
 db_url = settings.DATABASE_URL
+
+# Set the database URL for alembic (escape % characters to avoid interpolation issues)
+config.set_main_option('sqlalchemy.url', db_url.replace('%', '%%'))
 
 # Create a custom configuration dict to avoid interpolation issues
 engine_config = {

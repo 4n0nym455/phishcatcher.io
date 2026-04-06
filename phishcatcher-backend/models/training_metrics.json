@@ -1,0 +1,24 @@
+{
+  "text_classifier": {
+    "accuracy": 0.9021875,
+    "precision": 0.8696151636990236,
+    "recall": 0.94625,
+    "f1_score": 0.9063154744088596,
+    "roc_auc": 0.9669134765625,
+    "training_samples": 12800,
+    "validation_samples": 3200,
+    "feature_count": 10000
+  },
+  "feature_detector": {
+    "accuracy": 0.6821875,
+    "precision": 0.7493584260051326,
+    "recall": 0.5475,
+    "f1_score": 0.6327193932827736,
+    "roc_auc": 0.7456130859375,
+    "training_samples": 12800,
+    "validation_samples": 3200
+  },
+  "training_date": "2026-04-06T17:32:33.387904",
+  "training_samples": 16000,
+  "test_samples": 4000
+}

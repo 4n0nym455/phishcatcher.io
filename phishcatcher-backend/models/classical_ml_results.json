@@ -1,0 +1,1 @@
+{"logistic_regression": {"accuracy": 0.964, "f1_score": 0.9660377358490566}, "svm": {"accuracy": 0.968, "f1_score": 0.9699812382739212}, "xgboost": {"accuracy": 0.958, "f1_score": 0.961038961038961}}
