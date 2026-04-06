@@ -116,6 +116,26 @@ class GmailService:
                 user.gmail_connected_at = datetime.utcnow()
                 await db.commit()
 
+    async def _update_stored_credentials(self, user_id: str, credentials):
+        """Update stored credentials after refresh."""
+        credentials_data = {
+            'token': credentials.token,
+            'refresh_token': credentials.refresh_token,
+            'token_uri': credentials.token_uri,
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret,
+            'scopes': list(credentials.scopes) if credentials.scopes else [],
+            'expiry': credentials.expiry.isoformat() if credentials.expiry else None
+        }
+        import uuid
+        async with get_db_session() as db:
+            result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+            user = result.scalar_one_or_none()
+            if user:
+                user.gmail_credentials = json.dumps(credentials_data)
+                await db.commit()
+                logger.info(f"Updated Gmail credentials for user {user_id}")
+
     async def disconnect_gmail(self, user_id: str) -> bool:
         try:
             import uuid
@@ -159,6 +179,18 @@ class GmailService:
                 )
                 if credentials_data.get('expiry'):
                     credentials.expiry = datetime.fromisoformat(credentials_data['expiry'])
+                
+                # Check if credentials are expired and refresh if needed
+                if credentials.expired:
+                    try:
+                        credentials.refresh(Request())
+                        # Update stored credentials with refreshed token
+                        await self._update_stored_credentials(user_id, credentials)
+                        logger.info(f"Refreshed Gmail credentials for user {user_id}")
+                    except Exception as refresh_error:
+                        logger.error(f"Failed to refresh Gmail credentials: {refresh_error}")
+                        return None
+                
                 return credentials
         except Exception as e:
             logger.error(f"Error getting Gmail credentials: {e}")
