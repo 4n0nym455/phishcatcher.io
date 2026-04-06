@@ -66,6 +66,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_ENDPOINT: localhost:9000
     volumes:
       - minio_data:/data
     ports:
@@ -79,98 +80,6 @@ services:
       interval: 30s
       timeout: 20s
       retries: 3
-    restart: unless-stopped
-
-  # MinIO Client for bucket creation
-  minio-init:
-    image: minio/mc:latest
-    container_name: phishcatcher-minio-init
-    depends_on:
-      minio:
-        condition: service_healthy
-    networks:
-      - phishcatcher-network
-    entrypoint: >
-      /bin/sh -c "
-      sleep 10;
-      /usr/bin/mc alias set myminio http://minio:9000 phishcatcher minio_password;
-      /usr/bin/mc mb myminio/phishcatcher-emails 2>/dev/null || true;
-      /usr/bin/mc mb myminio/phishcatcher-reports 2>/dev/null || true;
-      /usr/bin/mc mb myminio/phishcatcher-models 2>/dev/null || true;
-      /usr/bin/mc policy set public myminio/phishcatcher-emails;
-      /usr/bin/mc policy set public myminio/phishcatcher-reports;
-      /usr/bin/mc policy set public myminio/phishcatcher-models;
-      exit 0;
-      "
-    restart: "no"
-
-  # Celery Worker for background tasks
-  celery-worker:
-    build:
-      context: ./phishcatcher-backend
-      dockerfile: Dockerfile
-    container_name: phishcatcher-celery-worker
-    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-phishcatcher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-phishcatcher}
-      MONGODB_URL: mongodb://${MONGO_USER:-phishcatcher}:${MONGO_PASSWORD}@mongodb:27017/${MONGO_DB:-phishcatcher}?authSource=admin
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-    volumes:
-      - ./phishcatcher-backend:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - phishcatcher-network
-    restart: unless-stopped
-
-  # Celery Beat for scheduled tasks
-  celery-beat:
-    build:
-      context: ./phishcatcher-backend
-      dockerfile: Dockerfile
-    container_name: phishcatcher-celery-beat
-    command: celery -A app.tasks.celery_app beat --loglevel=info
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-phishcatcher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-phishcatcher}
-      MONGODB_URL: mongodb://${MONGO_USER:-phishcatcher}:${MONGO_PASSWORD}@mongodb:27017/${MONGO_DB:-phishcatcher}?authSource=admin
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
-    volumes:
-      - ./phishcatcher-backend:/app
-    depends_on:
-      - celery-worker
-    networks:
-      - phishcatcher-network
-    restart: unless-stopped
-
-  # Flower for Celery monitoring
-  flower:
-    build:
-      context: ./phishcatcher-backend
-      dockerfile: Dockerfile
-    container_name: phishcatcher-flower
-    ports:
-      - "5555:5555"
-    environment:
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
-    depends_on:
-      - redis
-      - celery-worker
-    networks:
-      - phishcatcher-network
-    command: celery -A app.tasks.celery_app flower --port=5555
     restart: unless-stopped
 
 volumes:

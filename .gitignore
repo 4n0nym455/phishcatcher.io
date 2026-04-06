@@ -172,3 +172,6 @@ minio-data/
 # ---------------------
 celerybeat-schedule
 celerybeat.pid
+
+archive/
+archive.zip
