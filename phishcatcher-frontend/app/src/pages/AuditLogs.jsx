@@ -1,65 +1,108 @@
 /**
  * AuditLogs.jsx
- * Admin page: security event log with day/action/status filters and load-more.
+ * Admin page: security event log with filters and load-more.
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Loader2, Activity, Filter } from 'lucide-react';
+import { Clock, Loader2, Activity, X, Calendar } from 'lucide-react';
 import { adminApi } from '@/lib/api';
 
 const PAGE_SIZE = 50;
 
 const ACTION_COLORS = {
-  LOGIN:             'var(--success)',
-  LOGOUT:            'var(--text-muted)',
-  LOGIN_FAILED:      'var(--danger)',
-  OTP_SENT:          'var(--brand)',
-  OTP_FAILED:        'var(--danger)',
-  MFA_REQUIRED:      'var(--brand)',
-  MFA_SUCCESS:       'var(--success)',
-  MFA_FAILED:        'var(--danger)',
-  MFA_ENABLED:       'var(--success)',
-  MFA_DISABLED:      'var(--threat)',
-  MFA_BACKUP_CODE_USED: 'var(--threat)',
-  MFA_SETUP_INITIATED: 'var(--brand)',
-  PASSWORD_CHANGED:  'var(--threat)',
-  USER_REGISTERED:   'var(--brand)',
-  USER_DELETED:      'var(--danger)',
+  LOGIN_SUCCESS: 'var(--success)',
+  LOGIN_FAILURE: 'var(--danger)',
+  ADMIN_USER_CREATED: 'var(--brand)',
+  ADMIN_USER_UPDATED: 'var(--brand)',
+  ADMIN_USER_DELETED: 'var(--danger)',
+  SYSTEM_SETTING_CHANGED: 'var(--threat)',
+  PASSWORD_CHANGED: 'var(--threat)',
+  PASSWORD_RESET_COMPLETED: 'var(--threat)',
+  ACCOUNT_LOCKED: 'var(--danger)',
+  ACCOUNT_UNLOCKED: 'var(--success)',
+  SUSPICIOUS_ACTIVITY: 'var(--danger)',
+  MFA_ENABLED: 'var(--success)',
+  MFA_DISABLED: 'var(--threat)',
+  MFA_FAILURE: 'var(--danger)',
+  USER_REGISTERED: 'var(--brand)',
+  USER_DELETED: 'var(--danger)',
+  ANALYSIS_COMPLETED: 'var(--success)',
+  ANALYSIS_FAILED: 'var(--danger)',
 };
 
-const KNOWN_ACTIONS = Object.keys(ACTION_COLORS);
+const FILTERABLE_ACTIONS = Object.keys(ACTION_COLORS);
+
+const RESOURCE_TYPES = [
+  'user', 'analysis', 'provider', 'system', 'session'
+];
 
 function fmtDate(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 }
 
+function getTodayStr() {
+  return new Date().toISOString().split('T')[0];
+}
+
 export default function AuditLogs() {
-  const [logs,    setLogs]    = useState([]);
+  const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [days,    setDays]    = useState(7);
-  const [action,  setAction]  = useState('');
-  const [status,  setStatus]  = useState('');
-  const [page,    setPage]    = useState(1);
+  const [days, setDays] = useState(7);
+  const [customDate, setCustomDate] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [action, setAction] = useState('');
+  const [status, setStatus] = useState('');
+  const [ipAddress, setIpAddress] = useState('');
+  const [resourceType, setResourceType] = useState('');
+  const [email, setEmail] = useState('');
+  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
 
   const load = useCallback(async (pg = 1, reset = true) => {
     setLoading(true);
     try {
-      const res  = await adminApi.getAuditLogs({
-        page: pg, pageSize: PAGE_SIZE, days,
+      const params = {
+        page: pg,
+        pageSize: PAGE_SIZE,
         action: action || undefined,
         status: status || undefined,
-      });
+        ip_address: ipAddress || undefined,
+        resource_type: resourceType || undefined,
+        user_email: email || undefined,
+      };
+
+      if (customDate) {
+        if (startDate) params.start_date = startDate;
+        if (endDate) params.end_date = endDate;
+      } else {
+        params.days = days;
+      }
+
+      const res = await adminApi.getAuditLogs(params);
       const list = res.logs ?? res.items ?? (Array.isArray(res) ? res : []);
       setLogs(prev => reset ? list : [...prev, ...list]);
       setHasMore(list.length === PAGE_SIZE);
       setPage(pg);
     } catch { /* silent */ }
     finally { setLoading(false); }
-  }, [days, action, status]);
+  }, [days, action, status, ipAddress, resourceType, email, customDate, startDate, endDate]);
 
-  useEffect(() => { load(1, true); }, [days, action, status]);
+  useEffect(() => { load(1, true); }, [days, action, status, ipAddress, resourceType, email, customDate, startDate, endDate]);
+
+  const handleDateTypeChange = (useCustom) => {
+    setCustomDate(useCustom);
+    if (!useCustom) {
+      setStartDate('');
+      setEndDate('');
+    } else {
+      const today = getTodayStr();
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      setStartDate(weekAgo);
+      setEndDate(today);
+    }
+  };
 
   return (
     <div className="animate-fade-in">
@@ -70,23 +113,78 @@ export default function AuditLogs() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-5">
-        <div>
-          <label className="form-label">Time range</label>
-          <select value={days} onChange={e => setDays(Number(e.target.value))} className="input-base w-auto">
-            {[1, 7, 14, 30, 90].map(d => (
-              <option key={d} value={d}>Last {d} day{d !== 1 ? 's' : ''}</option>
-            ))}
-          </select>
+        {/* Date Type Toggle */}
+        <div className="flex items-center gap-2">
+          <label className={`text-xs cursor-pointer px-2 py-1 rounded ${!customDate ? 'bg-[var(--brand)] text-white' : 'bg-[var(--bg-elevated)]'}`}>
+            <input type="radio" name="dateType" checked={!customDate} onChange={() => handleDateTypeChange(false)} className="hidden" />
+            Quick
+          </label>
+          <label className={`text-xs cursor-pointer px-2 py-1 rounded ${customDate ? 'bg-[var(--brand)] text-white' : 'bg-[var(--bg-elevated)]'}`}>
+            <input type="radio" name="dateType" checked={customDate} onChange={() => handleDateTypeChange(true)} className="hidden" />
+            Custom
+          </label>
         </div>
+
+        {/* Days Select (only when not custom) */}
+        {!customDate && (
+          <div>
+            <label className="form-label">Time range</label>
+            <select value={days} onChange={e => setDays(Number(e.target.value))} className="input-base w-auto">
+              {[1, 7, 14, 30, 90].map(d => (
+                <option key={d} value={d}>Last {d} day{d !== 1 ? 's' : ''}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Custom Date Range (only when custom) */}
+        {customDate && (
+          <>
+            <div>
+              <label className="form-label">From</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={e => setStartDate(e.target.value)}
+                className="input-base w-auto"
+              />
+            </div>
+            <div>
+              <label className="form-label">To</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={e => setEndDate(e.target.value)}
+                className="input-base w-auto"
+              />
+            </div>
+          </>
+        )}
+
+        {/* Email Filter */}
+        <div>
+          <label className="form-label">Email</label>
+          <input
+            type="text"
+            placeholder="Filter by email..."
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="input-base w-auto min-w-[160px]"
+          />
+        </div>
+
+        {/* Action Filter */}
         <div>
           <label className="form-label">Action</label>
           <select value={action} onChange={e => setAction(e.target.value)} className="input-base w-auto">
             <option value="">All actions</option>
-            {KNOWN_ACTIONS.map(a => (
+            {FILTERABLE_ACTIONS.map(a => (
               <option key={a} value={a}>{a.replace(/_/g, ' ')}</option>
             ))}
           </select>
         </div>
+
+        {/* Status Filter */}
         <div>
           <label className="form-label">Status</label>
           <select value={status} onChange={e => setStatus(e.target.value)} className="input-base w-auto">
@@ -95,7 +193,43 @@ export default function AuditLogs() {
             <option value="failure">Failure</option>
           </select>
         </div>
+
+        {/* IP Address Filter */}
+        <div>
+          <label className="form-label">IP Address</label>
+          <input
+            type="text"
+            placeholder="e.g. 192.168.1.1"
+            value={ipAddress}
+            onChange={e => setIpAddress(e.target.value)}
+            className="input-base w-auto min-w-[140px]"
+          />
+        </div>
+
+        {/* Resource Type Filter */}
+        <div>
+          <label className="form-label">Resource</label>
+          <select value={resourceType} onChange={e => setResourceType(e.target.value)} className="input-base w-auto">
+            <option value="">All</option>
+            {RESOURCE_TYPES.map(r => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </div>
       </div>
+
+      {/* Clear Filters */}
+      {(email || action || status || ipAddress || resourceType) && (
+        <div className="mb-4">
+          <button
+            onClick={() => { setEmail(''); setAction(''); setStatus(''); setIpAddress(''); setResourceType(''); }}
+            className="text-xs flex items-center gap-1"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <X className="w-3 h-3" /> Clear filters
+          </button>
+        </div>
+      )}
 
       <div className="rounded-2xl overflow-hidden"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
@@ -116,10 +250,11 @@ export default function AuditLogs() {
                 <tr>
                   <th>Action</th>
                   <th className="hidden sm:table-cell">User</th>
+                  <th className="hidden md:table-cell">Resource</th>
+                  <th className="hidden md:table-cell">Resource ID</th>
                   <th>Status</th>
-                  <th className="hidden md:table-cell">IP Address</th>
+                  <th className="hidden lg:table-cell">IP Address</th>
                   <th className="hidden lg:table-cell">Time</th>
-                  <th className="hidden xl:table-cell">Details</th>
                 </tr>
               </thead>
               <tbody>
@@ -138,12 +273,22 @@ export default function AuditLogs() {
                         {log.user_email ?? log.user_id ?? '—'}
                       </p>
                     </td>
+                    <td className="hidden md:table-cell">
+                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        {log.resource_type ?? '—'}
+                      </span>
+                    </td>
+                    <td className="hidden md:table-cell">
+                      <span className="text-xs font-mono truncate max-w-[100px] block" style={{ color: 'var(--text-muted)' }}>
+                        {log.resource_id ?? '—'}
+                      </span>
+                    </td>
                     <td>
                       <span className={log.status === 'success' ? 'badge badge-success' : 'badge badge-danger'}>
                         {log.status ?? '—'}
                       </span>
                     </td>
-                    <td className="hidden md:table-cell">
+                    <td className="hidden lg:table-cell">
                       <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
                         {log.ip_address ?? '—'}
                       </span>
@@ -153,14 +298,6 @@ export default function AuditLogs() {
                         <Clock className="w-3 h-3" />
                         {fmtDate(log.created_at)}
                       </span>
-                    </td>
-                    <td className="hidden xl:table-cell">
-                      {log.details && (
-                        <span className="text-xs font-mono truncate max-w-[120px] block"
-                          style={{ color: 'var(--text-muted)' }}>
-                          {typeof log.details === 'string' ? log.details : JSON.stringify(log.details)}
-                        </span>
-                      )}
                     </td>
                   </tr>
                 ))}

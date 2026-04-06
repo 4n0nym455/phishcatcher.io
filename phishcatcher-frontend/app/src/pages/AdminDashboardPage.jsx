@@ -7,29 +7,57 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users, Activity, Shield, BarChart3, RefreshCw,
-  Loader2, AlertTriangle, Database, TrendingUp,
+  Loader2, AlertTriangle, Database, TrendingUp, TrendingDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
+  BarChart, Bar, PieChart, Pie, Cell, Legend,
+} from 'recharts';
 import { adminApi } from '@/lib/api';
+
+const COLORS = {
+  brand: '#6366f1',
+  success: '#10b981',
+  threat: '#f59e0b',
+  danger: '#ef4444',
+  purple: '#8b5cf6',
+  pink: '#ec4899',
+  cyan: '#06b6d4',
+};
+
+const PIE_COLORS = [COLORS.danger, COLORS.threat, COLORS.success, COLORS.brand, COLORS.purple, COLORS.pink, COLORS.cyan];
 
 export default function AdminDashboardPage() {
   const [stats,      setStats]     = useState(null);
   const [model,      setModel]     = useState(null);
+  const [analytics,  setAnalytics] = useState(null);
   const [loading,    setLoading]   = useState(true);
   const [retraining, setRetraining]= useState(false);
+  const [period,     setPeriod]    = useState(30);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       try {
-        const [s, m] = await Promise.allSettled([adminApi.getStats(), adminApi.getModelInfo()]);
+        const [s, m, a] = await Promise.allSettled([
+          adminApi.getStats(),
+          adminApi.getModelInfo(),
+          adminApi.getAnalytics(period)
+        ]);
         if (s.status === 'fulfilled') setStats(s.value);
         if (m.status === 'fulfilled') setModel(m.value);
+        if (a.status === 'fulfilled') setAnalytics(a.value);
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [period]);
+
+  const handlePeriodChange = (days) => {
+    setPeriod(days);
+  };
 
   const handleRetrain = async () => {
     if (!window.confirm('Start model retraining? This may take several minutes.')) return;
@@ -155,6 +183,220 @@ export default function AdminDashboardPage() {
               </Link>
             ))}
           </div>
+
+          {/* Analytics Charts */}
+          {analytics && (
+            <>
+              {/* Period selector */}
+              <div className="flex items-center justify-between">
+                <h2 className="font-heading font-700 text-lg" style={{ color: 'var(--text-primary)' }}>
+                  Analytics Overview
+                </h2>
+                <div className="flex gap-1 bg-[var(--bg-elevated)] p-1 rounded-lg">
+                  {[7, 30, 90].map(d => (
+                    <button
+                      key={d}
+                      onClick={() => handlePeriodChange(d)}
+                      className={`px-3 py-1.5 text-xs font-500 rounded-md transition-all ${
+                        period === d
+                          ? 'bg-[var(--brand)] text-white'
+                          : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      {d}d
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Area Chart - Daily Analyses */}
+              <div className="card p-6">
+                <h3 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+                  Email Analysis Trends
+                </h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={analytics.daily_analyses} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={COLORS.brand} stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor={COLORS.brand} stopOpacity={0}/>
+                        </linearGradient>
+                        <linearGradient id="colorPhishing" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={COLORS.danger} stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor={COLORS.danger} stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis 
+                        dataKey="date" 
+                        tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
+                        tickFormatter={(v) => {
+                          const d = new Date(v);
+                          return period <= 14 ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : d.toLocaleDateString(undefined, { month: 'short' });
+                        }}
+                        interval={Math.floor(analytics.daily_analyses.length / 6)}
+                      />
+                      <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{ 
+                          background: 'var(--bg-surface)', 
+                          border: '1px solid var(--border)', 
+                          borderRadius: '8px',
+                          color: 'var(--text-primary)'
+                        }}
+                      />
+                      <Area type="monotone" dataKey="total" stroke={COLORS.brand} fill="url(#colorTotal)" strokeWidth={2} name="Total" />
+                      <Area type="monotone" dataKey="phishing" stroke={COLORS.danger} fill="url(#colorPhishing)" strokeWidth={2} name="Phishing" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Charts Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Radar Chart - Threat Categories */}
+                <div className="card p-6">
+                  <h3 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+                    Threat Category Distribution
+                  </h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RadarChart data={analytics.category_breakdown.map((c, i) => ({ ...c, fill: PIE_COLORS[i % PIE_COLORS.length] }))}>
+                        <PolarGrid stroke="var(--border)" />
+                        <PolarAngleAxis dataKey="category" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                        <PolarRadiusAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+                        <Radar name="Count" dataKey="count" stroke={COLORS.brand} fill={COLORS.brand} fillOpacity={0.3} strokeWidth={2} />
+                      </RadarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Bar Chart - Risk Distribution */}
+                <div className="card p-6">
+                  <h3 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+                    Risk Score Distribution
+                  </h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={analytics.risk_distribution} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                        <XAxis dataKey="range" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                        <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ 
+                            background: 'var(--bg-surface)', 
+                            border: '1px solid var(--border)', 
+                            borderRadius: '8px',
+                            color: 'var(--text-primary)'
+                          }}
+                        />
+                        <Bar dataKey="count" name="Emails" radius={[4, 4, 0, 0]}>
+                          {analytics.risk_distribution.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={index < 2 ? COLORS.success : index < 4 ? COLORS.threat : COLORS.danger} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Pie Chart - Current Status */}
+                <div className="card p-6">
+                  <h3 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+                    Current Threat Status
+                  </h3>
+                  <div className="h-64 flex items-center">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={[
+                            { name: 'Phishing', value: analytics.daily_analyses.reduce((a, b) => a + b.phishing, 0), color: COLORS.danger },
+                            { name: 'Suspicious', value: analytics.daily_analyses.reduce((a, b) => a + b.suspicious, 0), color: COLORS.threat },
+                            { name: 'Safe', value: analytics.daily_analyses.reduce((a, b) => a + b.safe, 0), color: COLORS.success },
+                          ]}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={80}
+                          paddingAngle={5}
+                          dataKey="value"
+                          nameKey="name"
+                        >
+                          {[
+                            { name: 'Phishing', value: analytics.daily_analyses.reduce((a, b) => a + b.phishing, 0), color: COLORS.danger },
+                            { name: 'Suspicious', value: analytics.daily_analyses.reduce((a, b) => a + b.suspicious, 0), color: COLORS.threat },
+                            { name: 'Safe', value: analytics.daily_analyses.reduce((a, b) => a + b.safe, 0), color: COLORS.success },
+                          ].map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{ 
+                            background: 'var(--bg-surface)', 
+                            border: '1px solid var(--border)', 
+                            borderRadius: '8px',
+                            color: 'var(--text-primary)'
+                          }}
+                        />
+                        <Legend 
+                          verticalAlign="middle" 
+                          align="right"
+                          layout="vertical"
+                          iconType="circle"
+                          formatter={(value) => <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>{value}</span>}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* User Activity Chart */}
+                <div className="card p-6">
+                  <h3 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+                    User Activity
+                  </h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={analytics.user_activity} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="colorNewUsers" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={COLORS.purple} stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor={COLORS.purple} stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorActiveUsers" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={COLORS.cyan} stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor={COLORS.cyan} stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis 
+                          dataKey="date" 
+                          tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
+                          tickFormatter={(v) => {
+                            const d = new Date(v);
+                            return period <= 14 ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : d.toLocaleDateString(undefined, { month: 'short' });
+                          }}
+                          interval={Math.floor(analytics.user_activity.length / 6)}
+                        />
+                        <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ 
+                            background: 'var(--bg-surface)', 
+                            border: '1px solid var(--border)', 
+                            borderRadius: '8px',
+                            color: 'var(--text-primary)'
+                          }}
+                        />
+                        <Area type="monotone" dataKey="new_users" stroke={COLORS.purple} fill="url(#colorNewUsers)" strokeWidth={2} name="New Users" />
+                        <Area type="monotone" dataKey="active_users" stroke={COLORS.cyan} fill="url(#colorActiveUsers)" strokeWidth={2} name="Active Users" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

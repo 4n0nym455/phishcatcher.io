@@ -9,7 +9,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   Search, Upload, FileText, Clock, RefreshCw, Loader2,
   X, AlertTriangle, CheckCircle, Shield, Play, Layers,
-  CheckSquare, Square, Settings, FileJson, File, FileCode, Zap,
+  CheckSquare, Square, Settings, FileJson, File, FileCode, Zap, Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { analysisApi, authApi } from '@/lib/api';
@@ -110,12 +110,16 @@ export default function AnalysisListPage() {
   const [filter,   setFilter]   = useState('all');
   const [page,     setPage]     = useState(1);
   const [hasMore,  setHasMore]  = useState(false);
-  const [deleting, setDeleting] = useState(null);
 
   /* ── Queue state ── */
   const [queueData, setQueueData] = useState({ pending: [], processing: [], completed: [], counts: {} });
   const [selectedIds, setSelectedIds] = useState([]);
   const [showFormatDialog, setShowFormatDialog] = useState(false);
+  const [showClearDialog, setShowClearDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [deleteItem, setDeleteItem] = useState(null);
+  const [clearing, setClearing] = useState(false);
+  const [queueDeleting, setQueueDeleting] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState('results');
   const [queueLoading, setQueueLoading] = useState(false);
@@ -194,13 +198,33 @@ export default function AnalysisListPage() {
   };
 
   const handleClearCompleted = async () => {
-    if (!window.confirm('Clear completed items from queue?')) return;
+    setShowClearDialog(false);
+    setClearing(true);
     try {
       await authApi.gmail.clearQueue();
       toast.success('Queue cleared');
       loadQueue();
     } catch (err) {
       toast.error(err.message ?? 'Failed to clear queue');
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const handleDeleteItem = async () => {
+    if (!deleteItem) return;
+    setShowDeleteDialog(false);
+    setQueueDeleting(true);
+    try {
+      await authApi.gmail.deleteQueueItem(deleteItem.message_id);
+      toast.success('Item removed from queue');
+      setSelectedIds(prev => prev.filter(id => id !== deleteItem.message_id));
+      loadQueue();
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to remove item');
+    } finally {
+      setQueueDeleting(false);
+      setDeleteItem(null);
     }
   };
 
@@ -380,6 +404,13 @@ export default function AnalysisListPage() {
                         >
                           Analyze
                         </button>
+                        <button
+                          onClick={() => { setDeleteItem(item); setShowDeleteDialog(true); }}
+                          className="p-2 rounded-lg hover:bg-[var(--bg-surface)]"
+                          title="Remove from queue"
+                        >
+                          <Trash2 className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -414,10 +445,11 @@ export default function AnalysisListPage() {
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="font-600 text-sm" style={{ color: 'var(--text-primary)' }}>Completed</h3>
                     <button
-                      onClick={handleClearCompleted}
-                      className="text-xs"
+                      onClick={() => setShowClearDialog(true)}
+                      className="text-xs flex items-center gap-1"
                       style={{ color: 'var(--text-muted)' }}
                     >
+                      <Trash2 className="w-3 h-3" />
                       Clear completed
                     </button>
                   </div>
@@ -619,6 +651,88 @@ export default function AnalysisListPage() {
         onSubmit={handleAnalyze}
         selectedCount={selectedIds.length}
       />
+
+      {showClearDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowClearDialog(false)} />
+          <div className="relative bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--danger-dim, #fee2e2)' }}>
+                <Trash2 className="w-5 h-5" style={{ color: 'var(--danger)' }} />
+              </div>
+              <div>
+                <h3 className="text-lg font-600" style={{ color: 'var(--text-primary)' }}>Clear Completed?</h3>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>This action cannot be undone</p>
+              </div>
+            </div>
+            
+            <div className="mb-6 p-3 rounded-lg" style={{ background: 'var(--bg-elevated)' }}>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                This will remove all completed analysis results from the queue. The analysis results will remain in your history.
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowClearDialog(false)} 
+                className="btn-ghost flex-1"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleClearCompleted} 
+                disabled={clearing}
+                className="flex-1 h-10 px-4 rounded-lg font-500 text-sm flex items-center justify-center gap-2"
+                style={{ background: 'var(--danger)', color: 'white' }}
+              >
+                {clearing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Clear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteDialog && deleteItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowDeleteDialog(false)} />
+          <div className="relative bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--danger-dim, #fee2e2)' }}>
+                <Trash2 className="w-5 h-5" style={{ color: 'var(--danger)' }} />
+              </div>
+              <div>
+                <h3 className="text-lg font-600" style={{ color: 'var(--text-primary)' }}>Remove from Queue?</h3>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>This action cannot be undone</p>
+              </div>
+            </div>
+            
+            <div className="mb-6 p-3 rounded-lg" style={{ background: 'var(--bg-elevated)' }}>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                Remove <strong>{deleteItem.subject || 'No Subject'}</strong> from the queue? You can add it again later.
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowDeleteDialog(false)} 
+                className="btn-ghost flex-1"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleDeleteItem} 
+                disabled={queueDeleting}
+                className="flex-1 h-10 px-4 rounded-lg font-500 text-sm flex items-center justify-center gap-2"
+                style={{ background: 'var(--danger)', color: 'white' }}
+              >
+                {queueDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -102,6 +102,7 @@ export default function AccountSettingsPage() {
   /* ── Gmail state ── */
   const [gmailStatus, setGmailStatus] = useState(null);
   const [gmailLoading, setGmailLoading] = useState(false);
+  const [showGmailDisconnectDialog, setShowGmailDisconnectDialog] = useState(false);
 
   /* ── MFA status ── */
   const [mfaStatus, setMfaStatus] = useState(null);
@@ -228,11 +229,11 @@ export default function AccountSettingsPage() {
   };
 
   const handleGmailDisconnect = async () => {
-    if (!window.confirm('Disconnect Gmail? PhishCatcher will stop monitoring your inbox.')) return;
+    setShowGmailDisconnectDialog(false);
     setGmailLoading(true);
     try {
       await authApi.gmail.disconnect();
-      setGmailStatus(prev => ({ ...prev, connected: false }));
+      setGmailStatus(prev => ({ ...prev, connected: false, email: null }));
       toast.success('Gmail disconnected');
     } catch (err) { toast.error(err.message ?? 'Failed to disconnect'); }
     finally { setGmailLoading(false); }
@@ -402,7 +403,7 @@ export default function AccountSettingsPage() {
             </p>
           </div>
           {gmailConnected ? (
-            <button onClick={handleGmailDisconnect} disabled={gmailLoading}
+            <button onClick={() => setShowGmailDisconnectDialog(true)} disabled={gmailLoading}
               className="btn-ghost h-9 px-3 text-sm shrink-0"
               style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>
               {gmailLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
@@ -504,6 +505,48 @@ export default function AccountSettingsPage() {
           </form>
         )}
       </div>
+
+      {/* Gmail Disconnect Confirmation Dialog */}
+      {showGmailDisconnectDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowGmailDisconnectDialog(false)} />
+          <div className="relative bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--danger-dim, #fee2e2)' }}>
+                <AlertTriangle className="w-5 h-5" style={{ color: 'var(--danger)' }} />
+              </div>
+              <div>
+                <h3 className="text-lg font-600" style={{ color: 'var(--text-primary)' }}>Disconnect Gmail?</h3>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>This action cannot be undone</p>
+              </div>
+            </div>
+            
+            <div className="mb-6 p-3 rounded-lg" style={{ background: 'var(--bg-elevated)' }}>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                PhishCatcher will stop monitoring your inbox. You can reconnect at any time, but you'll need to re-authorize access.
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowGmailDisconnectDialog(false)} 
+                className="btn-ghost flex-1"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleGmailDisconnect} 
+                disabled={gmailLoading}
+                className="flex-1 h-10 px-4 rounded-lg font-500 text-sm flex items-center justify-center gap-2"
+                style={{ background: 'var(--danger)', color: 'white' }}
+              >
+                {gmailLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Disconnect
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

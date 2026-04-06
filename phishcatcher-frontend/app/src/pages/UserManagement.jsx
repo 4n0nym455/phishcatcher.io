@@ -1,12 +1,12 @@
 /**
  * UserManagement.jsx
- * Admin page: searchable user table with edit modal, activate/deactivate toggle, delete.
+ * Admin page: searchable user table with filters, sort, edit modal, activate/deactivate toggle, delete.
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, UserCheck, UserX, Edit2, Trash2,
-  X, Loader2, Users, AlertTriangle,
+  X, Loader2, Users, AlertTriangle, ArrowUpDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { adminApi } from '@/lib/api';
@@ -142,6 +142,10 @@ export default function UserManagement() {
   const [users,    setUsers]   = useState([]);
   const [loading,  setLoading] = useState(true);
   const [search,   setSearch]  = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [mfaFilter, setMfaFilter] = useState('');
+  const [sortBy, setSortBy] = useState('created_at');
   const [page,     setPage]    = useState(1);
   const [hasMore,  setHasMore] = useState(false);
   const [editing,  setEditing] = useState(null);
@@ -149,10 +153,22 @@ export default function UserManagement() {
   const [deleting, setDeleting]= useState(null);
   const [deleteModal, setDeleteModal] = useState(null);
 
-  const load = useCallback(async (pg = 1, reset = true, q = search) => {
+  const load = useCallback(async (pg = 1, reset = true) => {
     setLoading(true);
     try {
-      const res  = await adminApi.listUsers({ page: pg, pageSize: PAGE_SIZE, search: q || undefined });
+      const params = {
+        page: pg,
+        pageSize: PAGE_SIZE,
+        search: search || undefined,
+        sortBy: sortBy,
+        sortOrder: 'desc',
+      };
+
+      if (roleFilter) params.role = roleFilter;
+      if (statusFilter === 'active') params.isActive = true;
+      if (statusFilter === 'inactive') params.isActive = false;
+
+      const res = await adminApi.listUsers(params);
       const list = res.users ?? res.items ?? (Array.isArray(res) ? res : []);
       setUsers(prev => reset ? list : [...prev, ...list]);
       setHasMore(list.length === PAGE_SIZE);
@@ -162,12 +178,12 @@ export default function UserManagement() {
     } finally {
       setLoading(false);
     }
-  }, [search]);
+  }, [search, roleFilter, statusFilter, sortBy]);
 
   useEffect(() => {
-    const timer = setTimeout(() => load(1, true, search), 300);
+    const timer = setTimeout(() => load(1, true), 300);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, roleFilter, statusFilter, sortBy]);
 
   const handleToggleActive = async user => {
     setToggling(user.id);
@@ -203,6 +219,16 @@ export default function UserManagement() {
     setUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
   };
 
+  const clearFilters = () => {
+    setSearch('');
+    setRoleFilter('');
+    setStatusFilter('');
+    setMfaFilter('');
+    setSortBy('created_at');
+  };
+
+  const hasActiveFilters = search || roleFilter || statusFilter || mfaFilter;
+
   return (
     <div className="animate-fade-in">
       {/* Edit modal */}
@@ -231,22 +257,69 @@ export default function UserManagement() {
         </div>
       </div>
 
-      {/* Search */}
-      <div className="relative mb-5">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
-        <input
-          type="text"
-          placeholder="Search by email or name…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="input-base pl-10 pr-9"
-        />
-        {search && (
-          <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
-            <X className="w-4 h-4" />
-          </button>
-        )}
+      {/* Filters Row */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        {/* Search */}
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+          <input
+            type="text"
+            placeholder="Search by email or name…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="input-base pl-10 pr-9 w-full"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Role Filter */}
+        <div>
+          <label className="form-label">Role</label>
+          <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} className="input-base w-auto">
+            <option value="">All</option>
+            <option value="admin">Admin</option>
+            <option value="user">User</option>
+          </select>
+        </div>
+
+        {/* Status Filter */}
+        <div>
+          <label className="form-label">Status</label>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input-base w-auto">
+            <option value="">All</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </div>
+
+        {/* Sort */}
+        <div>
+          <label className="form-label">Sort by</label>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="input-base w-auto">
+            <option value="created_at">Newest</option>
+            <option value="created_at_asc">Oldest</option>
+            <option value="email">A-Z</option>
+            <option value="last_login">Last Login</option>
+          </select>
+        </div>
       </div>
+
+      {/* Clear Filters */}
+      {hasActiveFilters && (
+        <div className="mb-4">
+          <button
+            onClick={clearFilters}
+            className="text-xs flex items-center gap-1"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <X className="w-3 h-3" /> Clear filters
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <div className="rounded-2xl overflow-hidden"
@@ -260,7 +333,7 @@ export default function UserManagement() {
           <div className="p-12 text-center">
             <Users className="w-10 h-10 mx-auto mb-4 opacity-25" style={{ color: 'var(--text-muted)' }} />
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-              {search ? 'No users match your search.' : 'No users found.'}
+              {search || roleFilter || statusFilter ? 'No users match your filters.' : 'No users found.'}
             </p>
           </div>
         ) : (
@@ -272,6 +345,7 @@ export default function UserManagement() {
                   <th className="hidden sm:table-cell">Role</th>
                   <th>Status</th>
                   <th className="hidden lg:table-cell">Joined</th>
+                  <th className="hidden md:table-cell">Last Login</th>
                   <th className="hidden md:table-cell">MFA</th>
                   <th>Actions</th>
                 </tr>
@@ -300,6 +374,11 @@ export default function UserManagement() {
                     <td className="hidden lg:table-cell">
                       <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                         {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
+                      </span>
+                    </td>
+                    <td className="hidden md:table-cell">
+                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        {u.last_login ? new Date(u.last_login).toLocaleDateString() : '—'}
                       </span>
                     </td>
                     <td className="hidden md:table-cell">

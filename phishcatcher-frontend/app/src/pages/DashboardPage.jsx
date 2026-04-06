@@ -4,7 +4,7 @@
  * Fully CSS-variable driven — light & dark mode.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Upload, Shield, AlertTriangle, CheckCircle, TrendingUp,
@@ -12,6 +12,16 @@ import {
 } from 'lucide-react';
 import { analysisApi, authApi } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend,
+} from 'recharts';
+
+const CHART_COLORS = {
+  safe: '#10b981',
+  suspicious: '#f59e0b',
+  phishing: '#ef4444',
+};
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
 function riskScore(a)     { return a.threat_score ?? a.risk_score ?? 0; }
@@ -104,6 +114,29 @@ export default function DashboardPage() {
   const suspicious = analyses.filter(a => riskScore(a) >= 40 && riskScore(a) < 70).length;
   const safe       = total - phishing - suspicious;
 
+  const threatData = useMemo(() => [
+    { name: 'Safe', value: safe, color: CHART_COLORS.safe },
+    { name: 'Suspicious', value: suspicious, color: CHART_COLORS.suspicious },
+    { name: 'Phishing', value: phishing, color: CHART_COLORS.phishing },
+  ], [safe, suspicious, phishing]);
+
+  const trendData = useMemo(() => {
+    const sorted = [...analyses].sort((a, b) => 
+      new Date(a.created_at || a.analyzed_at) - new Date(b.created_at || b.analyzed_at)
+    );
+    const grouped = {};
+    sorted.forEach(a => {
+      const date = new Date(a.created_at || a.analyzed_at).toISOString().split('T')[0];
+      if (!grouped[date]) grouped[date] = { date, total: 0, phishing: 0, suspicious: 0, safe: 0 };
+      grouped[date].total++;
+      const s = riskScore(a);
+      if (s >= 70) grouped[date].phishing++;
+      else if (s >= 40) grouped[date].suspicious++;
+      else grouped[date].safe++;
+    });
+    return Object.values(grouped).slice(-14);
+  }, [analyses]);
+
   const hour      = new Date().getHours();
   const greeting  = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const firstName = user?.full_name?.split(' ')[0] || user?.email?.split('@')[0] || 'there';
@@ -140,6 +173,95 @@ export default function DashboardPage() {
         <StatCard icon={AlertTriangle} label="Suspicious"     value={suspicious} color="var(--threat)"  bg="var(--threat-dim)"  loading={loading} />
         <StatCard icon={Shield}        label="Phishing"       value={phishing}   color="var(--danger)"  bg="var(--danger-dim)"  loading={loading} />
       </div>
+
+      {/* ── Charts ── */}
+      {total > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Threat Distribution Pie Chart */}
+          <div className="card p-6">
+            <h2 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+              Threat Distribution
+            </h2>
+            <div className="h-56 flex items-center">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={threatData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={70}
+                    paddingAngle={5}
+                    dataKey="value"
+                    nameKey="name"
+                  >
+                    {threatData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ 
+                      background: 'var(--bg-surface)', 
+                      border: '1px solid var(--border)', 
+                      borderRadius: '8px',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <Legend 
+                    verticalAlign="middle" 
+                    align="right"
+                    layout="vertical"
+                    iconType="circle"
+                    formatter={(value) => <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>{value}</span>}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Trend Area Chart */}
+          <div className="card p-6">
+            <h2 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+              Analysis Trend (Last 14 Days)
+            </h2>
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={trendData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorSafe" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={CHART_COLORS.safe} stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor={CHART_COLORS.safe} stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorThreat" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={CHART_COLORS.phishing} stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor={CHART_COLORS.phishing} stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                  <XAxis 
+                    dataKey="date" 
+                    tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
+                    tickFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    interval={Math.floor(trendData.length / 5)}
+                  />
+                  <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{ 
+                      background: 'var(--bg-surface)', 
+                      border: '1px solid var(--border)', 
+                      borderRadius: '8px',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <Area type="monotone" dataKey="safe" stackId="1" stroke={CHART_COLORS.safe} fill="url(#colorSafe)" strokeWidth={2} name="Safe" />
+                  <Area type="monotone" dataKey="suspicious" stackId="2" stroke={CHART_COLORS.suspicious} fill={CHART_COLORS.suspicious} fillOpacity={0.3} strokeWidth={2} name="Suspicious" />
+                  <Area type="monotone" dataKey="phishing" stackId="3" stroke={CHART_COLORS.phishing} fill="url(#colorThreat)" strokeWidth={2} name="Phishing" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Quick actions ── */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

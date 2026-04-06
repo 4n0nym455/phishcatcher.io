@@ -3,7 +3,7 @@
  * List of weekly threat intelligence reports with expandable detail cards.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   TrendingUp, Calendar, Download, BarChart3,
@@ -11,6 +11,18 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { analysisApi } from '@/lib/api';
+import {
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+} from 'recharts';
+
+const COLORS = {
+  brand: '#6366f1',
+  success: '#10b981',
+  threat: '#f59e0b',
+  danger: '#ef4444',
+  purple: '#8b5cf6',
+};
 
 /* ─── Format helpers ───────────────────────────────────────────────────── */
 function formatWeekRange(dateStr) {
@@ -192,12 +204,89 @@ export default function WeeklyReportsPage() {
     } catch { toast.error('Download failed'); }
   };
 
+  const comparisonData = useMemo(() => {
+    if (reports.length < 2) return [];
+    return reports.slice(0, 8).reverse().map(r => ({
+      week: formatWeekRange(r.week_start ?? r.date),
+      total: r.total_analyzed ?? r.emails_analyzed ?? 0,
+      threats: r.threats_detected ?? r.phishing_count ?? 0,
+      suspicious: r.suspicious_count ?? 0,
+    }));
+  }, [reports]);
+
+  const radarData = useMemo(() => {
+    if (reports.length === 0) return [];
+    const latest = reports[0];
+    const cats = latest.top_categories ?? latest.threat_categories ?? [];
+    if (cats.length === 0) return [];
+    return cats.slice(0, 6).map(cat => {
+      const name = typeof cat === 'string' ? cat : cat.name ?? cat.category ?? 'Unknown';
+      const count = typeof cat === 'object' ? (cat.count ?? cat.occurrences ?? 0) : 0;
+      return { category: name, value: count };
+    });
+  }, [reports]);
+
   return (
     <div className="animate-fade-in">
       <div className="page-header">
         <h1 className="page-title">Weekly Reports</h1>
         <p className="page-subtitle">Threat intelligence summaries generated every Monday</p>
       </div>
+
+      {reports.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          {/* Comparison Line Chart */}
+          {comparisonData.length > 1 && (
+            <div className="card p-6">
+              <h2 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+                Week-over-Week Comparison
+              </h2>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={comparisonData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                    <XAxis 
+                      dataKey="week" 
+                      tick={{ fill: 'var(--text-muted)', fontSize: 10 }}
+                      tickFormatter={(v) => v.split(' – ')[0]}
+                    />
+                    <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                    <Tooltip
+                      contentStyle={{ 
+                        background: 'var(--bg-surface)', 
+                        border: '1px solid var(--border)', 
+                        borderRadius: '8px',
+                        color: 'var(--text-primary)'
+                      }}
+                    />
+                    <Line type="monotone" dataKey="total" stroke={COLORS.brand} strokeWidth={2} dot={{ fill: COLORS.brand, r: 4 }} name="Total Analyzed" />
+                    <Line type="monotone" dataKey="threats" stroke={COLORS.danger} strokeWidth={2} dot={{ fill: COLORS.danger, r: 4 }} name="Threats" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Radar Chart for Categories */}
+          {radarData.length > 0 && (
+            <div className="card p-6">
+              <h2 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
+                Threat Categories (Latest Week)
+              </h2>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RadarChart data={radarData}>
+                    <PolarGrid stroke="var(--border)" />
+                    <PolarAngleAxis dataKey="category" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                    <PolarRadiusAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+                    <Radar name="Count" dataKey="value" stroke={COLORS.danger} fill={COLORS.danger} fillOpacity={0.3} strokeWidth={2} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center py-16">

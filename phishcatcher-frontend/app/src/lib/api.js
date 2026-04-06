@@ -267,7 +267,38 @@ export const authApi = {
     callback:        (code, state) => apiFetch('/gmail/callback', { method: 'POST', body: JSON.stringify({ code, state }) }),
     getStatus:       ()        => apiFetch('/gmail/status'),
     disconnect:      ()        => apiFetch('/gmail/disconnect', { method: 'POST' }),
-    listEmails:      (page = 1, maxResults = 20) => apiFetch(`/gmail/emails?page=${page}&max_results=${maxResults}`),
+    listEmails:      (page = 1, maxResults = 20, q = null) => {
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('max_results', String(maxResults));
+      if (q) params.set('q', q);
+      return apiFetch(`/gmail/emails?${params}`);
+    },
+    searchEmails:    (query, page = 1, maxResults = 50) => {
+      const params = new URLSearchParams();
+      params.set('q', query);
+      params.set('page', String(page));
+      params.set('max_results', String(maxResults));
+      return apiFetch(`/gmail/emails/search?${params}`);
+    },
+    filterEmails:    (options = {}) => {
+      const { filterType, hasAttachments, dateFrom, dateTo, fromAddress, subject, page = 1, maxResults = 50 } = options;
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('max_results', String(maxResults));
+      if (filterType) params.set('filter_type', filterType);
+      if (hasAttachments !== undefined) params.set('has_attachments', String(hasAttachments));
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+      if (fromAddress) params.set('from_address', fromAddress);
+      if (subject) params.set('subject', subject);
+      return apiFetch(`/gmail/emails/filter?${params}`);
+    },
+    getQueryHelp:    ()        => apiFetch('/gmail/emails/query-builder'),
+    queueEmails:     (messageIds) => apiFetch('/gmail/emails/queue', {
+      method: 'POST',
+      body: JSON.stringify({ message_ids: messageIds }),
+    }),
     analyzeEmails:   (messageIds) => apiFetch('/gmail/emails/analyze', {
       method: 'POST',
       body: JSON.stringify({ message_ids: messageIds }),
@@ -277,6 +308,7 @@ export const authApi = {
     reportPhishing:  (id) => apiFetch(`/gmail/emails/${id}/phishing`, { method: 'POST' }),
     getQueue:        ()        => apiFetch('/gmail/queue'),
     processQueueItem: (messageId) => apiFetch(`/gmail/queue/${messageId}/process`, { method: 'POST' }),
+    deleteQueueItem: (messageId) => apiFetch(`/gmail/queue/${messageId}`, { method: 'DELETE' }),
     clearQueue:      ()        => apiFetch('/gmail/queue/clear', { method: 'POST' }),
   },
 };
@@ -287,11 +319,15 @@ export const adminApi = {
   getStats:    () => apiFetch('/admin/stats'),
   getModelInfo:()  => apiFetch('/admin/model-info'),
   retrainModel:()  => apiFetch('/admin/model/retrain', { method: 'POST' }),
+  getAnalytics:(days = 30) => apiFetch(`/admin/analytics?days=${days}`),
 
-  listUsers: ({ page = 1, pageSize = 20, search, isActive } = {}) => {
+  listUsers: ({ page = 1, pageSize = 20, search, isActive, role, sortBy, sortOrder } = {}) => {
     const q = new URLSearchParams({ page, page_size: pageSize });
     if (search   !== undefined) q.set('search',    search);
     if (isActive !== undefined) q.set('is_active', isActive);
+    if (role     !== undefined) q.set('role',      role);
+    if (sortBy   !== undefined) q.set('sort_by',   sortBy);
+    if (sortOrder!== undefined) q.set('sort_order', sortOrder);
     return apiFetch(`/admin/users?${q}`);
   },
 
@@ -299,11 +335,15 @@ export const adminApi = {
   updateUser: (id, data)   => apiFetch(`/admin/users/${id}`, { method: 'PUT',    body: JSON.stringify(data) }),
   deleteUser: (id, payload)=> apiFetch(`/admin/users/${id}`, { method: 'DELETE', body: JSON.stringify(payload) }),
 
-  getAuditLogs: ({ page = 1, pageSize = 50, action, status, userId, days = 7 } = {}) => {
+  getAuditLogs: ({ page = 1, pageSize = 50, action, status, days = 7, startDate, endDate, ipAddress, resourceType, userEmail } = {}) => {
     const q = new URLSearchParams({ page, page_size: pageSize, days });
-    if (action)  q.set('action',  action);
-    if (status)  q.set('status',  status);
-    if (userId)  q.set('user_id', userId);
+    if (action)       q.set('action', action);
+    if (status)       q.set('status', status);
+    if (startDate)    q.set('start_date', startDate);
+    if (endDate)     q.set('end_date', endDate);
+    if (ipAddress)    q.set('ip_address', ipAddress);
+    if (resourceType)q.set('resource_type', resourceType);
+    if (userEmail)    q.set('user_email', userEmail);
     return apiFetch(`/admin/audit-logs?${q}`);
   },
 };
@@ -311,11 +351,14 @@ export const adminApi = {
 // ─── Analysis API ─────────────────────────────────────────────────────────────
 
 export const analysisApi = {
-  uploadEmail: (file) => {
+  uploadEmail: (file, queueOnly = false) => {
     const form = new FormData();
     form.append('file', file);
     const { accessToken } = getTokens();
-    return fetch(`${API_BASE}/analysis/upload`, {
+    const url = queueOnly 
+      ? `${API_BASE}/analysis/upload?queue_only=true`
+      : `${API_BASE}/analysis/upload`;
+    return fetch(url, {
       method:  'POST',
       headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
       body:    form,
@@ -342,6 +385,7 @@ export const analysisApi = {
     }
     return apiFetch(`/analysis/${id}`);
   },
+  startAnalysis: (id) => apiFetch(`/analysis/${id}/start`, { method: 'POST' }),
   getStatus:    (id)     => apiFetch(`/analysis/${id}/status`),
   deleteAnalysis:(id)    => apiFetch(`/analysis/${id}`, { method: 'DELETE' }),
   downloadReport:(id, fmt='pdf') => apiFetch(`/analysis/${id}/download?format=${fmt}`),
