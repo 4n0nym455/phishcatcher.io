@@ -19,12 +19,25 @@ self.addEventListener('fetch', (event) => {
   // Only intercept specific assets, not all requests
   const url = new URL(event.request.url);
   
-  // Don't intercept API requests, non-GET requests, or module requests
+  // Don't intercept:
+  // - API requests
+  // - Non-GET requests
+  // - Module requests
+  // - MinIO/asset requests (avatars, files, etc.)
+  // - Development server requests
   if (url.pathname.includes('/api/') || 
       event.request.method !== 'GET' ||
       url.pathname.includes('.js') ||
       url.pathname.includes('.css') ||
       url.pathname.includes('.jsx') ||
+      url.pathname.includes('.png') ||
+      url.pathname.includes('.jpg') ||
+      url.pathname.includes('.jpeg') ||
+      url.pathname.includes('.gif') ||
+      url.pathname.includes('.ico') ||
+      url.pathname.includes('avatars') ||
+      url.pathname.includes('phishcatcher-') ||
+      url.hostname.includes('localhost:9000') ||
       event.request.url.includes('localhost:5173')) {
     return;
   }
