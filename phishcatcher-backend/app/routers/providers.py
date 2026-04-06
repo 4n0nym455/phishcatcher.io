@@ -100,7 +100,7 @@ async def connect_gmail(
             user_email=current_user.email,
             action=AuditAction.PROVIDER_CONNECTED,
             resource_type="email_provider",
-            resource_id=provider.id,
+            resource_id=str(provider.id),
             status="success",
             details={"provider_type": "gmail", "email": token_data['email']}
         )

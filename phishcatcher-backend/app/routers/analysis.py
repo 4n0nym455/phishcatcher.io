@@ -39,10 +39,15 @@ router = APIRouter()
 @router.post("/upload", response_model=AnalysisStatus, status_code=status.HTTP_202_ACCEPTED)
 async def upload_email(
     file: UploadFile = File(...),
+    queue_only: bool = Query(False, description="Only add to queue without starting analysis"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Upload an email file for analysis with MinIO storage."""
+    """Upload an email file for analysis with MinIO storage.
+    
+    If queue_only=True, the file is added to queue without starting analysis.
+    User can then initiate analysis from the Analysis page.
+    """
     settings = get_settings()
     
     # Validate file type
@@ -120,7 +125,7 @@ async def upload_email(
         user_email=current_user.email,
         action=AuditAction.ANALYSIS_CREATED,
         resource_type="analysis",
-        resource_id=job.id,
+        resource_id=str(job.id),
         status="success",
         details={
             "file_name": file.filename, 
@@ -132,16 +137,20 @@ async def upload_email(
     db.add(audit_log)
     await db.commit()
     
-    # Queue analysis task with file from MinIO
-    analyze_email_task.delay(str(job.id), content, str(current_user.id))
-    
-    logger.info(f"Analysis job {job.id} created for user {current_user.email}")
+    # Queue analysis task unless queue_only is True
+    if not queue_only:
+        analyze_email_task.delay(str(job.id), content, str(current_user.id))
+        logger.info(f"Analysis job {job.id} created and started for user {current_user.email}")
+        current_step = "Analysis started"
+    else:
+        logger.info(f"Analysis job {job.id} queued (pending) for user {current_user.email}")
+        current_step = "Added to queue"
     
     return AnalysisStatus(
         id=str(job.id),
         status=job.status,
         progress_percent=0,
-        current_step="Queued for analysis"
+        current_step=current_step
     )
 
 
@@ -393,7 +402,7 @@ async def delete_analysis(
         user_email=current_user.email,
         action=AuditAction.ANALYSIS_DELETED,
         resource_type="analysis",
-        resource_id=job.id,
+        resource_id=analysis_id,
         status="success"
     )
     db.add(audit_log)
@@ -459,7 +468,7 @@ async def download_report(
         user_email=current_user.email,
         action=AuditAction.REPORT_DOWNLOADED,
         resource_type="analysis",
-        resource_id=job.id,
+        resource_id=analysis_id,
         status="success",
         details={"format": format}
     )
@@ -516,3 +525,42 @@ async def get_weekly_report(
         top_threats=[],
         daily_breakdown=[]
     )
+
+
+@router.post("/{job_id}/start")
+async def start_upload_analysis(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Start analysis for a pending upload job."""
+    from app.models.analysis_job import AnalysisJob
+    
+    try:
+        job_uuid = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid job ID")
+    
+    result = await db.execute(
+        select(AnalysisJob).where(
+            AnalysisJob.id == job_uuid,
+            AnalysisJob.user_id == current_user.id
+        )
+    )
+    job = result.scalar_one_or_none()
+    
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    
+    if job.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail=f"Job is not pending (current status: {job.status})"
+        )
+    
+    job.status = "queued"
+    await db.commit()
+    
+    analyze_email_task.delay(str(job.id), None, str(current_user.id))
+    
+    return {"message": "Analysis started", "job_id": job_id}
