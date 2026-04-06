@@ -110,6 +110,7 @@ export default function AnalysisListPage() {
   const [filter,   setFilter]   = useState('all');
   const [page,     setPage]     = useState(1);
   const [hasMore,  setHasMore]  = useState(false);
+  const [deleting, setDeleting] = useState(null);
 
   /* ── Queue state ── */
   const [queueData, setQueueData] = useState({ pending: [], processing: [], completed: [], counts: {} });
@@ -253,14 +254,24 @@ export default function AnalysisListPage() {
 
   const handleDelete = async (e, id) => {
     e.stopPropagation();
+    
+    // Validate inputs
+    if (!id || typeof id !== 'string') {
+      console.error('Invalid ID provided to delete function:', id);
+      toast.error('Invalid analysis ID');
+      return;
+    }
+    
     if (!window.confirm('Delete this analysis? This cannot be undone.')) return;
+    
     setDeleting(id);
     try {
       await analysisApi.deleteAnalysis(id);
       setItems(prev => prev.filter(a => a.id !== id));
       toast.success('Analysis deleted');
     } catch (err) {
-      toast.error(err.message ?? 'Delete failed');
+      console.error('Delete analysis error:', err);
+      toast.error(err.message || 'Delete failed');
     } finally {
       setDeleting(null);
     }
