@@ -148,13 +148,22 @@ class Settings(BaseSettings):
     # Threat Intelligence API Settings
     VIRUSTOTAL_API_KEY: Optional[str] = Field(default=None, description="VirusTotal API key")
     PHISHTANK_API_KEY: Optional[str] = Field(default=None, description="PhishTank API key")
-    HIBP_API_KEY: Optional[str] = Field(default=None, description="Have I Been Pwned API key")
-    URLSCAN_API_KEY: Optional[str] = Field(default=None, description="URLScan API key")
+    URLSCAN_API_KEY: Optional[str] = Field(default=None, description="URLScan API key (backup for URLs)")
+    ABUSEIPDB_API_KEY: Optional[str] = Field(default=None, description="AbuseIPDB API key (IP/domain reputation)")
+    WHOISJSON_API_KEY: Optional[str] = Field(default=None, description="WhoisJSON API key (domain age)")
+    
+    # ML/Ensemble Settings
+    ML_WEIGHT: float = Field(default=0.4, description="ML model weight in ensemble (0.0-1.0)")
+    TI_WEIGHT: float = Field(default=0.6, description="Threat intelligence weight in ensemble (0.0-1.0)")
+    TI_CACHE_TTL_HOURS: int = Field(default=24, description="Redis cache TTL for TI results in hours")
+    ENABLE_URLSCAN_BACKUP: bool = Field(default=True, description="Use URLScan as backup when primary URL checks fail")
     
     # ML Model Settings
     ML_MODEL_PATH: str = Field(default="models/phishing_detector.pkl", description="Path to ML model")
     ML_MODEL_VERSION: str = Field(default="1.0.0", description="ML model version")
     ML_FEATURE_NAMES_PATH: str = Field(default="models/feature_names.json", description="Path to feature names")
+    TEXT_CLASSIFIER_PATH: str = Field(default="models/text_classifier.pkl", description="Path to text classifier model")
+    TFIDF_VECTORIZER_PATH: str = Field(default="models/tfidf_vectorizer.pkl", description="Path to TF-IDF vectorizer")
     
     # Celery Settings
     CELERY_BROKER_URL: str = Field(default="redis://localhost:6379/0", description="Celery broker URL")
@@ -234,6 +243,13 @@ class Settings(BaseSettings):
         # Ensure async driver is used
         if v.startswith("postgresql://") and "asyncpg" not in v:
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+    
+    @validator("MINIO_ENDPOINT", pre=True)
+    def validate_minio_endpoint(cls, v):
+        """Use localhost for local development when running outside Docker."""
+        if v and v.startswith("minio:"):
+            return v.replace("minio:", "localhost:")
         return v
     
     # @validator("CORS_ORIGINS", pre=True)

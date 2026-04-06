@@ -25,7 +25,7 @@ REDIS_URL=redis://:your-redis-password@localhost:6379/0
 MONGODB_URL=mongodb://phishcatcher:your-mongo-password@localhost:27017/phishcatcher?authSource=admin
 
 # MinIO (for Docker)
-MINIO_ENDPOINT=minio:9000
+MINIO_ENDPOINT=localhost:9000
 MINIO_PORT=9000
 MINIO_CONSOLE_PORT=9001
 
