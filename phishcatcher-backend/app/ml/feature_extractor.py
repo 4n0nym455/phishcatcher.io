@@ -30,10 +30,21 @@ class FeatureExtractor:
         'login attempt', 'password expired', 'account locked'
     ]
     
-    # Financial keywords
+    # Brand impersonation keywords
+    BRAND_KEYWORDS = [
+        'amazon', 'paypal', 'netflix', 'microsoft', 'apple', 'google',
+        'facebook', 'instagram', 'twitter', 'linkedin', 'bank of america',
+        'wells fargo', 'chase', 'citibank', 'american express', 'visa', 'mastercard'
+    ]
+    
+    # Suspicious TLDs (now handled by TI, but keep for local heuristic)
+    SUSPICIOUS_TLDS = ['.tk', '.ml', '.ga', '.cf', '.gq', '.xyz', '.top', '.click', '.link']
+    
+    # Financial keywords (ML-only detection - reputation handled by TI)
     FINANCIAL_KEYWORDS = [
         'bank', 'credit card', 'payment', 'invoice', 'transaction', 'refund',
-        'billing', 'subscription', 'paypal', 'money', 'transfer'
+        'billing', 'subscription', 'paypal', 'money', 'transfer', 'account',
+        'balance', 'withdraw', 'deposit', 'ssn', 'social security'
     ]
     
     def __init__(self):
@@ -102,7 +113,7 @@ class FeatureExtractor:
         return features
     
     def _extract_content_features(self, body: Dict[str, Any]) -> Dict[str, float]:
-        """Extract features from email body content."""
+        """Extract features from email body content (ML-only features)."""
         features = {}
         
         text = body.get('text', '')
@@ -121,14 +132,21 @@ class FeatureExtractor:
         else:
             features['html_to_text_ratio'] = 0.0
         
-        # Urgency keywords
+        # Urgency keywords (ML-only detection)
         features['urgency_keywords_count'] = sum(1 for kw in self.URGENCY_KEYWORDS if kw in content)
+        features['urgency_keywords_present'] = 1.0 if features['urgency_keywords_count'] > 0 else 0.0
         
-        # Suspicious phrases
+        # Suspicious phrases (ML-only detection)
         features['suspicious_phrases_count'] = sum(1 for phrase in self.SUSPICIOUS_PHRASES if phrase in content)
+        features['suspicious_phrases_present'] = 1.0 if features['suspicious_phrases_count'] > 0 else 0.0
         
-        # Financial keywords
+        # Financial keywords (ML-only detection)
         features['financial_keywords_count'] = sum(1 for kw in self.FINANCIAL_KEYWORDS if kw in content)
+        features['financial_keywords_present'] = 1.0 if features['financial_keywords_count'] > 0 else 0.0
+        
+        # Brand impersonation detection (ML-only)
+        features['brand_keywords_count'] = sum(1 for brand in self.BRAND_KEYWORDS if brand in content)
+        features['brand_keywords_present'] = 1.0 if features['brand_keywords_count'] > 0 else 0.0
         
         # Grammar and spelling indicators
         features['exclamation_count'] = content.count('!')
@@ -139,100 +157,89 @@ class FeatureExtractor:
         # Form-related features (phishing often has forms)
         features['has_form'] = 1.0 if '<form' in html.lower() else 0.0
         features['has_password_input'] = 1.0 if 'type="password"' in html.lower() else 0.0
+        features['has_input_fields'] = 1.0 if '<input' in html.lower() else 0.0
         
         # Script-related features
         features['has_script'] = 1.0 if '<script' in html.lower() else 0.0
         features['has_iframe'] = 1.0 if '<iframe' in html.lower() else 0.0
+        features['has_onerror'] = 1.0 if 'onerror' in html.lower() else 0.0
+        features['has_onload'] = 1.0 if 'onload' in html.lower() else 0.0
         
-        # External resources
+        # External resources (count only, reputation handled by TI)
         features['external_images'] = len(re.findall(r'<img[^>]+src=["\']https?://', html, re.IGNORECASE))
+        features['external_resources'] = len(re.findall(r'(src|href)=["\']https?://', html, re.IGNORECASE))
+        
+        # Hidden elements detection
+        features['has_hidden_elements'] = 1.0 if 'display:none' in html.lower() or 'visibility:hidden' in html.lower() else 0.0
+        
+        # Link text vs actual URL mismatch indicators
+        features['has_mailto'] = 1.0 if 'mailto:' in content else 0.0
+        
+        # Greeting analysis
+        generic_greetings = ['dear customer', 'dear user', 'dear member', 'dear client']
+        features['generic_greeting'] = 1.0 if any(g in content for g in generic_greetings) else 0.0
+        
+        # Call to action analysis
+        cta_phrases = ['click below', 'click here', 'login now', 'sign in', 'verify account']
+        features['cta_phrase_count'] = sum(1 for cta in cta_phrases if cta in content)
+        
+        # Prize/lottery indicators
+        prize_keywords = ['won', 'winner', 'prize', 'lottery', 'claim now', 'congratulations']
+        features['prize_indicators'] = sum(1 for kw in prize_keywords if kw in content)
         
         return features
     
     def _extract_link_features(self, links: List[Dict[str, Any]]) -> Dict[str, float]:
-        """Extract features from links."""
+        """
+        Extract ML features from links (count-based, reputation handled by TI).
+        
+        Note: Link reputation features removed - handled by Threat Intelligence APIs.
+        """
         features = {}
         
-        # Basic counts
+        # Basic counts (ML-only features)
         features['total_links'] = len(links)
-        features['unique_domains'] = len(set(link['domain'] for link in links))
+        features['unique_domains'] = len(set(link['domain'] for link in links if link.get('domain')))
         
         if not links:
-            features['suspicious_links_ratio'] = 0.0
-            features['ip_based_links'] = 0.0
-            features['shortened_links'] = 0.0
-            features['suspicious_tld_links'] = 0.0
+            features['links_per_domain_ratio'] = 0.0
+            features['avg_domain_length'] = 0.0
             return features
         
-        # Suspicious link indicators
-        suspicious_count = 0
-        ip_based_count = 0
-        shortened_count = 0
-        suspicious_tld_count = 0
-        
-        for link in links:
-            if link.get('is_ip_address'):
-                ip_based_count += 1
-                suspicious_count += 1
-            
-            if link.get('is_shortened'):
-                shortened_count += 1
-                suspicious_count += 1
-            
-            if link.get('has_suspicious_tld'):
-                suspicious_tld_count += 1
-                suspicious_count += 1
-            
-            if link.get('has_at_symbol'):
-                suspicious_count += 1
-            
-            if link.get('has_hex_chars'):
-                suspicious_count += 1
-        
-        features['suspicious_links'] = suspicious_count
-        features['suspicious_links_ratio'] = suspicious_count / len(links)
-        features['ip_based_links'] = ip_based_count
-        features['shortened_links'] = shortened_count
-        features['suspicious_tld_links'] = suspicious_tld_count
-        
-        # Average URL length (phishing URLs tend to be longer)
-        if links:
-            features['avg_url_length'] = sum(link.get('url_length', 0) for link in links) / len(links)
+        # Link distribution features
+        if features['unique_domains'] > 0:
+            features['links_per_domain_ratio'] = features['total_links'] / features['unique_domains']
         else:
-            features['avg_url_length'] = 0.0
+            features['links_per_domain_ratio'] = 0.0
+        
+        # Average domain length in links
+        domains = [link.get('domain', '') for link in links if link.get('domain')]
+        features['avg_domain_length'] = sum(len(d) for d in domains) / max(len(domains), 1)
         
         return features
     
     def _extract_attachment_features(self, attachments: List[Dict[str, Any]]) -> Dict[str, float]:
-        """Extract features from attachments."""
+        """
+        Extract ML features from attachments.
+        
+        Note: File hash reputation is handled by Threat Intelligence APIs (VirusTotal).
+        """
         features = {}
         
+        # Basic attachment presence features
         features['has_attachments'] = 1.0 if attachments else 0.0
         features['attachment_count'] = len(attachments)
         
         if not attachments:
-            features['executable_attachments'] = 0.0
-            features['script_attachments'] = 0.0
-            features['office_attachments'] = 0.0
-            features['pdf_attachments'] = 0.0
-            features['archive_attachments'] = 0.0
+            features['multiple_attachments'] = 0.0
             features['total_attachment_size'] = 0.0
+            features['avg_attachment_size'] = 0.0
             return features
         
-        # Count by type
-        executable_count = sum(1 for a in attachments if a.get('is_executable', False))
-        script_count = sum(1 for a in attachments if a.get('is_script', False))
-        office_count = sum(1 for a in attachments if a.get('is_office_doc', False))
-        pdf_count = sum(1 for a in attachments if a.get('is_pdf', False))
-        archive_count = sum(1 for a in attachments if a.get('is_archive', False))
+        # Count-based features (type info handled by TI)
+        features['multiple_attachments'] = 1.0 if len(attachments) > 1 else 0.0
         
-        features['executable_attachments'] = executable_count
-        features['script_attachments'] = script_count
-        features['office_attachments'] = office_count
-        features['pdf_attachments'] = pdf_count
-        features['archive_attachments'] = archive_count
-        
-        # Total attachment size
+        # Total attachment size (suspiciously large attachments can be phishing)
         features['total_attachment_size'] = sum(a.get('size', 0) for a in attachments)
         features['avg_attachment_size'] = features['total_attachment_size'] / len(attachments)
         
@@ -253,22 +260,35 @@ class FeatureExtractor:
         return features
     
     def _get_feature_names(self) -> List[str]:
-        """Get list of all feature names."""
-        # Return a sample of feature names for model training
+        """Get list of all feature names (ML-only features)."""
         return [
+            # Header features (auth, reply-to, subject)
             'spf_pass', 'dkim_pass', 'dmarc_pass', 'spf_fail', 'dkim_fail', 'dmarc_fail',
             'reply_to_mismatch', 'domain_mismatch', 'subject_length', 'subject_has_exclamation',
-            'subject_has_dollar', 'subject_all_caps_words', 'text_length', 'html_length',
-            'has_html', 'has_text', 'html_to_text_ratio', 'urgency_keywords_count',
-            'suspicious_phrases_count', 'financial_keywords_count', 'exclamation_count',
-            'question_count', 'dollar_count', 'all_caps_ratio', 'has_form', 'has_password_input',
-            'has_script', 'has_iframe', 'external_images', 'total_links', 'unique_domains',
-            'suspicious_links', 'suspicious_links_ratio', 'ip_based_links', 'shortened_links',
-            'suspicious_tld_links', 'avg_url_length', 'has_attachments', 'attachment_count',
-            'executable_attachments', 'script_attachments', 'office_attachments',
-            'pdf_attachments', 'archive_attachments', 'total_attachment_size',
-            'avg_attachment_size', 'is_multipart', 'received_count', 'hop_count',
-            'suspicious_hop_count'
+            'subject_has_dollar', 'subject_all_caps_words',
+            
+            # Content features
+            'text_length', 'html_length', 'has_html', 'has_text', 'html_to_text_ratio',
+            'urgency_keywords_count', 'urgency_keywords_present',
+            'suspicious_phrases_count', 'suspicious_phrases_present',
+            'financial_keywords_count', 'financial_keywords_present',
+            'brand_keywords_count', 'brand_keywords_present',
+            'exclamation_count', 'question_count', 'dollar_count', 'all_caps_ratio',
+            'has_form', 'has_password_input', 'has_input_fields',
+            'has_script', 'has_iframe', 'has_onerror', 'has_onload',
+            'external_images', 'external_resources',
+            'has_hidden_elements', 'has_mailto', 'generic_greeting',
+            'cta_phrase_count', 'prize_indicators',
+            
+            # Link features (count-based only, reputation handled by TI)
+            'total_links', 'unique_domains', 'links_per_domain_ratio', 'avg_domain_length',
+            
+            # Attachment features (count-based, hash reputation handled by TI)
+            'has_attachments', 'attachment_count', 'multiple_attachments',
+            'total_attachment_size', 'avg_attachment_size',
+            
+            # Metadata features
+            'is_multipart', 'received_count', 'hop_count', 'suspicious_hop_count'
         ]
     
     def get_feature_vector(self, parsed_email: Dict[str, Any]) -> List[float]:

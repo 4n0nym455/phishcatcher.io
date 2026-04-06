@@ -71,7 +71,6 @@ class User(Base):
     gmail_credentials = Column(Text, nullable=True)  # Encrypted Gmail OAuth credentials
     gmail_email = Column(String(255), nullable=True)  # Connected Gmail email
     gmail_connected_at = Column(DateTime(timezone=True), nullable=True)  # When Gmail was connected
-    gmail_auto_scan = Column(Boolean, default=False, nullable=False)  # Auto-scan new emails
     
     # Notification preferences
     notification_preferences = Column(PostgreSQLJSON(astext_type=Text()), default=dict, nullable=False)

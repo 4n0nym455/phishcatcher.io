@@ -1,132 +1,203 @@
 """
 Email Analyzer Service
 
-This module provides email content analysis for phishing detection.
+This module provides comprehensive email analysis for phishing detection,
+combining ML models with Threat Intelligence APIs.
 """
 
 import re
-from typing import Dict, Any
+import logging
+from typing import Dict, Any, List, Optional, Tuple
+
+from app.services.threat_intel import get_threat_intel_service
+from app.ml.text_classifier import get_text_classifier
+from app.ml.phishing_detector import get_phishing_detector
+from app.ml.ensemble_detector import get_ensemble_detector
+from app.ml.email_parser import EmailParser
+
+logger = logging.getLogger(__name__)
+
+
+class EmailAnalyzer:
+    """
+    Comprehensive email analyzer combining ML and Threat Intelligence.
+    
+    Analysis flow:
+    1. Parse email with EmailParser
+    2. Extract URLs and attachment hashes
+    3. Run Threat Intelligence checks (async)
+    4. Run ML classifiers (text + feature)
+    5. Combine results using ensemble weighting
+    """
+    
+    def __init__(self):
+        self.threat_intel = get_threat_intel_service()
+        self.text_classifier = get_text_classifier()
+        self.feature_detector = get_phishing_detector()
+        self.ensemble_detector = get_ensemble_detector()
+    
+    def analyze_email(self, raw_email: bytes) -> Dict[str, Any]:
+        """
+        Analyze a raw email for phishing.
+        
+        Args:
+            raw_email: Raw email bytes
+            
+        Returns:
+            Comprehensive analysis result
+        """
+        try:
+            parser = EmailParser(raw_email)
+            parsed_email = parser.parse()
+            
+            headers = parsed_email.get('headers', {})
+            body = parsed_email.get('body', {})
+            links = parsed_email.get('links', [])
+            attachments = parsed_email.get('attachments', [])
+            
+            sender_email = headers.get('from_address', '')
+            urls = [link.get('url', '') for link in links if link.get('url')]
+            attachment_hashes = [
+                a.get('hash_sha256', a.get('hash_md5', ''))
+                for a in attachments
+                if a.get('hash_sha256') or a.get('hash_md5')
+            ]
+            
+            result = self.ensemble_detector.analyze(
+                parsed_email=parsed_email,
+                sender_email=sender_email,
+                urls=urls,
+                attachment_hashes=attachment_hashes
+            )
+            
+            result['parsed_email'] = {
+                'subject': headers.get('subject', ''),
+                'sender': sender_email,
+                'urls_found': len(urls),
+                'attachments_found': len(attachments)
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Email analysis error: {e}")
+            return {
+                'is_phishing': False,
+                'phishing_probability': 0.0,
+                'risk_category': 'error',
+                'confidence': 0.0,
+                'error': str(e)
+            }
+    
+    def analyze_content(
+        self,
+        subject: str,
+        body: str,
+        sender_email: str,
+        urls: Optional[List[str]] = None,
+        attachment_hashes: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze email content without raw email bytes.
+        
+        Args:
+            subject: Email subject
+            body: Email body (text)
+            sender_email: Sender email address
+            urls: Optional list of URLs
+            attachment_hashes: Optional list of attachment hashes
+            
+        Returns:
+            Analysis result
+        """
+        urls = urls or []
+        attachment_hashes = attachment_hashes or []
+        
+        parsed_email = {
+            'headers': {
+                'subject': subject,
+                'from_address': sender_email,
+                'sender_domain': self._extract_domain(sender_email),
+                'authentication_results': {}
+            },
+            'body': {
+                'text': body,
+                'text_length': len(body),
+                'has_text': bool(body),
+                'html': '',
+                'html_length': 0,
+                'has_html': False
+            },
+            'links': [],
+            'attachments': [],
+            'metadata': {
+                'is_multipart': False,
+                'received_count': 0
+            }
+        }
+        
+        result = self.ensemble_detector.analyze(
+            parsed_email=parsed_email,
+            sender_email=sender_email,
+            urls=urls,
+            attachment_hashes=attachment_hashes
+        )
+        
+        result['parsed_email'] = {
+            'subject': subject,
+            'sender': sender_email,
+            'urls_found': len(urls),
+            'attachments_found': len(attachment_hashes)
+        }
+        
+        return result
+    
+    @staticmethod
+    def _extract_domain(email: str) -> str:
+        """Extract domain from email."""
+        if '@' in email:
+            return email.split('@')[1].lower()
+        return ''
+    
+    @staticmethod
+    def _extract_urls_from_text(text: str) -> List[str]:
+        """Extract URLs from text content."""
+        url_pattern = re.compile(
+            r'https?://(?:[-\w.])+(?:[:\d]+)?(?:/(?:[\w/_.])*(?:\?(?:[\w&=%.])*)?(?:#(?:[\w.])*)?)?',
+            re.IGNORECASE
+        )
+        return url_pattern.findall(text)
+
+
+_email_analyzer_instance: Optional[EmailAnalyzer] = None
+
+
+def get_email_analyzer() -> EmailAnalyzer:
+    """Get singleton instance of email analyzer."""
+    global _email_analyzer_instance
+    if _email_analyzer_instance is None:
+        _email_analyzer_instance = EmailAnalyzer()
+    return _email_analyzer_instance
+
 
 def analyze_email_content(email_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Analyze email content for phishing indicators.
-    
-    Args:
-        email_data: Dictionary containing email content (subject, body, from, etc.)
-    
-    Returns:
-        Dictionary with analysis results including phishing indicators
+    Legacy function for backward compatibility.
+    Use get_email_analyzer().analyze_content() instead.
     """
+    analyzer = get_email_analyzer()
+    
     subject = email_data.get('subject', '')
     body = email_data.get('body', '')
     from_email = email_data.get('from', '')
     
-    # Basic phishing indicators
-    indicators = {
-        'suspicious_links': _check_suspicious_links(body),
-        'urgent_language': _check_urgent_language(subject + ' ' + body),
-        'suspicious_sender': _check_suspicious_sender(from_email),
-        'attachment_risk': _check_attachment_risk(body),
-        'brand_impersonation': _check_brand_impersonation(subject + ' ' + body),
-    }
+    urls = email_data.get('urls', [])
+    if not urls:
+        urls = analyzer._extract_urls_from_text(body)
     
-    # Calculate risk score
-    risk_score = sum(indicators.values()) / len(indicators)
-    
-    # Determine if it's phishing
-    is_phishing = risk_score > 0.5  # Threshold can be adjusted
-    
-    return {
-        'is_phishing': is_phishing,
-        'risk_score': risk_score,
-        'indicators': indicators,
-        'analysis': {
-            'suspicious_elements': [k for k, v in indicators.items() if v],
-            'confidence': 'high' if risk_score > 0.7 else 'medium' if risk_score > 0.3 else 'low'
-        }
-    }
-
-def _check_suspicious_links(text: str) -> float:
-    """Check for suspicious links in email content."""
-    suspicious_patterns = [
-        r'http[s]?://bit\.ly',
-        r'http[s]?://tinyurl\.com',
-        r'http[s]?://goo\.gl',
-        r'http[s]?://t\.co',
-        r'click here',
-        r'verify now',
-        r'urgent action',
-        r'account suspended',
-        r'limited time',
-    ]
-    
-    score = 0.0
-    for pattern in suspicious_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            score += 0.2
-    
-    return min(score, 1.0)
-
-def _check_urgent_language(text: str) -> float:
-    """Check for urgent or threatening language."""
-    urgent_words = [
-        'urgent', 'immediate', 'action required', 'suspend', 'terminate',
-        'expire', 'limited time', 'act now', 'verify immediately', 'warning'
-    ]
-    
-    count = sum(1 for word in urgent_words if word in text.lower())
-    return min(count * 0.1, 1.0)
-
-def _check_suspicious_sender(email: str) -> float:
-    """Check if sender email looks suspicious."""
-    suspicious_indicators = [
-        r'\d+@',  # Numbers in email
-        r'noreply@',  # Generic noreply
-        r'.+@.*\.tk$',  # Suspicious TLDs
-        r'.+@.*\.ml$',
-        r'.+@.*\.ga$',
-        r'@.*\d{3,}',  # Domains with many numbers
-    ]
-    
-    score = 0.0
-    for pattern in suspicious_indicators:
-        if re.search(pattern, email, re.IGNORECASE):
-            score += 0.3
-    
-    return min(score, 1.0)
-
-def _check_attachment_risk(text: str) -> float:
-    """Check for risky attachment mentions."""
-    risky_attachments = [
-        '.exe', '.zip', '.rar', '.scr', '.bat', '.com', '.pif',
-        'invoice', 'receipt', 'payment', 'document', 'shipping'
-    ]
-    
-    count = sum(1 for ext in risky_attachments if ext in text.lower())
-    return min(count * 0.2, 1.0)
-
-def _check_brand_impersonation(text: str) -> float:
-    """Check for brand impersonation attempts."""
-    brands = [
-        'amazon', 'paypal', 'netflix', 'microsoft', 'apple', 'google',
-        'facebook', 'instagram', 'twitter', 'linkedin', 'bank', 'wells fargo',
-        'chase', 'citibank', 'american express'
-    ]
-    
-    # Check if brand names appear with suspicious context
-    suspicious_contexts = [
-        'verify your account', 'update payment', 'suspended account',
-        'unusual activity', 'security alert', 'billing issue'
-    ]
-    
-    score = 0.0
-    text_lower = text.lower()
-    
-    for brand in brands:
-        if brand in text_lower:
-            for context in suspicious_contexts:
-                if context in text_lower:
-                    score += 0.3
-                    break
-    
-    return min(score, 1.0)
+    return analyzer.analyze_content(
+        subject=subject,
+        body=body,
+        sender_email=from_email,
+        urls=urls
+    )

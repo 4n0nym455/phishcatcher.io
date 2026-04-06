@@ -7,7 +7,7 @@ This module provides API endpoints for Gmail integration including:
 - Gmail account management
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends, Request, Body
+from fastapi import APIRouter, HTTPException, status, Depends, Request, Body, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, List
@@ -324,6 +324,28 @@ async def clear_completed_queue(
         "message": f"Cleared {result.deleted_count} items from queue"
     }
 
+@router.delete("/queue/{message_id}")
+async def delete_queue_item(
+    message_id: str,
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """Delete a specific item from the queue."""
+    from app.database import get_mongodb_database
+    
+    mongodb = get_mongodb_database()
+    result = await mongodb.gmail_analysis_queue.delete_one({
+        "user_id": str(current_user.id),
+        "message_id": message_id
+    })
+    
+    if result.deleted_count > 0:
+        return {"message": "Item removed from queue"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Item not found in queue"
+        )
+
 @router.post("/disconnect")
 async def disconnect_gmail(
     current_user: User = Depends(get_current_active_user),
@@ -348,22 +370,24 @@ async def disconnect_gmail(
 
 @router.get("/emails")
 async def list_gmail_emails(
-    max_results: int = 20,
-    page: int = 1,
+    max_results: int = Query(default=20, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    q: str = None,
     current_user: User = Depends(get_current_active_user)
 ) -> Dict[str, Any]:
-    """List emails from connected Gmail account."""
+    """List emails from connected Gmail account with optional search query."""
     if not current_user.gmail_credentials:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Gmail not connected"
         )
     try:
-        start = (page - 1) * max_results
+        page_token = None if page == 1 else str((page - 1) * max_results)
         emails = await gmail_service.fetch_emails_paginated(
             str(current_user.id), 
             max_results=max_results,
-            page_token=None if page == 1 else str(start)
+            page_token=page_token,
+            query=q
         )
         return emails
     except Exception as e:
@@ -372,6 +396,187 @@ async def list_gmail_emails(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch emails"
         )
+
+@router.get("/emails/search")
+async def search_gmail_emails(
+    q: str,
+    max_results: int = 50,
+    page: int = 1,
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """Search emails using Gmail search syntax (advanced)."""
+    if not current_user.gmail_credentials:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Gmail not connected"
+        )
+    if not q or not q.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Search query is required"
+        )
+    try:
+        page_token = None if page == 1 else str((page - 1) * max_results)
+        result = await gmail_service.search_emails(
+            str(current_user.id),
+            query=q,
+            max_results=max_results,
+            page_token=page_token
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error searching emails: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to search emails"
+        )
+
+@router.get("/emails/filter")
+async def filter_gmail_emails(
+    filter_type: str = None,
+    has_attachments: bool = None,
+    date_from: str = None,
+    date_to: str = None,
+    from_address: str = None,
+    subject: str = None,
+    max_results: int = Query(default=20, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """Filter emails using predefined or custom filters."""
+    if not current_user.gmail_credentials:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Gmail not connected"
+        )
+    try:
+        query = gmail_service.build_filter_query(
+            filter_type=filter_type,
+            date_from=date_from,
+            date_to=date_to,
+            from_address=from_address,
+            subject_keyword=subject,
+            has_attachments=has_attachments
+        )
+        
+        page_token = None if page == 1 else str((page - 1) * max_results)
+        result = await gmail_service.fetch_emails_paginated(
+            str(current_user.id),
+            max_results=max_results,
+            page_token=page_token,
+            query=query
+        )
+        return {
+            **result,
+            "applied_filters": {
+                "filter_type": filter_type,
+                "has_attachments": has_attachments,
+                "date_from": date_from,
+                "date_to": date_to,
+                "from_address": from_address,
+                "subject": subject
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error filtering emails: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to filter emails"
+        )
+
+@router.get("/emails/query-builder")
+async def get_query_builder_suggestions(
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """Get available Gmail search operators and example queries."""
+    return {
+        "operators": {
+            "from": {"description": "Sender email or name", "example": "from:john@example.com"},
+            "to": {"description": "Recipient email or name", "example": "to:me"},
+            "subject": {"description": "Words in subject line", "example": "subject:invoice"},
+            "has": {"description": "Has attachments or drive items", "example": "has:attachment"},
+            "filename": {"description": "Attachment filename", "example": "filename:pdf"},
+            "newer_than": {"description": "Emails newer than period", "example": "newer_than:7d"},
+            "older_than": {"description": "Emails older than period", "example": "older_than:30d"},
+            "after": {"description": "Emails after specific date", "example": "after:2024/01/01"},
+            "before": {"description": "Emails before specific date", "example": "before:2024/12/31"},
+            "is": {"description": "Email status", "example": "is:unread"},
+            "label": {"description": "Gmail label", "example": "label:work"},
+            "in": {"description": "Location in mailbox", "example": "in:inbox"},
+            "cc": {"description": "Cc'd recipient", "example": "cc:boss@company.com"},
+            "bcc": {"description": "Bcc'd recipient", "example": "bcc:secret@place.com"},
+        },
+        "examples": [
+            {"query": "from:bank subject:urgent has:attachment", "label": "Bank phishing with attachment"},
+            {"query": "subject:password newer_than:7d", "label": "Recent password reset"},
+            {"query": "from:noreply has:attachment filename:pdf", "label": "Auto emails with PDFs"},
+            {"query": "is:unread newer_than:30d -label:promotions", "label": "Unread (excluding promotions)"},
+            {"query": "subject:(invoice OR payment) from:amazon", "label": "Invoice/payment from Amazon"},
+        ]
+    }
+
+@router.post("/emails/queue")
+async def queue_gmail_emails(
+    message_ids: List[str] = Body(..., embed=True),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """Add emails to analysis queue without starting analysis."""
+    if not current_user.gmail_credentials:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Gmail not connected"
+        )
+    
+    from app.database import get_mongodb_database
+    from datetime import datetime
+    
+    mongodb = get_mongodb_database()
+    gmail_svc = gmail_service
+    queued = []
+    
+    for msg_id in message_ids:
+        existing = await mongodb.gmail_analysis_queue.find_one({
+            "user_id": str(current_user.id),
+            "message_id": msg_id
+        })
+        
+        if existing:
+            if existing.get("status") in ["pending", "processing"]:
+                queued.append({"message_id": msg_id, "status": "already_queued"})
+                continue
+            elif existing.get("status") == "completed":
+                queued.append({"message_id": msg_id, "status": "already_analyzed"})
+                continue
+        
+        email_data = await gmail_svc.get_email_headers(str(current_user.id), msg_id)
+        subject = ""
+        sender = ""
+        if email_data and 'payload' in email_data:
+            for header in email_data['payload'].get('headers', []):
+                if header.get('name') == 'Subject':
+                    subject = header.get('value', '')
+                elif header.get('name') == 'From':
+                    sender = header.get('value', '')
+        
+        queue_doc = {
+            "user_id": str(current_user.id),
+            "message_id": msg_id,
+            "subject": subject,
+            "from": sender,
+            "status": "pending",
+            "created_at": datetime.utcnow()
+        }
+        await mongodb.gmail_analysis_queue.insert_one(queue_doc)
+        queued.append({"message_id": msg_id, "status": "queued"})
+    
+    queued_count = sum(1 for r in queued if r.get("status") == "queued")
+    return {
+        "message": f"{queued_count} emails added to queue",
+        "queued": queued
+    }
+
 
 @router.post("/emails/analyze")
 async def analyze_gmail_emails(
@@ -393,7 +598,7 @@ async def analyze_gmail_emails(
         gmail_svc = gmail_service
         results = []
         for msg_id in message_ids:
-            email_data = await gmail_svc.get_email_by_id(str(current_user.id), msg_id)
+            email_data = await gmail_svc.get_email_headers(str(current_user.id), msg_id)
             subject = ""
             sender = ""
             if email_data and 'payload' in email_data:

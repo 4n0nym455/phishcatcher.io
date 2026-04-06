@@ -142,13 +142,20 @@ class GmailService:
                     return None
 
                 credentials_data = json.loads(user.gmail_credentials)
+                
+                required_fields = ['token', 'token_uri', 'client_id', 'client_secret']
+                missing = [f for f in required_fields if not credentials_data.get(f)]
+                if missing:
+                    logger.error(f"Gmail credentials missing required fields: {missing}")
+                    return None
+                
                 credentials = Credentials(
                     token=credentials_data['token'],
                     refresh_token=credentials_data.get('refresh_token'),
                     token_uri=credentials_data['token_uri'],
                     client_id=credentials_data['client_id'],
                     client_secret=credentials_data['client_secret'],
-                    scopes=credentials_data['scopes']
+                    scopes=credentials_data.get('scopes', [])
                 )
                 if credentials_data.get('expiry'):
                     credentials.expiry = datetime.fromisoformat(credentials_data['expiry'])
@@ -176,7 +183,13 @@ class GmailService:
             logger.error(f"Gmail API error: {e}")
             return []
 
-    async def fetch_emails_paginated(self, user_id: str, max_results: int = 20, page_token: str = None) -> Dict[str, Any]:
+    async def fetch_emails_paginated(
+        self,
+        user_id: str,
+        max_results: int = 20,
+        page_token: str = None,
+        query: str = None
+    ) -> Dict[str, Any]:
         credentials = await self.get_gmail_credentials(user_id)
         if not credentials:
             return {"emails": [], "next_page_token": None}
@@ -185,6 +198,8 @@ class GmailService:
             kwargs = {"userId": 'me', "maxResults": max_results}
             if page_token:
                 kwargs["pageToken"] = page_token
+            if query:
+                kwargs["q"] = query
             results = service.users().messages().list(**kwargs).execute()
             messages = results.get('messages', [])
             next_token = results.get('nextPageToken')
@@ -198,23 +213,90 @@ class GmailService:
             return {
                 "emails": emails,
                 "next_page_token": next_token,
-                "count": len(emails)
+                "count": len(emails),
+                "query": query
             }
         except HttpError as e:
             logger.error(f"Gmail API error: {e}")
             return {"emails": [], "next_page_token": None, "error": str(e)}
 
-    async def get_email_by_id(self, user_id: str, message_id: str) -> Optional[Dict]:
+    async def search_emails(
+        self,
+        user_id: str,
+        query: str,
+        max_results: int = 50,
+        page_token: str = None
+    ) -> Dict[str, Any]:
+        credentials = await self.get_gmail_credentials(user_id)
+        if not credentials:
+            return {"emails": [], "next_page_token": None, "error": "Gmail not connected"}
+        
+        if not query or not query.strip():
+            return {"emails": [], "next_page_token": None, "error": "Query is required"}
+        
+        return await self.fetch_emails_paginated(
+            user_id, 
+            max_results=max_results, 
+            page_token=page_token, 
+            query=query.strip()
+        )
+
+    def build_filter_query(
+        self,
+        filter_type: str,
+        date_from: str = None,
+        date_to: str = None,
+        from_address: str = None,
+        subject_keyword: str = None,
+        has_attachments: bool = None
+    ) -> str:
+        parts = []
+        
+        filter_queries = {
+            "unread": "is:unread",
+            "read": "is:read",
+            "starred": "is:starred",
+            "important": "is:important",
+            "attachments": "has:attachment",
+            "no_attachments": "has:nattachment",
+            "7days": f"newer_than:7d",
+            "30days": f"newer_than:30d",
+            "90days": f"newer_than:90d",
+        }
+        
+        if filter_type in filter_queries:
+            parts.append(filter_queries[filter_type])
+        
+        if date_from:
+            parts.append(f"after:{date_from}")
+        if date_to:
+            parts.append(f"before:{date_to}")
+        if from_address:
+            parts.append(f"from:{from_address}")
+        if subject_keyword:
+            parts.append(f"subject:{subject_keyword}")
+        if has_attachments is True:
+            parts.append("has:attachment")
+        elif has_attachments is False:
+            parts.append("has:nattachment")
+        
+        return " ".join(parts)
+
+    async def get_email_by_id(self, user_id: str, message_id: str, format: str = 'raw') -> Optional[Dict]:
         credentials = await self.get_gmail_credentials(user_id)
         if not credentials:
             return None
         try:
             service = build('gmail', 'v1', credentials=credentials)
-            msg = service.users().messages().get(userId='me', id=message_id, format='raw').execute()
+            msg = service.users().messages().get(userId='me', id=message_id, format=format).execute()
             return msg
         except HttpError as e:
             logger.error(f"Gmail API error: {e}")
             return None
+    
+    async def get_email_headers(self, user_id: str, message_id: str) -> Optional[Dict]:
+        """Get email with full headers for subject/sender extraction."""
+        return await self.get_email_by_id(user_id, message_id, format='full')
 
     def _parse_email(self, message: Dict) -> Dict:
         headers = message['payload']['headers']
