@@ -10,6 +10,7 @@ import {
   Search, Upload, FileText, Clock, RefreshCw, Loader2,
   X, AlertTriangle, CheckCircle, Shield, Play, Layers,
   CheckSquare, Square, Settings, FileJson, File, FileCode, Zap, Trash2,
+  ChevronDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { analysisApi, authApi } from '@/lib/api';
@@ -115,6 +116,7 @@ export default function AnalysisListPage() {
   /* ── Queue state ── */
   const [queueData, setQueueData] = useState({ pending: [], processing: [], completed: [], counts: {} });
   const [selectedIds, setSelectedIds] = useState([]);
+  const [expandedQueue, setExpandedQueue] = useState({});
   const [showFormatDialog, setShowFormatDialog] = useState(false);
   const [showClearDialog, setShowClearDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -128,8 +130,20 @@ export default function AnalysisListPage() {
   useEffect(() => {
     const pendingId = localStorage.getItem('pending_analysis_id');
     if (pendingId) {
-      localStorage.removeItem('pending_analysis_id');
-      navigate(`/analysis/${pendingId}`);
+      // Validate that it's a proper UUID or 32-char hex ID
+      const isValidId = (id) => {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const hexRegex = /^[0-9a-f]{32}$/i;
+        return uuidRegex.test(id) || hexRegex.test(id);
+      };
+      
+      if (isValidId(pendingId)) {
+        localStorage.removeItem('pending_analysis_id');
+        navigate(`/analysis/${pendingId}`);
+      } else {
+        console.warn('Invalid pending_analysis_id found, clearing:', pendingId);
+        localStorage.removeItem('pending_analysis_id');
+      }
     }
     loadQueue();
   }, []);
@@ -250,7 +264,7 @@ export default function AnalysisListPage() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(1, true); }, [load]);
+  useEffect(() => { load(1, true); loadQueue(); }, [load]);
 
   const handleDelete = async (e, id) => {
     e.stopPropagation();
@@ -287,7 +301,7 @@ export default function AnalysisListPage() {
       filter === 'safe'   ? s < 40 : true;
     const term = search.toLowerCase();
     const matchSearch = !search ||
-      (a.subject ?? a.filename ?? a.email_subject ?? '').toLowerCase().includes(term) ||
+      (a.subject ?? a.file_name ?? a.filename ?? a.email_subject ?? '').toLowerCase().includes(term) ||
       (a.threat_category ?? a.category ?? '').toLowerCase().includes(term);
     return matchFilter && matchSearch;
   });
@@ -393,37 +407,78 @@ export default function AnalysisListPage() {
                     </div>
                   </div>
                   <div className="space-y-2 mb-4">
-                    {queueData.pending.map(item => (
-                      <div
-                        key={item.message_id}
-                        className="flex items-center gap-3 p-3 rounded-lg"
-                        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.includes(item.message_id)}
-                          onChange={() => handleToggleSelect(item.message_id)}
-                          className="rounded"
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm truncate" style={{ color: 'var(--text-primary)' }}>{item.subject || 'No Subject'}</p>
-                          <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{item.from || 'Unknown sender'}</p>
+                    {queueData.pending.map(item => {
+                      const isExpanded = expandedQueue[item.message_id];
+                      return (
+                        <div
+                          key={item.message_id}
+                          className="rounded-lg"
+                          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+                        >
+                          <div className="flex items-center gap-3 p-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.includes(item.message_id)}
+                              onChange={() => handleToggleSelect(item.message_id)}
+                              className="rounded"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm truncate" style={{ color: 'var(--text-primary)' }}>{item.subject || 'No Subject'}</p>
+                              <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{item.from || 'Unknown sender'}</p>
+                            </div>
+                            <button
+                              onClick={() => setExpandedQueue(prev => ({ ...prev, [item.message_id]: !prev[item.message_id] }))}
+                              className="p-2 rounded-lg hover:bg-[var(--bg-surface)]"
+                              title={isExpanded ? 'Collapse details' : 'Expand details'}
+                            >
+                              <ChevronDown className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} style={{ color: 'var(--text-muted)' }} />
+                            </button>
+                            <button
+                              onClick={() => handleAnalyzeSingle(item)}
+                              className="btn-ghost h-8 px-3 text-xs"
+                            >
+                              Analyze
+                            </button>
+                            <button
+                              onClick={() => { setDeleteItem(item); setShowDeleteDialog(true); }}
+                              className="p-2 rounded-lg hover:bg-[var(--bg-surface)]"
+                              title="Remove from queue"
+                            >
+                              <Trash2 className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                            </button>
+                          </div>
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-1 space-y-2 text-xs border-t" style={{ borderColor: 'var(--border)' }}>
+                              <div className="grid grid-cols-2 gap-2 mt-2">
+                                <div>
+                                  <span className="text-[var(--text-muted)]">To:</span>
+                                  <p className="truncate" style={{ color: 'var(--text-primary)' }}>{item.to || '—'}</p>
+                                </div>
+                                <div>
+                                  <span className="text-[var(--text-muted)]">Date:</span>
+                                  <p className="truncate" style={{ color: 'var(--text-primary)' }}>{item.date || '—'}</p>
+                                </div>
+                              </div>
+                              {item.snippet && (
+                                <div>
+                                  <span className="text-[var(--text-muted)]">Preview:</span>
+                                  <p className="line-clamp-2" style={{ color: 'var(--text-secondary)' }}>{item.snippet}</p>
+                                </div>
+                              )}
+                              {item.labels && item.labels.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {item.labels.slice(0, 5).map((label, i) => (
+                                    <span key={i} className="px-2 py-0.5 rounded-full text-xs" style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)' }}>
+                                      {label}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        <button
-                          onClick={() => handleAnalyzeSingle(item)}
-                          className="btn-ghost h-8 px-3 text-xs"
-                        >
-                          Analyze
-                        </button>
-                        <button
-                          onClick={() => { setDeleteItem(item); setShowDeleteDialog(true); }}
-                          className="p-2 rounded-lg hover:bg-[var(--bg-surface)]"
-                          title="Remove from queue"
-                        >
-                          <Trash2 className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </>
               )}
@@ -598,7 +653,7 @@ export default function AnalysisListPage() {
               <tbody>
                 {filtered.map(a => {
                   const s       = score(a);
-                  const subject = a.subject ?? a.filename ?? a.email_subject ?? 'Untitled';
+                  const subject = a.subject ?? a.email_metadata?.subject ?? a.file_name ?? a.filename ?? a.email_subject ?? 'Untitled';
                   const cat     = a.threat_category ?? a.category ?? '—';
                   const date    = a.created_at ?? a.analyzed_at;
                   return (

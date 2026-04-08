@@ -379,15 +379,57 @@ export const analysisApi = {
   },
 
   getAnalysis:  (id) => {
-    // Validate ID before making API call
-    if (!id || id === 'None' || id === 'null' || id === 'undefined' || typeof id !== 'string' || id.length < 10) {
+    // Validate ID - accept PostgreSQL UUIDs (with or without dashes) and 32-char hex
+    const isValidId = (id) => {
+      if (!id || typeof id !== 'string') return false;
+      // PostgreSQL UUID: 8-4-4-4-12 format (36 chars)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      // 32-char hex (UUID without dashes or our custom format)
+      const hexRegex = /^[0-9a-f]{32}$/i;
+      return uuidRegex.test(id) || hexRegex.test(id);
+    };
+    if (!id || id === 'None' || id === 'null' || id === 'undefined' || 
+        typeof id !== 'string' || id.startsWith('fallback_') || !isValidId(id)) {
       return Promise.reject(new Error('Invalid analysis ID'));
     }
     return apiFetch(`/analysis/${id}`);
   },
-  startAnalysis: (id) => apiFetch(`/analysis/${id}/start`, { method: 'POST' }),
-  getStatus:    (id)     => apiFetch(`/analysis/${id}/status`),
-  deleteAnalysis:(id)    => apiFetch(`/analysis/${id}`, { method: 'DELETE' }),
+  startAnalysis: (id) => {
+    const isValidId = (id) => {
+      if (!id || typeof id !== 'string') return false;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const hexRegex = /^[0-9a-f]{32}$/i;
+      return uuidRegex.test(id) || hexRegex.test(id);
+    };
+    if (!id || id.startsWith('fallback_') || !isValidId(id)) {
+      return Promise.reject(new Error('Invalid analysis ID'));
+    }
+    return apiFetch(`/analysis/${id}/start`, { method: 'POST' });
+  },
+  getStatus:    (id) => {
+    const isValidId = (id) => {
+      if (!id || typeof id !== 'string') return false;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const hexRegex = /^[0-9a-f]{32}$/i;
+      return uuidRegex.test(id) || hexRegex.test(id);
+    };
+    if (!id || id.startsWith('fallback_') || !isValidId(id)) {
+      return Promise.reject(new Error('Invalid analysis ID'));
+    }
+    return apiFetch(`/analysis/${id}/status`);
+  },
+  deleteAnalysis:(id) => {
+    const isValidId = (id) => {
+      if (!id || typeof id !== 'string') return false;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const hexRegex = /^[0-9a-f]{32}$/i;
+      return uuidRegex.test(id) || hexRegex.test(id);
+    };
+    if (!id || id.startsWith('fallback_') || !isValidId(id)) {
+      return Promise.reject(new Error('Invalid analysis ID'));
+    }
+    return apiFetch(`/analysis/${id}`, { method: 'DELETE' });
+  },
   downloadReport:(id, fmt='pdf') => apiFetch(`/analysis/${id}/download?format=${fmt}`),
   getWeeklyReport:(start) => {
     const q = start ? `?week_start=${start}` : '';
@@ -398,10 +440,10 @@ export const analysisApi = {
 // ─── ML Prediction API ───────────────────────────────────────────────────────────
 
 export const mlApi = {
-  predict: (subject, body, useHybrid = false) =>
+  predict: (subject, body) =>
     apiFetch('/ml/predict', {
       method: 'POST',
-      body: JSON.stringify({ subject, body, use_hybrid: useHybrid }),
+      body: JSON.stringify({ subject, body }),
     }),
 
   getModelsStatus: () => apiFetch('/ml/models'),

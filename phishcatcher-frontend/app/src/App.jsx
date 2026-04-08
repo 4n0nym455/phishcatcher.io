@@ -58,38 +58,52 @@ export default function App() {
           <Toaster
             position="top-right"
             richColors
+            theme="system"
             toastOptions={{
               style: {
-                borderRadius: '12px',
-                boxShadow: 'var(--shadow-lg)',
+                borderRadius: '14px',
+                boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-surface)',
+                color: 'var(--text-primary)',
+                fontSize: '14px',
+                fontFamily: "'DM Sans', system-ui, sans-serif",
               },
               success: {
                 style: {
-                  background: '#10b981',
+                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
                   color: '#ffffff',
-                  border: '1px solid #10b981',
+                  border: 'none',
+                  boxShadow: '0 4px 20px rgba(16, 185, 129, 0.4)',
                 },
+                icon: null,
               },
               error: {
                 style: {
-                  background: '#ef4444',
+                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
                   color: '#ffffff',
-                  border: '1px solid #ef4444',
+                  border: 'none',
+                  boxShadow: '0 4px 20px rgba(239, 68, 68, 0.4)',
                 },
+                icon: null,
               },
               info: {
                 style: {
-                  background: '#3b82f6',
+                  background: 'linear-gradient(135deg, #0ea5c7 0%, #0284c7 100%)',
                   color: '#ffffff',
-                  border: '1px solid #3b82f6',
+                  border: 'none',
+                  boxShadow: '0 4px 20px rgba(14, 165, 199, 0.4)',
                 },
+                icon: null,
               },
               warning: {
                 style: {
-                  background: '#f59e0b',
+                  background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
                   color: '#ffffff',
-                  border: '1px solid #f59e0b',
+                  border: 'none',
+                  boxShadow: '0 4px 20px rgba(245, 158, 11, 0.4)',
                 },
+                icon: null,
               },
             }}
           />

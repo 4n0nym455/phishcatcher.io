@@ -404,12 +404,12 @@ export default function EmailUploadPage() {
                       />
                     </div>
                     <div>
-                      <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Subject Contains</label>
+                      <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Email Contains</label>
                       <input
                         type="text"
                         value={filters.subject}
                         onChange={(e) => setFilters(f => ({ ...f, subject: e.target.value }))}
-                        placeholder="Keyword in subject"
+                        placeholder="Keyword in email body"
                         className="w-full h-8 px-2 rounded text-xs"
                         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
                       />
@@ -702,15 +702,9 @@ export default function EmailUploadPage() {
       {file && !loading && (
         <div className="flex gap-2 mt-5">
           <button
-            onClick={handleAnalyze}
-            className="btn-primary flex-1 h-12 justify-center text-[15px]"
-          >
-            <Zap className="w-5 h-5" /> Analyze now
-          </button>
-          <button
             onClick={handleSendToQueue}
             disabled={loading}
-            className="btn-secondary flex-1 h-12 justify-center text-[15px]"
+            className="btn-primary flex-1 h-12 justify-center text-[15px]"
           >
             <Layers className="w-5 h-5" /> Send to Queue
           </button>
