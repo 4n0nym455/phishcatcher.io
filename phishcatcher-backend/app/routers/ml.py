@@ -23,7 +23,6 @@ class EmailPredictionRequest(BaseModel):
     """Request schema for email phishing prediction."""
     subject: str
     body: str
-    use_hybrid: bool = False
 
 
 class EmailPredictionResponse(BaseModel):
@@ -47,8 +46,6 @@ class ModelsStatusResponse(BaseModel):
     """Response schema for models status."""
     available_models: list[ModelInfo]
     best_model: str
-    hybrid_available: bool
-    hybrid_enabled: bool
 
 
 @router.post("/predict", response_model=EmailPredictionResponse)
@@ -60,7 +57,6 @@ async def predict_phishing(
     Predict if an email is phishing based on subject and body.
     
     Uses the best performing model (SVM with 96.8% accuracy).
-    Set use_hybrid=True to use BERT hybrid model (requires GPU).
     """
     settings = get_settings()
     
@@ -68,8 +64,7 @@ async def predict_phishing(
         api = get_phishing_api(settings.ML_MODELS_DIR)
         result = api.predict(
             request.subject,
-            request.body,
-            use_hybrid=request.use_hybrid and settings.ML_ENABLE_HYBRID
+            request.body
         )
         
         return EmailPredictionResponse(
@@ -123,7 +118,5 @@ async def get_models_status(
     
     return ModelsStatusResponse(
         available_models=models_info,
-        best_model=settings.ML_BEST_MODEL,
-        hybrid_available=api.hybrid_model is not None,
-        hybrid_enabled=settings.ML_ENABLE_HYBRID
+        best_model=settings.ML_BEST_MODEL
     )

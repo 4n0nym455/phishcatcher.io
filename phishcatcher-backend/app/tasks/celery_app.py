@@ -15,7 +15,7 @@ celery_app = Celery(
     "phishcatcher",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["app.tasks.analysis", "app.tasks.gmail_tasks"]
+    include=["app.tasks.analysis"]
 )
 
 # Celery configuration
@@ -43,7 +43,6 @@ celery_app.conf.task_routes = {
     "app.tasks.analysis.analyze_email_task": {"queue": "analysis"},
     "app.tasks.analysis.sync_gmail_task": {"queue": "sync"},
     "app.tasks.analysis.analyze_gmail_email_task": {"queue": "analysis"},
-    "app.tasks.gmail_tasks.*": {"queue": "gmail"},
 }
 
 # Default queue

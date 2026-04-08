@@ -97,6 +97,15 @@ class GmailService:
             return {"success": False, "error": str(e)}
 
     async def _store_credentials(self, user_id: str, credentials, user_info: Dict):
+        # Log credential details for debugging
+        logger.info(f"Storing Gmail credentials - token: {bool(credentials.token)}, "
+                   f"refresh_token: {bool(credentials.refresh_token)}, "
+                   f"token_uri: {credentials.token_uri}, "
+                   f"client_id: {credentials.client_id}")
+        
+        if not credentials.refresh_token:
+            logger.error("Gmail credentials missing refresh_token - this is required for token refresh")
+        
         credentials_data = {
             'token': credentials.token,
             'refresh_token': credentials.refresh_token,
@@ -115,6 +124,7 @@ class GmailService:
                 user.gmail_email = user_info.get('emailAddress')
                 user.gmail_connected_at = datetime.utcnow()
                 await db.commit()
+                logger.info(f"Stored Gmail credentials for user {user_id}")
 
     async def _update_stored_credentials(self, user_id: str, credentials):
         """Update stored credentials after refresh."""
@@ -135,6 +145,19 @@ class GmailService:
                 user.gmail_credentials = json.dumps(credentials_data)
                 await db.commit()
                 logger.info(f"Updated Gmail credentials for user {user_id}")
+
+    async def _invalidate_credentials(self, user_id: str):
+        """Invalidate Gmail credentials for a user."""
+        import uuid
+        async with get_db_session() as db:
+            result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+            user = result.scalar_one_or_none()
+            if user:
+                user.gmail_credentials = None
+                user.gmail_email = None
+                user.gmail_connected_at = None
+                await db.commit()
+                logger.info(f"Invalidated Gmail credentials for user {user_id}")
 
     async def disconnect_gmail(self, user_id: str) -> bool:
         try:
@@ -181,7 +204,7 @@ class GmailService:
                     credentials.expiry = datetime.fromisoformat(credentials_data['expiry'])
                 
                 # Check if credentials are expired and refresh if needed
-                if credentials.expired:
+                if credentials.expired and credentials.refresh_token:
                     try:
                         credentials.refresh(Request())
                         # Update stored credentials with refreshed token
@@ -189,7 +212,14 @@ class GmailService:
                         logger.info(f"Refreshed Gmail credentials for user {user_id}")
                     except Exception as refresh_error:
                         logger.error(f"Failed to refresh Gmail credentials: {refresh_error}")
+                        # If refresh fails and we have a refresh token, mark credentials as invalid
+                        if credentials.refresh_token:
+                            await self._invalidate_credentials(user_id)
                         return None
+                elif credentials.expired and not credentials.refresh_token:
+                    logger.warning(f"Gmail credentials expired but no refresh token available for user {user_id}")
+                    await self._invalidate_credentials(user_id)
+                    return None
                 
                 return credentials
         except Exception as e:
@@ -280,7 +310,8 @@ class GmailService:
         date_to: str = None,
         from_address: str = None,
         subject_keyword: str = None,
-        has_attachments: bool = None
+        has_attachments: bool = None,
+        email_contains: str = None
     ) -> str:
         parts = []
         
@@ -300,13 +331,19 @@ class GmailService:
             parts.append(filter_queries[filter_type])
         
         if date_from:
-            parts.append(f"after:{date_from}")
+            # Convert YYYY-MM-DD to YYYY/MM/DD for Gmail
+            from_date_formatted = date_from.replace('-', '/')
+            parts.append(f"after:{from_date_formatted}")
         if date_to:
-            parts.append(f"before:{date_to}")
+            # Convert YYYY-MM-DD to YYYY/MM/DD for Gmail
+            to_date_formatted = date_to.replace('-', '/')
+            parts.append(f"before:{to_date_formatted}")
         if from_address:
             parts.append(f"from:{from_address}")
         if subject_keyword:
             parts.append(f"subject:{subject_keyword}")
+        if email_contains:
+            parts.append(f"{email_contains}")
         if has_attachments is True:
             parts.append("has:attachment")
         elif has_attachments is False:
@@ -341,21 +378,60 @@ class GmailService:
             elif header['name'] == 'Date':
                 date = header['value']
 
-        body = ''
+        body_text = ''
+        body_html = ''
+        links = []
+        
         if 'parts' in message['payload']:
             for part in message['payload']['parts']:
-                if part['mimeType'] == 'text/plain' and 'data' in part.get('body', {}):
-                    body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
-                    break
+                mime_type = part.get('mimeType', '')
+                body_data = part.get('body', {})
+                
+                if 'data' in body_data:
+                    try:
+                        part_body = base64.urlsafe_b64decode(body_data['data']).decode('utf-8')
+                    except:
+                        part_body = ''
+                elif 'attachmentId' in body_data:
+                    part_body = ''
+                else:
+                    part_body = ''
+                
+                if mime_type == 'text/plain' and not body_text:
+                    body_text = part_body
+                elif mime_type == 'text/html' and not body_html:
+                    body_html = part_body
+                    # Extract links from HTML
+                    import re
+                    url_pattern = re.compile(
+                        r'https?://(?:[-\w.])+(?:[:\d]+)?(?:/(?:[\w/_.])*(?:\?(?:[\w&=%.])*)?(?:#(?:[\w.])*)?)?',
+                        re.IGNORECASE
+                    )
+                    # Also try to extract anchor text
+                    anchor_pattern = re.compile(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>([^<]*)</a>', re.IGNORECASE)
+                    for match in anchor_pattern.findall(body_html):
+                        url, anchor_text = match
+                        links.append({'url': url, 'display_text': anchor_text.strip()})
+                    # Also add URLs found in the HTML that might not have anchors
+                    all_urls = url_pattern.findall(body_html)
+                    for url in all_urls:
+                        if not any(l['url'] == url for l in links):
+                            links.append({'url': url, 'display_text': None})
+        
         elif 'data' in message['payload'].get('body', {}):
-            body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8')
+            try:
+                body_text = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8')
+            except:
+                body_text = ''
 
         return {
             'id': message['id'],
             'subject': subject,
             'from': from_email,
             'date': date,
-            'body': body,
+            'body': body_text,
+            'body_html': body_html,
+            'links': links,
             'snippet': message.get('snippet', ''),
             'labels': message.get('labelIds', [])
         }

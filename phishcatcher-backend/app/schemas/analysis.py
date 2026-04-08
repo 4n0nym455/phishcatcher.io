@@ -167,6 +167,9 @@ class AnalysisResponse(BaseModel):
     attachments_analyzed: List[AttachmentAnalysisResponse] = []
     risk_factors: Optional[RiskFactors] = None
     
+    # ML Analysis details
+    ml_analysis: Optional[Dict[str, Any]] = None
+    
     # Report
     report_generated: bool = False
     report_url: Optional[str] = None
@@ -194,8 +197,10 @@ class AnalysisStatus(BaseModel):
 class AnalysisListItem(BaseModel):
     """Analysis list item schema."""
     id: str
+    analysis_id: Optional[str] = None
     source_type: str
     file_name: Optional[str] = None
+    subject: Optional[str] = None
     status: JobStatus
     risk_score: Optional[int] = None
     threat_category: Optional[str] = None

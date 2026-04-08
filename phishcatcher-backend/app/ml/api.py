@@ -45,9 +45,7 @@ class PhishingDetectorAPI:
         
         self.vectorizer = None
         self.classical_models = {}
-        self.hybrid_model = None
-        self.hybrid_scaler = None
-        self.best_model_name = "hybrid"
+        self.best_model_name = "svm"
         
         self._load_models()
     
@@ -70,19 +68,6 @@ class PhishingDetectorAPI:
                     with open(model_file, 'rb') as f:
                         self.classical_models[name] = pickle.load(f)
             logger.info(f"Loaded {len(self.classical_models)} classical models")
-        
-        hybrid_model_path = os.path.join(self.model_dir, "hybrid_model.pkl")
-        hybrid_scaler_path = os.path.join(self.model_dir, "hybrid_scaler.pkl")
-        
-        if os.path.exists(hybrid_model_path):
-            with open(hybrid_model_path, 'rb') as f:
-                self.hybrid_model = pickle.load(f)
-            logger.info("Loaded hybrid model")
-        
-        if os.path.exists(hybrid_scaler_path):
-            with open(hybrid_scaler_path, 'rb') as f:
-                self.hybrid_scaler = pickle.load(f)
-            logger.info("Loaded hybrid scaler")
     
     def predict_with_classical(
         self,
@@ -104,22 +89,6 @@ class PhishingDetectorAPI:
         y_prob = model.predict_proba(X)[0][1]
         
         return self._create_prediction_output(y_prob, f"classical_{model_name}")
-    
-    def predict_with_hybrid(
-        self,
-        bert_embeddings: np.ndarray,
-        engineered_features: np.ndarray
-    ) -> PredictionOutput:
-        """Predict using hybrid model."""
-        if self.hybrid_model is None or self.hybrid_scaler is None:
-            raise ValueError("Hybrid model not loaded")
-        
-        scaled_features = self.hybrid_scaler.transform(engineered_features)
-        hybrid_features = np.hstack([bert_embeddings, scaled_features])
-        
-        y_prob = self.hybrid_model.predict_proba(hybrid_features)[0][1]
-        
-        return self._create_prediction_output(y_prob, "hybrid")
     
     def _create_prediction_output(
         self,
@@ -153,33 +122,13 @@ class PhishingDetectorAPI:
     def predict(
         self,
         subject: str,
-        body: str,
-        use_hybrid: bool = True
+        body: str
     ) -> PredictionOutput:
         """
         Predict phishing.
         
-        Uses hybrid model if available, else falls back to classical.
+        Uses the best classical model.
         """
-        if use_hybrid and self.hybrid_model is not None:
-            try:
-                from app.ml.models.bert_model import BERTTrainer
-                from app.ml.feature_engineering import FeatureEngineer
-                
-                trainer = BERTTrainer()
-                trainer.load_model()
-                
-                text = f"{subject} {body}"
-                bert_emb = trainer.extract_embeddings([text], show_progress=False)
-                
-                engineer = FeatureEngineer()
-                eng_features = engineer.get_feature_vector(subject, body)
-                eng_features = np.array([eng_features])
-                
-                return self.predict_with_hybrid(bert_emb, eng_features)
-            except Exception as e:
-                logger.warning(f"Hybrid prediction failed: {e}, falling back to classical")
-        
         if self.classical_models:
             return self.predict_with_classical(subject, body, "xgboost")
         
@@ -223,7 +172,6 @@ def create_prediction_endpoint(app: FastAPI, model_dir: str = "models"):
         
         return {
             "classical_models": list(api.classical_models.keys()),
-            "hybrid_available": api.hybrid_model is not None,
             "best_model": api.best_model_name
         }
     

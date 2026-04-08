@@ -29,6 +29,8 @@ def upgrade() -> None:
         sa.Column('file_type', sa.String(50), nullable=True),
         sa.Column('file_hash', sa.String(64), nullable=True),
         sa.Column('s3_key', sa.String(500), nullable=True),
+        sa.Column('storage_object_name', sa.String(500), nullable=True),
+        sa.Column('storage_bucket', sa.String(100), nullable=True),
         
         # Job state
         sa.Column('status', sa.String(50), server_default='pending', nullable=False),
@@ -45,7 +47,11 @@ def upgrade() -> None:
         sa.Column('high_findings', sa.Integer(), server_default='0'),
         sa.Column('medium_findings', sa.Integer(), server_default='0'),
         sa.Column('low_findings', sa.Integer(), server_default='0'),
-        sa.Column('mongodb_result_id', sa.String(24), nullable=True),
+        sa.Column('mongodb_result_id', sa.String(64), nullable=True),
+        
+        # ML and TI scores
+        sa.Column('ml_score', sa.Float(), nullable=True, comment='ML model phishing probability (0.0-1.0)'),
+        sa.Column('ti_score', sa.Float(), nullable=True, comment='Threat Intel score (0.0-1.0)'),
         
         # Report
         sa.Column('report_generated', sa.Boolean(), server_default='false'),

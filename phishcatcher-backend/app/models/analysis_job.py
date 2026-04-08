@@ -61,8 +61,12 @@ class AnalysisJob(Base):
     medium_findings = Column(Integer, default=0)
     low_findings = Column(Integer, default=0)
     
+    # ML and TI scores
+    ml_score = Column(Float, nullable=True)  # ML model phishing probability (0.0-1.0)
+    ti_score = Column(Float, nullable=True)  # Threat Intel score (0.0-1.0)
+    
     # MongoDB reference
-    mongodb_result_id = Column(String(24), nullable=True)  # MongoDB ObjectId as string
+    mongodb_result_id = Column(String(64), nullable=True)  # MongoDB ObjectId or custom hex ID
     
     # Report generation
     report_generated = Column(Boolean, default=False)
@@ -123,6 +127,8 @@ class AnalysisJob(Base):
             "high_findings": self.high_findings,
             "medium_findings": self.medium_findings,
             "low_findings": self.low_findings,
+            "ml_score": self.ml_score,
+            "ti_score": self.ti_score,
             "report_generated": self.report_generated,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,

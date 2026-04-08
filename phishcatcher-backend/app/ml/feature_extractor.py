@@ -260,14 +260,13 @@ class FeatureExtractor:
         return features
     
     def _get_feature_names(self) -> List[str]:
-        """Get list of all feature names (ML-only features)."""
+        """Get list of all feature names (46 features - matches trained model)."""
         return [
-            # Header features (auth, reply-to, subject)
+            # Header features (12)
             'spf_pass', 'dkim_pass', 'dmarc_pass', 'spf_fail', 'dkim_fail', 'dmarc_fail',
             'reply_to_mismatch', 'domain_mismatch', 'subject_length', 'subject_has_exclamation',
             'subject_has_dollar', 'subject_all_caps_words',
-            
-            # Content features
+            # Content features (26)
             'text_length', 'html_length', 'has_html', 'has_text', 'html_to_text_ratio',
             'urgency_keywords_count', 'urgency_keywords_present',
             'suspicious_phrases_count', 'suspicious_phrases_present',
@@ -277,18 +276,12 @@ class FeatureExtractor:
             'has_form', 'has_password_input', 'has_input_fields',
             'has_script', 'has_iframe', 'has_onerror', 'has_onload',
             'external_images', 'external_resources',
-            'has_hidden_elements', 'has_mailto', 'generic_greeting',
-            'cta_phrase_count', 'prize_indicators',
-            
-            # Link features (count-based only, reputation handled by TI)
+            # Link features (4)
             'total_links', 'unique_domains', 'links_per_domain_ratio', 'avg_domain_length',
-            
-            # Attachment features (count-based, hash reputation handled by TI)
+            # Attachment features (3)
             'has_attachments', 'attachment_count', 'multiple_attachments',
-            'total_attachment_size', 'avg_attachment_size',
-            
-            # Metadata features
-            'is_multipart', 'received_count', 'hop_count', 'suspicious_hop_count'
+            # Metadata features (1)
+            'is_multipart'
         ]
     
     def get_feature_vector(self, parsed_email: Dict[str, Any]) -> List[float]:

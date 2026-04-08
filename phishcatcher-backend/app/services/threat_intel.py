@@ -712,7 +712,7 @@ class ThreatIntelService:
         self,
         sender_email: str,
         urls: List[str],
-        attachment_hashes: List[str]
+        attachment_hashes: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Perform comprehensive threat analysis on an email.
@@ -728,6 +728,9 @@ class ThreatIntelService:
         - File hash VirusTotal: 10%
         - URLScan (backup): 10%
         """
+        if attachment_hashes is None:
+            attachment_hashes = []
+        
         weights = {
             'abuseipdb': 0.20,
             'whoisjson': 0.10,

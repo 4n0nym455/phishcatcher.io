@@ -78,10 +78,24 @@ class RiskScorer:
         # Determine threat category
         threat_category = self._determine_threat_category(risk_score, findings)
         
+        def convert_numpy(obj):
+            import numpy as np
+            if isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.bool_):
+                return bool(obj)
+            elif isinstance(obj, dict):
+                return {k: convert_numpy(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(i) for i in obj]
+            return obj
+        
         return {
             'risk_score': risk_score,
             'threat_category': threat_category,
-            'confidence': ml_prediction['confidence'],
+            'confidence': float(ml_prediction['confidence']),
             'findings': [self._finding_to_dict(f) for f in findings],
             'findings_count': len(findings),
             'critical_findings': sum(1 for f in findings if f.severity == SeverityLevel.CRITICAL),
@@ -89,7 +103,7 @@ class RiskScorer:
             'medium_findings': sum(1 for f in findings if f.severity == SeverityLevel.MEDIUM),
             'low_findings': sum(1 for f in findings if f.severity == SeverityLevel.LOW),
             'risk_factors': risk_factors,
-            'ml_prediction': ml_prediction
+            'ml_prediction': convert_numpy(ml_prediction)
         }
     
     def _generate_findings(self, parsed_email: Dict[str, Any], 

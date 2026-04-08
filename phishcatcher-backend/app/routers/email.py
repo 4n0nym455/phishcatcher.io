@@ -24,6 +24,8 @@ from app.services.security_service import security_service
 from app.services.password_history import check_password_reuse, save_password_to_history
 from app.services.security import verify_password, get_password_hash, validate_password_strength
 from app.database import get_db
+from app.routers.auth import get_current_active_user
+from app.routers.admin import get_current_admin
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,10 @@ class CustomEmailRequest(BaseModel):
 
 
 @router.post("/email/send-otp")
-async def send_otp_verification(request: OTPRequest):
+async def send_otp_verification(
+    request: OTPRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """Send OTP verification code to user email."""
     try:
         # Generate OTP code
@@ -95,7 +100,10 @@ async def send_otp_verification(request: OTPRequest):
 
 
 @router.post("/email/send-welcome")
-async def send_welcome_email(request: WelcomeEmailRequest):
+async def send_welcome_email(
+    request: WelcomeEmailRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """Send welcome/onboarding email to new user."""
     try:
         success = await email_service.send_welcome_email(
@@ -124,7 +132,10 @@ async def send_welcome_email(request: WelcomeEmailRequest):
 
 
 @router.post("/email/request-password-reset")
-async def request_password_reset(request: PasswordResetRequest):
+async def request_password_reset(
+    request: PasswordResetRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """Request password reset email."""
     try:
         # Generate reset code
@@ -233,7 +244,10 @@ async def confirm_password_reset(
 
 
 @router.post("/email/send-security-alert")
-async def send_security_alert(request: SecurityAlertRequest):
+async def send_security_alert(
+    request: SecurityAlertRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """Send security alert email."""
     try:
         success = await email_service.send_security_alert(
@@ -266,41 +280,37 @@ async def send_security_alert(request: SecurityAlertRequest):
 
 @router.post("/email/send-account-suspended")
 async def send_account_suspended(
-    request: dict  # Using dict for flexibility
+    request: dict,
+    current_user: User = Depends(get_current_active_user)
 ):
     """Send account suspension email (admin only)."""
-    try:
-        # For now, skip admin check - in production, this would require admin authentication
-        email = request.get("email")
-        user_name = request.get("user_name", "User")
-        status = request.get("status", "Suspended")
-        reason = request.get("reason", "Account action required")
-        actions = request.get("actions", [])
-        
-        success = await email_service.send_account_suspended(
-            to_email=email,
-            user_name=user_name,
-            status=status,
-            reason=reason,
-            actions=actions
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
         )
-        
-        if success:
-            return {
-                "message": "Account notification sent successfully",
-                "email": email,
-                "status": status
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send account notification"
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error sending account notification: {e}")
+    
+    email = request.get("email")
+    user_name = request.get("user_name", "User")
+    status = request.get("status", "Suspended")
+    reason = request.get("reason", "Account action required")
+    actions = request.get("actions", [])
+    
+    success = await email_service.send_account_suspended(
+        to_email=email,
+        user_name=user_name,
+        status=status,
+        reason=reason,
+        actions=actions
+    )
+    
+    if success:
+        return {
+            "message": "Account notification sent successfully",
+            "email": email,
+            "status": status
+        }
+    else:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to send account notification"
@@ -309,33 +319,29 @@ async def send_account_suspended(
 
 @router.post("/email/send-custom")
 async def send_custom_email(
-    request: CustomEmailRequest
+    request: CustomEmailRequest,
+    current_user: User = Depends(get_current_active_user)
 ):
     """Send custom email content (admin/authorized users only)."""
-    try:
-        # For now, skip admin check - in production, this would require admin authentication
-        success = await email_service.send_custom_email(
-            to_email=request.to_email,
-            subject=request.subject,
-            html_content=request.html_content
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
         )
+    
+    success = await email_service.send_custom_email(
+        to_email=request.to_email,
+        subject=request.subject,
+        html_content=request.html_content
+    )
         
-        if success:
-            return {
-                "message": "Custom email sent successfully",
-                "to_email": request.to_email,
-                "subject": request.subject
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send custom email"
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error sending custom email: {e}")
+    if success:
+        return {
+            "message": "Custom email sent successfully",
+            "to_email": request.to_email,
+            "subject": request.subject
+        }
+    else:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to send custom email"

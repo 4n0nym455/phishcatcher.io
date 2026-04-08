@@ -27,8 +27,7 @@ from app.schemas.email_provider import (
     ProviderHealth, GmailAuthUrl
 )
 from app.routers.auth import get_current_active_user
-from app.services.gmail import GmailService, GmailServiceFactory
-from app.services.security import encrypt_data, decrypt_data
+from app.services.gmail_service import gmail_service
 from app.tasks.analysis import sync_gmail_task
 
 logger = logging.getLogger(__name__)
@@ -36,13 +35,13 @@ router = APIRouter()
 
 
 @router.get("/gmail/auth-url")
-async def get_gmail_auth_url():
+async def get_gmail_auth_url(
+    current_user: User = Depends(get_current_active_user)
+):
     """Get Gmail OAuth authorization URL."""
-    import secrets
-    state = secrets.token_urlsafe(32)
-    auth_url = GmailService.get_authorization_url(state)
+    auth_url = gmail_service.get_auth_url(str(current_user.id), current_user.email)
     
-    return {"auth_url": auth_url, "state": state}
+    return {"auth_url": auth_url}
 
 
 @router.post("/gmail/connect", response_model=EmailProviderResponse)
@@ -55,36 +54,37 @@ async def connect_gmail(
 ):
     """Connect Gmail account using OAuth code."""
     try:
-        # Exchange code for tokens
-        token_data = GmailService.exchange_code_for_tokens(code)
+        # Handle OAuth callback - this stores credentials in User model
+        result = await gmail_service.handle_oauth_callback(code, state)
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("error", "Failed to connect Gmail")
+            )
+        
+        email = result.get("email")
         
         # Check if provider already exists
         result = await db.execute(
             select(EmailProvider).where(
                 EmailProvider.user_id == current_user.id,
-                EmailProvider.email_address == token_data['email']
+                EmailProvider.email_address == email
             )
         )
         existing = result.scalar_one_or_none()
         
         if existing:
-            # Update existing provider
-            existing.access_token = encrypt_data(token_data['access_token'])
-            existing.refresh_token = encrypt_data(token_data['refresh_token']) if token_data.get('refresh_token') else existing.refresh_token
-            existing.token_expires_at = token_data.get('expires_at')
             existing.is_connected = True
             existing.connection_error = None
             provider = existing
         else:
-            # Create new provider
+            # Create new provider record (metadata only, credentials stored in User)
             provider = EmailProvider(
                 user_id=current_user.id,
                 provider_type="gmail",
-                provider_name=connect_data.provider_name or token_data.get('name', 'Gmail'),
-                email_address=token_data['email'],
-                access_token=encrypt_data(token_data['access_token']),
-                refresh_token=encrypt_data(token_data['refresh_token']) if token_data.get('refresh_token') else None,
-                token_expires_at=token_data.get('expires_at'),
+                provider_name=connect_data.provider_name or "Gmail",
+                email_address=email,
                 sync_enabled=connect_data.sync_enabled,
                 sync_folder=connect_data.sync_folder,
                 max_emails_per_sync=connect_data.max_emails_per_sync,
@@ -102,15 +102,17 @@ async def connect_gmail(
             resource_type="email_provider",
             resource_id=str(provider.id),
             status="success",
-            details={"provider_type": "gmail", "email": token_data['email']}
+            details={"provider_type": "gmail", "email": email}
         )
         db.add(audit_log)
         await db.commit()
         
-        logger.info(f"Gmail connected for {current_user.email}: {token_data['email']}")
+        logger.info(f"Gmail connected for {current_user.email}: {email}")
         
         return provider
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Gmail connection error: {e}")
         raise HTTPException(
@@ -302,8 +304,8 @@ async def check_provider_health(
     
     if provider.provider_type == "gmail" and provider.is_connected:
         try:
-            gmail_service = GmailServiceFactory.from_provider(provider)
-            is_token_valid = gmail_service.is_token_valid()
+            credentials = await gmail_service.get_gmail_credentials(str(current_user.id))
+            is_token_valid = credentials is not None
         except Exception as e:
             logger.warning(f"Token validation failed for provider {provider_id}: {e}")
     
@@ -337,13 +339,17 @@ async def disconnect_provider(
             detail="Provider not found"
         )
     
-    # Stop push notifications if enabled
+    # Stop push notifications if enabled and disconnect Gmail
     if provider.webhook_enabled and provider.provider_type == "gmail":
         try:
-            gmail_service = GmailServiceFactory.from_provider(provider)
-            await gmail_service.stop_push_notifications(provider.webhook_resource_id)
+            # Stop push notifications via Gmail API (if implemented)
+            pass
         except Exception as e:
             logger.warning(f"Failed to stop push notifications: {e}")
+    
+    # Disconnect Gmail credentials from user model
+    if provider.provider_type == "gmail":
+        await gmail_service.disconnect_gmail(str(current_user.id))
     
     # Soft delete
     provider.is_active = False

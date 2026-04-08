@@ -16,6 +16,25 @@ import numpy as np
 
 from app.config import get_settings
 from app.ml.feature_extractor import FeatureExtractor
+from app.ml.models.bert_model import BERTClassifier
+from app.ml.models.classical import ClassicalMLTrainer
+
+
+def convert_numpy_types(obj):
+    """Convert numpy types to native Python types for MongoDB serialization."""
+    if isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(i) for i in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +82,24 @@ class PhishingDetector:
             try:
                 with open(self.model_path, 'rb') as f:
                     saved_data = pickle.load(f)
+                    
+                # Handle different model formats
+                if isinstance(saved_data, dict):
                     self.model = saved_data.get('model')
                     self.training_metadata = saved_data.get('metadata', {})
                     self.model_version = saved_data.get('version', self.model_version)
-                logger.info(f"Loaded model version {self.model_version} from {self.model_path}")
+                else:
+                    # Legacy format - just the model
+                    self.model = saved_data
+                    self.training_metadata = {}
+                    self.model_version = "legacy"
+                    
+                if self.model is not None:
+                    logger.info(f"Loaded model version {self.model_version} from {self.model_path}")
+                else:
+                    logger.warning("Model file exists but contains no model data")
+                    self._init_new_model()
+                    
             except Exception as e:
                 logger.error(f"Error loading model: {e}")
                 self._init_new_model()
@@ -132,15 +165,17 @@ class PhishingDetector:
             if hasattr(self.model, 'predict_proba'):
                 probabilities = self.model.predict_proba(X)[0]
                 phishing_prob = probabilities[1]  # Probability of phishing class
+                logger.info(f"ML prediction - phishing probability: {phishing_prob:.4f}")
             else:
                 # Fallback for models without predict_proba
                 prediction = self.model.predict(X)[0]
                 phishing_prob = float(prediction)
+                logger.info(f"ML prediction - binary result: {prediction}")
             
             # Determine category based on probability
             category = self._categorize_prediction(phishing_prob)
             
-            return {
+            prediction_result = {
                 'is_phishing': phishing_prob > 0.5,
                 'phishing_probability': float(phishing_prob),
                 'safe_probability': float(1 - phishing_prob),
@@ -149,6 +184,11 @@ class PhishingDetector:
                 'model_version': self.model_version,
                 'features_used': len(features)
             }
+            
+            logger.info(f"ML prediction complete - category: {category}, confidence: {prediction_result['confidence']:.4f}")
+            
+            # Convert numpy types to native Python types
+            return convert_numpy_types(prediction_result)
         except Exception as e:
             logger.error(f"Prediction error: {e}")
             return self._fallback_prediction(parsed_email)
@@ -288,6 +328,9 @@ class PhishingDetector:
             'training_samples': len(X_train),
             'validation_samples': len(X_val)
         }
+        
+        # Convert numpy types to native Python types
+        metrics = convert_numpy_types(metrics)
         
         # Store training metadata
         self.training_metadata = {
