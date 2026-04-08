@@ -175,3 +175,5 @@ celerybeat.pid
 
 archive/
 archive.zip
+phishcatcher-sample*
+clear_local*
