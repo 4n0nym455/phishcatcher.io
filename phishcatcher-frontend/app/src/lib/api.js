@@ -9,7 +9,19 @@
  * Token storage uses only two keys:
  *   localStorage.access_token
  *   localStorage.refresh_token
+ * 
+ * Security features:
+ *   - Request signing with HMAC-SHA256
+ *   - Token IP binding
+ *   - Token revocation on logout
  */
+
+import { 
+  signRequest, 
+  getSigningKey, 
+  storeSigningKey,
+  generateClientSigningKey,
+} from './crypto.js';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 
@@ -33,7 +45,33 @@ export const clearTokens = () => {
    'phishcatcher_email', 'phishcatcher_role', 'phishcatcher_name',
    'mfa_session_token', 'mfa_user',
    'oauth_state', 'oauth_state_expiry',
+   'phishcatcher_signing_key',
   ].forEach(k => localStorage.removeItem(k));
+};
+
+export const storeSigningKeyWithTokens = ({ access_token, refresh_token, signing_key }) => {
+  storeTokens({ access_token, refresh_token });
+  if (signing_key) {
+    storeSigningKey(signing_key);
+  }
+};
+
+export const initializeSigningKey = () => {
+  if (!getSigningKey()) {
+    const newKey = generateClientSigningKey();
+    storeSigningKey(newKey);
+    return newKey;
+  }
+  return getSigningKey();
+};
+
+export const getOrCreateSigningKey = () => {
+  let key = getSigningKey();
+  if (!key) {
+    key = generateClientSigningKey();
+    storeSigningKey(key);
+  }
+  return key;
 };
 
 // ─── Core fetch wrapper ───────────────────────────────────────────────────────
@@ -43,14 +81,30 @@ let _refreshing = null; // singleton promise so concurrent calls don't double-re
 async function apiFetch(endpoint, options = {}, _retried = false) {
   const url   = `${API_BASE}${endpoint}`;
   const token = getTokens().accessToken;
+  const signingKey = getSigningKey();
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...options.headers,
+  };
+
+  const body = options.body || null;
+  const method = options.method || 'GET';
+
+  if (signingKey && method !== 'GET') {
+    const signatureData = await signRequest(method, endpoint, body, signingKey);
+    if (signatureData) {
+      const { signature, timestamp, nonce } = signatureData;
+      headers['X-Signature'] = signature;
+      headers['X-Timestamp'] = timestamp;
+      headers['X-Nonce'] = nonce;
+    }
+  }
 
   const config = {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
+    headers,
   };
 
   const response = await fetch(url, config);
@@ -69,9 +123,16 @@ async function apiFetch(endpoint, options = {}, _retried = false) {
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    const message = Array.isArray(body.errors)
-      ? body.errors.map(e => e.msg ?? e.message ?? JSON.stringify(e)).join('; ')
-      : (body.detail ?? `HTTP ${response.status}`);
+    let message;
+    
+    if (Array.isArray(body.detail)) {
+      message = body.detail.map(e => e.msg ?? e.message ?? JSON.stringify(e)).join('; ');
+    } else if (Array.isArray(body.errors)) {
+      message = body.errors.map(e => e.msg ?? e.message ?? JSON.stringify(e)).join('; ');
+    } else {
+      message = body.detail ?? `HTTP ${response.status}`;
+    }
+    
     throw new Error(message);
   }
 
@@ -82,13 +143,18 @@ async function _doRefresh() {
   const { refreshToken } = getTokens();
   if (!refreshToken) return false;
   try {
+    const signingKey = getOrCreateSigningKey();
     const res = await fetch(`${API_BASE}/auth/refresh`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ refresh_token: refreshToken }),
+      body:    JSON.stringify({ refresh_token: refreshToken, signing_key: signingKey }),
     });
     if (!res.ok) return false;
-    storeTokens(await res.json());
+    const data = await res.json();
+    if (data.signing_key) {
+      storeSigningKey(data.signing_key);
+    }
+    storeTokens(data);
     return true;
   } catch {
     return false;
@@ -264,25 +330,28 @@ export const authApi = {
 
   gmail: {
     getAuthUrl:      ()        => apiFetch('/gmail/auth/url'),
+    getReconnectUrl: (accountId) => apiFetch(`/gmail/auth/url/reconnect/${accountId}`),
     callback:        (code, state) => apiFetch('/gmail/callback', { method: 'POST', body: JSON.stringify({ code, state }) }),
     getStatus:       ()        => apiFetch('/gmail/status'),
     disconnect:      ()        => apiFetch('/gmail/disconnect', { method: 'POST' }),
-    listEmails:      (page = 1, maxResults = 20, q = null) => {
+    listEmails:      (page = 1, maxResults = 20, q = null, providerId = null) => {
       const params = new URLSearchParams();
       params.set('page', String(page));
       params.set('max_results', String(maxResults));
       if (q) params.set('q', q);
+      if (providerId) params.set('provider_id', providerId);
       return apiFetch(`/gmail/emails?${params}`);
     },
-    searchEmails:    (query, page = 1, maxResults = 50) => {
+    searchEmails:    (query, page = 1, maxResults = 50, providerId = null) => {
       const params = new URLSearchParams();
       params.set('q', query);
       params.set('page', String(page));
       params.set('max_results', String(maxResults));
+      if (providerId) params.set('provider_id', providerId);
       return apiFetch(`/gmail/emails/search?${params}`);
     },
     filterEmails:    (options = {}) => {
-      const { filterType, hasAttachments, dateFrom, dateTo, fromAddress, subject, page = 1, maxResults = 50 } = options;
+      const { filterType, hasAttachments, dateFrom, dateTo, fromAddress, subject, page = 1, maxResults = 50, providerId = null } = options;
       const params = new URLSearchParams();
       params.set('page', String(page));
       params.set('max_results', String(maxResults));
@@ -292,13 +361,19 @@ export const authApi = {
       if (dateTo) params.set('date_to', dateTo);
       if (fromAddress) params.set('from_address', fromAddress);
       if (subject) params.set('subject', subject);
+      if (providerId) params.set('provider_id', providerId);
       return apiFetch(`/gmail/emails/filter?${params}`);
     },
     getQueryHelp:    ()        => apiFetch('/gmail/emails/query-builder'),
-    queueEmails:     (messageIds) => apiFetch('/gmail/emails/queue', {
-      method: 'POST',
-      body: JSON.stringify({ message_ids: messageIds }),
-    }),
+    queueEmails:     (messageIds, providerId = null) => {
+      const params = new URLSearchParams();
+      if (providerId) params.set('provider_id', providerId);
+      const url = params.toString() ? `/gmail/emails/queue?${params}` : '/gmail/emails/queue';
+      return apiFetch(url, {
+        method: 'POST',
+        body: JSON.stringify({ message_ids: messageIds }),
+      });
+    },
     analyzeEmails:   (messageIds) => apiFetch('/gmail/emails/analyze', {
       method: 'POST',
       body: JSON.stringify({ message_ids: messageIds }),
@@ -310,6 +385,15 @@ export const authApi = {
     processQueueItem: (messageId) => apiFetch(`/gmail/queue/${messageId}/process`, { method: 'POST' }),
     deleteQueueItem: (messageId) => apiFetch(`/gmail/queue/${messageId}`, { method: 'DELETE' }),
     clearQueue:      ()        => apiFetch('/gmail/queue/clear', { method: 'POST' }),
+    
+    // Multi-account endpoints
+    getAccounts:     ()        => apiFetch('/gmail/accounts'),
+    addAccount:      (code, state) => apiFetch('/gmail/accounts', { 
+      method: 'POST', 
+      body: JSON.stringify({ code, state }) 
+    }),
+    removeAccount:   (id) => apiFetch(`/gmail/accounts/${id}`, { method: 'DELETE' }),
+    setDefaultAccount: (id) => apiFetch(`/gmail/accounts/${id}/set-default`, { method: 'POST' }),
   },
 };
 
@@ -321,13 +405,14 @@ export const adminApi = {
   retrainModel:()  => apiFetch('/admin/model/retrain', { method: 'POST' }),
   getAnalytics:(days = 30) => apiFetch(`/admin/analytics?days=${days}`),
 
-  listUsers: ({ page = 1, pageSize = 20, search, isActive, role, sortBy, sortOrder } = {}) => {
+  listUsers: ({ page = 1, pageSize = 20, search, isActive, role, sortBy, sortOrder, accountStatus } = {}) => {
     const q = new URLSearchParams({ page, page_size: pageSize });
     if (search   !== undefined) q.set('search',    search);
     if (isActive !== undefined) q.set('is_active', isActive);
     if (role     !== undefined) q.set('role',      role);
     if (sortBy   !== undefined) q.set('sort_by',   sortBy);
     if (sortOrder!== undefined) q.set('sort_order', sortOrder);
+    if (accountStatus !== undefined) q.set('account_status', accountStatus);
     return apiFetch(`/admin/users?${q}`);
   },
 
@@ -335,14 +420,13 @@ export const adminApi = {
   updateUser: (id, data)   => apiFetch(`/admin/users/${id}`, { method: 'PUT',    body: JSON.stringify(data) }),
   deleteUser: (id, payload)=> apiFetch(`/admin/users/${id}`, { method: 'DELETE', body: JSON.stringify(payload) }),
 
-  getAuditLogs: ({ page = 1, pageSize = 50, action, status, days = 7, startDate, endDate, ipAddress, resourceType, userEmail } = {}) => {
+  getAuditLogs: ({ page = 1, pageSize = 50, action, result, status, days = 7, startDate, endDate, userEmail } = {}) => {
     const q = new URLSearchParams({ page, page_size: pageSize, days });
     if (action)       q.set('action', action);
+    if (result)       q.set('result', result);
     if (status)       q.set('status', status);
     if (startDate)    q.set('start_date', startDate);
     if (endDate)     q.set('end_date', endDate);
-    if (ipAddress)    q.set('ip_address', ipAddress);
-    if (resourceType)q.set('resource_type', resourceType);
     if (userEmail)    q.set('user_email', userEmail);
     return apiFetch(`/admin/audit-logs?${q}`);
   },
@@ -430,10 +514,59 @@ export const analysisApi = {
     }
     return apiFetch(`/analysis/${id}`, { method: 'DELETE' });
   },
-  downloadReport:(id, fmt='pdf') => apiFetch(`/analysis/${id}/download?format=${fmt}`),
-  getWeeklyReport:(start) => {
-    const q = start ? `?week_start=${start}` : '';
-    return apiFetch(`/analysis/reports/weekly${q}`);
+  downloadReport: async (id, fmt = 'pdf') => {
+    const { accessToken } = getTokens();
+    const res = await fetch(`${API_BASE}/analysis/${id}/download?format=${fmt}`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Download failed' }));
+      throw new Error(err.detail);
+    }
+    return res.blob();
+  },
+  downloadSummaryReport: async (startDate, endDate) => {
+    const { accessToken } = getTokens();
+    const res = await fetch(`${API_BASE}/analysis/reports/summary/download?start_date=${startDate}&end_date=${endDate}`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Download failed' }));
+      throw new Error(err.detail);
+    }
+    return res.blob();
+  },
+  getReport:(startDate, endDate, weekStart) => {
+    const params = new URLSearchParams();
+    if (startDate && endDate) {
+      params.set('start_date', startDate);
+      params.set('end_date', endDate);
+    } else if (weekStart) {
+      params.set('week_start', weekStart);
+    }
+    const q = params.toString();
+    return apiFetch(`/analysis/reports/weekly${q ? '?' + q : ''}`);
+  },
+  getBatchReport: (ids) => {
+    const q = new URLSearchParams();
+    ids.forEach(id => q.append('ids', id));
+    return apiFetch(`/analysis/reports/batch?${q}`);
+  },
+  downloadBatchReport: async (ids) => {
+    const { accessToken } = getTokens();
+    const res = await fetch(`${API_BASE}/analysis/reports/combined/download`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Download failed' }));
+      throw new Error(err.detail || 'Download failed');
+    }
+    return res.blob();
   },
 };
 

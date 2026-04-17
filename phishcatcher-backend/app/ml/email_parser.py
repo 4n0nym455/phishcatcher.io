@@ -14,6 +14,7 @@ from email.message import EmailMessage
 from email.utils import parsedate_to_datetime, parseaddr
 from typing import Dict, List, Optional, Any, Tuple
 from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 import logging
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,17 @@ class EmailParser:
         return headers
     
     def _extract_body_content(self) -> Dict[str, Any]:
-        """Extract body content (both text and HTML)."""
+        """
+        Extract body content from the actual email message.
+        
+        IMPORTANT: This method ONLY extracts content from the main message body.
+        It ignores:
+        - Embedded calendar/ICS content
+        - Alternative MIME parts (multipart/related)
+        - Inline attachments
+        
+        This prevents embedded content links from polluting the link extraction.
+        """
         body = {
             'text': '',
             'html': '',
@@ -136,23 +147,39 @@ class EmailParser:
             'has_text': False
         }
         
+        content_type = self.msg.get_content_type()
+        
+        # Handle multipart messages - only extract from the main body
         if self.msg.is_multipart():
+            # For multipart, iterate through parts but ONLY take the first
+            # text/plain and text/html we encounter (these are the body)
+            # Skip any additional parts (embedded content, calendar, etc.)
             for part in self.msg.walk():
-                content_type = part.get_content_type()
-                content_disposition = part.get_content_disposition()
+                part_content_type = part.get_content_type()
+                part_disposition = part.get_content_disposition()
                 
-                # Skip attachments
-                if content_disposition == 'attachment':
+                # Skip attachments and inline content
+                if part_disposition in ('attachment', 'inline'):
                     continue
                 
-                if content_type == 'text/plain' and not body['text']:
+                # Skip calendar/ICS content
+                if part_content_type in ('text/calendar', 'text/x-vcalendar', 
+                                         'application/ics', 'text/calendar'):
+                    continue
+                
+                # Skip multipart/* types (these are containers, not content)
+                if part_content_type.startswith('multipart/'):
+                    continue
+                
+                # Extract main body content only
+                if part_content_type == 'text/plain' and not body['text']:
                     body['text'] = self._decode_payload(part)
                     body['has_text'] = True
-                elif content_type == 'text/html' and not body['html']:
+                elif part_content_type == 'text/html' and not body['html']:
                     body['html'] = self._decode_payload(part)
                     body['has_html'] = True
         else:
-            content_type = self.msg.get_content_type()
+            # Non-multipart message
             if content_type == 'text/plain':
                 body['text'] = self._decode_payload(self.msg)
                 body['has_text'] = True
@@ -169,47 +196,284 @@ class EmailParser:
         
         return body
     
+    # Non-actionable domains that should be filtered
+    NON_ACTIONABLE_DOMAINS = frozenset({
+        'fonts.googleapis.com',
+        'fonts.gstatic.com',
+    })
+    
+    # Non-actionable URL path patterns (email infrastructure/tracking links)
+    # NOTE: Password reset links are intentionally NOT filtered - they're important for security analysis
+    NON_ACTIONABLE_PATTERNS = frozenset({
+        'unsubscribe',
+        'opt-out',
+        'optout',
+        'email-preference',
+        'email_preference',
+        'manage_subscription',
+        'notification_settings',
+        'email-settings',
+        'email_settings',
+        'notification/unsubscribe',
+        'list-unsubscribe',
+        'one-click-unsubscribe',
+        '/email/',  # Email tracking/unsubscribe paths
+        '/unsubscribe',
+        '/notification/',
+    })
+    
+    # Tracking URL parameter prefixes to remove
+    TRACKING_PARAMS = frozenset({
+        'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+        'utm_id', 'utm_cid',
+        'ref', 'referer', 'referrer',
+        'affiliate', 'aff_id', 'affiliate_id',
+        'partner', 'partner_id',
+        'campaign_id', 'cid',
+        'mc_cid', 'mc_eid',
+        's_cid',
+        'oly_enc_id', 'oly_anon_id',
+        '_hsenc', '_hsmi', 'hsCtaTracking',
+        'mkt_tok',
+        'trk', 'trkInfo',
+        'vero_id',
+        'nr_email_referer',
+        'action_method',
+    })
+    
+    def _clean_url(self, url: str) -> str:
+        """
+        Remove tracking parameters from URL while keeping the original link intact.
+        
+        Removes: utm_*, ref, affiliate, tracking tokens, etc.
+        Keeps: user_id, code, token (if they appear to be authentication)
+        """
+        parsed = urlparse(url)
+        
+        # Check if this is a blocked URL pattern (unsubscribe, etc.)
+        url_lower = url.lower()
+        for pattern in self.NON_ACTIONABLE_PATTERNS:
+            if pattern.lower() in url_lower:
+                return None  # Signal to skip this URL
+        
+        # Parse query parameters
+        params = {}
+        problematic_params = set()
+        
+        if parsed.query:
+            param_pairs = parsed.query.split('&')
+            for param in param_pairs:
+                if '=' in param:
+                    key = param.split('=')[0].lower()
+                    # Remove tracking parameters
+                    if key in self.TRACKING_PARAMS:
+                        problematic_params.add(key)
+                    elif key.startswith('tk=') or key.startswith('_tk=') or key.startswith('token='):
+                        # But keep actual auth tokens for important links
+                        if any(x in url_lower for x in ['password', 'reset', 'confirm', 'verify']):
+                            params[key] = param.split('=', 1)[1] if '=' in param else ''
+                    else:
+                        params[key] = param.split('=', 1)[1] if '=' in param else ''
+        
+        # Reconstruct URL without tracking params
+        clean_query = '&'.join(f"{k}={v}" for k, v in params.items() if v or k in ['code', 'user_id', 'id'])
+        
+        if clean_query:
+            clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{clean_query}{parsed.fragment if parsed.fragment else ''}"
+        else:
+            clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}{parsed.fragment if parsed.fragment else ''}"
+        
+        return clean_url
+    
+    def _is_actionable_url(self, url: str, domain: str) -> bool:
+        """
+        Check if a URL is actionable (user-clickable for phishing analysis).
+        
+        Filters out:
+        - Unsubscribe links
+        - Email tracking pixels
+        - Preference center links
+        - Other email infrastructure URLs
+        - URLs with only tracking parameters
+        """
+        url_lower = url.lower()
+        domain_lower = domain.lower()
+        
+        # Check domain against blocked domains
+        if any(blocked in domain_lower for blocked in self.NON_ACTIONABLE_DOMAINS):
+            return False
+        
+        # Check URL path against blocked patterns
+        for pattern in self.NON_ACTIONABLE_PATTERNS:
+            if pattern.lower() in url_lower:
+                return False
+        
+        # Skip zoom.us unsubscribe/email infrastructure (but keep meeting links)
+        if 'zoom.us' in domain_lower:
+            # Filter these patterns
+            if any(p in url_lower for p in ['/email/', '/unsubscribe']):
+                return False
+            # Meeting links (with /w/, /webinar/) are primary actions - keep them
+        
+        # Skip common email marketing tracking domains
+        tracking_domains = {
+            'mailgun.org', 'sendgrid.net', 'sparkpost.com', 'mailchimp.com',
+            'amazonses.com', 'postmarkapp.com', 'mandrillapp.com',
+            'intercom-mail', 'crisp.chat',
+        }
+        if any(td in domain_lower for td in tracking_domains):
+            return False
+        
+        # Skip URLs that are ONLY tracking (no meaningful content)
+        parsed = urlparse(url)
+        if parsed.query:
+            query_lower = parsed.query.lower()
+            tracking_only = all(
+                param.split('=')[0].lower() in self.TRACKING_PARAMS 
+                for param in parsed.query.split('&') 
+                if param and '=' in param
+            )
+            if tracking_only and not any(x in url_lower for x in ['password', 'reset', 'confirm', 'verify', 'subscribe']):
+                return False
+        
+        return True
+    
     def _extract_links(self) -> List[Dict[str, Any]]:
-        """Extract all links from email body."""
+        """
+        Extract actionable links from email body only.
+        
+        IMPORTANT: Only extracts links from <a> tags in the rendered HTML.
+        Does NOT extract URLs from:
+        - Plain text content
+        - JSON-LD/microdata
+        - Meta tags
+        - HTML comments
+        - Embedded content (ICS, calendar)
+        
+        Filters out:
+        - Unsubscribe links
+        - Tracking-only URLs
+        - Email infrastructure links
+        
+        Also extracts URLs from query parameters (e.g., Gmail redirects:
+        google.com/url?q=http://actual-site.com)
+        """
         links = []
-        seen_urls = set()
+        seen_base_urls = set()  # Track base URLs to avoid duplicates
         
-        # Search in both text and HTML bodies
-        content = f"{self._body_text or ''} {self._body_html or ''}"
+        # Query parameter names that may contain the actual URL
+        URL_CONTAINING_PARAMS = {'q', 'url', 'link', 'target', 'redir', 'redirect', 'dest', 'destination', 'u', 'goto'}
         
-        # Find all URLs
-        urls = self.URL_PATTERN.findall(content)
+        def _extract_urls_from_param_value(param_value: str) -> List[str]:
+            """Extract URLs from a parameter value (could be comma-separated or encoded)."""
+            extracted = []
+            # Try to find URLs in the value
+            url_matches = self.URL_PATTERN.findall(param_value)
+            for url in url_matches:
+                if url.startswith('http://') or url.startswith('https://'):
+                    extracted.append(url)
+            return extracted
         
-        for url in urls:
-            # Clean URL
-            url = url.strip('<>"\'')
+        def _process_url(href: str, display_text: str = None) -> Optional[Dict]:
+            """Process a single URL and return link info if actionable."""
+            if not href or not (href.startswith('http://') or href.startswith('https://')):
+                return None
             
-            # Skip duplicates
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
+            clean_url = self._clean_url(href)
+            if clean_url is None:
+                return None
             
-            parsed = urlparse(url)
+            parsed = urlparse(clean_url)
             domain = parsed.netloc.lower()
             
+            # Check if this is a redirect URL (contains another URL in query params)
+            embedded_urls = []
+            if parsed.query:
+                for param in parsed.query.split('&'):
+                    if '=' in param:
+                        key, value = param.split('=', 1)
+                        key = key.lower()
+                        value = value.strip()
+                        if key in URL_CONTAINING_PARAMS and value:
+                            # Decode URL-encoded value
+                            from urllib.parse import unquote
+                            decoded = unquote(value)
+                            embedded_urls.extend(_extract_urls_from_param_value(decoded))
+            
+            # Also check for encoded URLs in fragment
+            if parsed.fragment and not parsed.query:
+                from urllib.parse import unquote
+                decoded_fragment = unquote(parsed.fragment)
+                embedded_urls.extend(_extract_urls_from_param_value(decoded_fragment))
+            
+            # Process the main URL
+            if not self._is_actionable_url(clean_url, domain):
+                return None
+            
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            if base_url in seen_base_urls:
+                return None
+            seen_base_urls.add(base_url)
+            
             link_info = {
-                'url': url,
+                'url': clean_url,
                 'domain': domain,
                 'path': parsed.path,
                 'query': parsed.query,
+                'display_text': display_text if display_text else None,
                 'is_ip_address': self._is_ip_address(domain),
                 'is_shortened': self._is_url_shortener(domain),
                 'has_suspicious_tld': self._has_suspicious_tld(domain),
-                'has_at_symbol': '@' in url,
-                'has_hex_chars': self._has_excessive_hex(url),
-                'url_length': len(url),
-                'domain_age_indicator': None  # Would need external API
+                'has_at_symbol': '@' in clean_url,
+                'has_hex_chars': self._has_excessive_hex(clean_url),
+                'url_length': len(clean_url),
+                'domain_age_indicator': None
             }
             
-            links.append(link_info)
+            return link_info
+        
+        # ==========================================
+        # Extract ONLY from <a> tags in HTML body
+        # This ensures we only get visible clickable links
+        # ==========================================
+        if self._body_html:
+            try:
+                soup = BeautifulSoup(self._body_html, 'html.parser')
+                
+                # Extract only <a> tags with href attributes
+                for a_tag in soup.find_all('a', href=True):
+                    href = a_tag['href'].strip()
+                    display_text = a_tag.get_text(strip=True)
+                    
+                    # Process the main URL
+                    link_info = _process_url(href, display_text)
+                    if link_info:
+                        links.append(link_info)
+                        
+                        # Also check if this URL contains embedded URLs (like Gmail redirects)
+                        parsed = urlparse(href)
+                        if parsed.query:
+                            for param in parsed.query.split('&'):
+                                if '=' in param:
+                                    key, value = param.split('=', 1)
+                                    key = key.lower()
+                                    value = value.strip()
+                                    if key in URL_CONTAINING_PARAMS and value:
+                                        from urllib.parse import unquote
+                                        decoded = unquote(value)
+                                        embedded_urls = _extract_urls_from_param_value(decoded)
+                                        for emb_url in embedded_urls:
+                                            emb_link = _process_url(emb_url, f"Embedded: {emb_url[:50]}...")
+                                            if emb_link and emb_link['url'] not in [l['url'] for l in links]:
+                                                links.append(emb_link)
+                        
+            except Exception as e:
+                logger.warning(f"Error parsing HTML for links: {e}")
+        
+        # NOTE: We intentionally do NOT extract from plain text
+        # Only <a> tags represent actual clickable links in the email
         
         return links
-    
     def _extract_attachments(self) -> List[Dict[str, Any]]:
         """Extract attachment information."""
         attachments = []

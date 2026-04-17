@@ -1,13 +1,13 @@
 /**
  * AdminDashboard.jsx
- * Platform overview for admins: stats, model info, quick links to admin sub-pages.
+ * Platform overview for admins: stats, quick links to admin sub-pages.
  */
 
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Users, Activity, Shield, BarChart3, RefreshCw,
-  Loader2, AlertTriangle, Database, TrendingUp, TrendingDown,
+  Users, Shield, BarChart3,
+  Loader2, AlertTriangle, RefreshCw, Activity,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -31,48 +31,48 @@ const PIE_COLORS = [COLORS.danger, COLORS.threat, COLORS.success, COLORS.brand, 
 
 export default function AdminDashboardPage() {
   const [stats,      setStats]     = useState(null);
-  const [model,      setModel]     = useState(null);
   const [analytics,  setAnalytics] = useState(null);
   const [loading,    setLoading]   = useState(true);
-  const [retraining, setRetraining]= useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [period,     setPeriod]    = useState(30);
 
+  const fetchData = async () => {
+    if (!refreshing) setLoading(true);
+    try {
+      const [s, a] = await Promise.allSettled([
+        adminApi.getStats(),
+        adminApi.getAnalytics(period)
+      ]);
+      if (s.status === 'fulfilled') setStats(s.value);
+      if (a.status === 'fulfilled') setAnalytics(a.value);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const [s, m, a] = await Promise.allSettled([
-          adminApi.getStats(),
-          adminApi.getModelInfo(),
-          adminApi.getAnalytics(period)
-        ]);
-        if (s.status === 'fulfilled') setStats(s.value);
-        if (m.status === 'fulfilled') setModel(m.value);
-        if (a.status === 'fulfilled') setAnalytics(a.value);
-      } finally {
-        setLoading(false);
-      }
-    })();
+    fetchData();
   }, [period]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        adminApi.getStats().then(setStats).catch(() => {});
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchData();
+  };
 
   const handlePeriodChange = (days) => {
     setPeriod(days);
-  };
-
-  const handleRetrain = async () => {
-    if (!window.confirm('Start model retraining? This may take several minutes.')) return;
-    setRetraining(true);
-    try {
-      await adminApi.retrainModel();
-      toast.success('Retraining started!');
-      // Refresh model info
-      const m = await adminApi.getModelInfo();
-      setModel(m);
-    } catch (err) {
-      toast.error(err.message ?? 'Failed to start retraining');
-    } finally {
-      setRetraining(false);
-    }
   };
 
   return (
@@ -85,7 +85,6 @@ export default function AdminDashboardPage() {
         <div className="flex gap-2 flex-wrap self-start sm:self-auto">
           <Link to="/admin/users"      className="btn-ghost h-9 px-3 text-sm"><Users    className="w-4 h-4" />Users</Link>
           <Link to="/admin/audit-logs" className="btn-ghost h-9 px-3 text-sm"><Activity className="w-4 h-4" />Audit logs</Link>
-          <Link to="/admin/model"      className="btn-ghost h-9 px-3 text-sm"><Database className="w-4 h-4" />AI Model</Link>
         </div>
       </div>
 
@@ -99,8 +98,8 @@ export default function AdminDashboardPage() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[
               { icon: Users,         label: 'Total users',        value: stats?.total_users       ?? '—', color: 'var(--brand)',   bg: 'var(--brand-dim)'   },
-              { icon: Activity,      label: 'Active (30d)',       value: stats?.active_users      ?? '—', color: 'var(--success)', bg: 'var(--success-dim)' },
-              { icon: Shield,        label: 'Emails analyzed',    value: stats?.total_emails      ?? '—', color: 'var(--threat)',  bg: 'var(--threat-dim)'  },
+              { icon: Activity,      label: 'Active users',      value: stats?.users?.active    ?? '—', color: 'var(--success)', bg: 'var(--success-dim)' },
+              { icon: Shield,        label: 'Emails analyzed',   value: stats?.total_emails      ?? '—', color: 'var(--threat)',  bg: 'var(--threat-dim)'  },
               { icon: AlertTriangle, label: 'Threats detected',   value: stats?.threats_detected  ?? '—', color: 'var(--danger)',  bg: 'var(--danger-dim)'  },
             ].map(s => (
               <div key={s.label} className="stat-card">
@@ -115,6 +114,18 @@ export default function AdminDashboardPage() {
           </div>
 
           {/* Additional stats row */}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-heading font-700 text-sm" style={{ color: 'var(--text-muted)' }}>OVERVIEW</h2>
+            <button
+              onClick={handleRefresh}
+              disabled={loading || refreshing}
+              className="p-1.5 rounded-lg transition-opacity hover:opacity-70 disabled:opacity-40"
+              style={{ color: 'var(--text-muted)' }}
+              title="Refresh stats"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
           {stats && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               {[
@@ -131,43 +142,11 @@ export default function AdminDashboardPage() {
             </div>
           )}
 
-          {/* Model info */}
-          {model && (
-            <div className="card p-6">
-              <div className="flex items-center justify-between mb-5">
-                <h2 className="font-heading font-700 text-base" style={{ color: 'var(--text-primary)' }}>
-                  AI Model Status
-                </h2>
-                <button onClick={handleRetrain} disabled={retraining} className="btn-ghost h-9 px-3 text-sm">
-                  {retraining
-                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Retraining…</>
-                    : <><RefreshCw className="w-3.5 h-3.5" />Retrain</>
-                  }
-                </button>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {[
-                  { label: 'Version',   value: model.version ?? '—' },
-                  { label: 'Accuracy',  value: model.accuracy ? `${(model.accuracy * 100).toFixed(1)}%` : '—' },
-                  { label: 'Status',    value: model.status ?? 'active' },
-                  { label: 'Trained',   value: model.last_trained ? new Date(model.last_trained).toLocaleDateString() : '—' },
-                ].map(s => (
-                  <div key={s.label} className="rounded-xl p-3"
-                    style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
-                    <p className="text-xs font-700 uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
-                    <p className="font-heading font-700 text-base" style={{ color: 'var(--text-primary)' }}>{s.value}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Quick access cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {[
               { to: '/admin/users',      icon: Users,     title: 'User Management', desc: 'View, edit, activate or deactivate user accounts', color: 'var(--brand)',   bg: 'var(--brand-dim)'   },
               { to: '/admin/audit-logs', icon: Activity,  title: 'Audit Logs',      desc: 'Security event history with filters and search',   color: 'var(--threat)',  bg: 'var(--threat-dim)'  },
-              { to: '/admin/model',      icon: Database,  title: 'Model Management',desc: 'AI model stats, performance metrics, and retraining', color: 'var(--success)', bg: 'var(--success-dim)' },
             ].map(item => (
               <Link key={item.to} to={item.to}
                 className="card p-5 flex gap-4 items-start group theme-transition"
@@ -311,9 +290,9 @@ export default function AdminDashboardPage() {
                       <PieChart>
                         <Pie
                           data={[
-                            { name: 'Phishing', value: analytics.daily_analyses.reduce((a, b) => a + b.phishing, 0), color: COLORS.danger },
-                            { name: 'Suspicious', value: analytics.daily_analyses.reduce((a, b) => a + b.suspicious, 0), color: COLORS.threat },
-                            { name: 'Safe', value: analytics.daily_analyses.reduce((a, b) => a + b.safe, 0), color: COLORS.success },
+                            { name: 'Phishing', value: analytics.current_threat_status?.phishing ?? analytics.daily_analyses.reduce((a, b) => a + b.phishing, 0), color: COLORS.danger },
+                            { name: 'Suspicious', value: analytics.current_threat_status?.suspicious ?? analytics.daily_analyses.reduce((a, b) => a + b.suspicious, 0), color: COLORS.threat },
+                            { name: 'Safe', value: analytics.current_threat_status?.safe ?? analytics.daily_analyses.reduce((a, b) => a + b.safe, 0), color: COLORS.success },
                           ]}
                           cx="50%"
                           cy="50%"
@@ -324,9 +303,9 @@ export default function AdminDashboardPage() {
                           nameKey="name"
                         >
                           {[
-                            { name: 'Phishing', value: analytics.daily_analyses.reduce((a, b) => a + b.phishing, 0), color: COLORS.danger },
-                            { name: 'Suspicious', value: analytics.daily_analyses.reduce((a, b) => a + b.suspicious, 0), color: COLORS.threat },
-                            { name: 'Safe', value: analytics.daily_analyses.reduce((a, b) => a + b.safe, 0), color: COLORS.success },
+                            { name: 'Phishing', value: analytics.current_threat_status?.phishing ?? analytics.daily_analyses.reduce((a, b) => a + b.phishing, 0), color: COLORS.danger },
+                            { name: 'Suspicious', value: analytics.current_threat_status?.suspicious ?? analytics.daily_analyses.reduce((a, b) => a + b.suspicious, 0), color: COLORS.threat },
+                            { name: 'Safe', value: analytics.current_threat_status?.safe ?? analytics.daily_analyses.reduce((a, b) => a + b.safe, 0), color: COLORS.success },
                           ].map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={entry.color} />
                           ))}
@@ -354,7 +333,7 @@ export default function AdminDashboardPage() {
                 {/* User Activity Chart */}
                 <div className="card p-6">
                   <h3 className="font-heading font-600 text-sm mb-4" style={{ color: 'var(--text-primary)' }}>
-                    User Activity
+                    User Activity (30d)
                   </h3>
                   <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">

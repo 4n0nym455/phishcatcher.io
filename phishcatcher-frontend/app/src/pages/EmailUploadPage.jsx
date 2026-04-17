@@ -5,7 +5,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, CheckCircle, X, Loader2, Zap, Shield, BarChart3, Info, Mail, RefreshCw, Layers, Search, ChevronDown, HelpCircle, XCircle } from 'lucide-react';
+import { Upload, CheckCircle, X, Loader2, Shield, BarChart3, Info, Mail, RefreshCw, Layers, Search, ChevronDown, HelpCircle, XCircle, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import { analysisApi, authApi } from '@/lib/api';
 
@@ -49,10 +49,17 @@ export default function EmailUploadPage() {
   const [page, setPage] = useState(1);
   const [totalResults, setTotalResults] = useState(0);
   const [emailCount, setEmailCount] = useState(0);
+  
+  /* ── Gmail Accounts ── */
+  const [gmailAccounts, setGmailAccounts] = useState([]);
+  const [selectedAccount, setSelectedAccount] = useState(null);
 
   useEffect(() => {
     authApi.gmail.getStatus()
-      .then(res => setGmailConnected(res.connected))
+      .then(res => {
+        setGmailConnected(res.connected);
+        setGmailAccounts(res.accounts || []);
+      })
       .catch(() => setGmailConnected(false));
     
     authApi.gmail.getQueryHelp()
@@ -79,6 +86,7 @@ export default function EmailUploadPage() {
       const hasStructuredFilters = filters.filterType || filters.hasAttachments !== null || 
         filters.dateFrom || filters.dateTo || filters.fromAddress || filters.subject;
       const hasSearchQuery = searchQuery.trim().length > 0;
+      const providerId = selectedAccount || undefined;
       
       let data;
       if (hasStructuredFilters) {
@@ -90,18 +98,21 @@ export default function EmailUploadPage() {
           fromAddress: filters.fromAddress || undefined,
           subject: filters.subject || undefined,
           page: pageNum,
-          maxResults: 20
+          maxResults: 20,
+          providerId
         });
       } else if (hasSearchQuery || activeFilters.length > 0) {
         const query = buildQuery();
-        data = await authApi.gmail.listEmails(pageNum, 20, query || null);
+        data = await authApi.gmail.listEmails(pageNum, 20, query || null, providerId);
       } else {
-        data = await authApi.gmail.listEmails(pageNum, 20, null);
+        data = await authApi.gmail.listEmails(pageNum, 20, null, providerId);
       }
       setGmailEmails(data.emails || []);
       setTotalResults(data.total_results || data.emails?.length || 0);
       setEmailCount(data.emails?.length || 0);
-      if (data.emails?.length === 0) {
+      if (data.error) {
+        toast.error(data.error);
+      } else if (data.emails?.length === 0) {
         toast.info('No emails match your filters');
       }
     } catch (err) { toast.error(err.message ?? 'Failed to load emails'); }
@@ -142,7 +153,7 @@ export default function EmailUploadPage() {
     setLoading(true);
     try {
       if (selectedEmails.length > 0) {
-        await authApi.gmail.queueEmails(selectedEmails);
+        await authApi.gmail.queueEmails(selectedEmails, selectedAccount);
         toast.success(`${selectedEmails.length} emails added to queue`);
       }
       if (file) {
@@ -256,6 +267,30 @@ export default function EmailUploadPage() {
             </div>
           ) : (
             <>
+              {/* Account Selector */}
+              {gmailAccounts.length > 0 && (
+                <div className="flex items-center gap-2 mb-3">
+                  <label className="text-xs shrink-0" style={{ color: 'var(--text-muted)' }}>Source:</label>
+                  <select
+                    value={selectedAccount || ''}
+                    onChange={(e) => {
+                      setSelectedAccount(e.target.value);
+                      setGmailEmails([]);
+                      setSelectedEmails([]);
+                    }}
+                    className="h-8 px-2 rounded text-xs flex-1"
+                    style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                  >
+                    {gmailAccounts.map(acc => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.email}
+                        {acc.is_default ? ' (Default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              
               {/* Search Bar */}
               <div className="flex items-center gap-2 mb-3">
                 <div className="relative flex-1">
@@ -641,7 +676,7 @@ export default function EmailUploadPage() {
             </div>
             <div>
               <p className="font-600 mb-1" style={{ color: 'var(--text-primary)' }}>Analyzing email…</p>
-              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Running AI threat detection</p>
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Running ML threat detection</p>
             </div>
             <div className="max-w-xs mx-auto">
               <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
