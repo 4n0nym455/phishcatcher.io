@@ -45,6 +45,12 @@ PhishCatcher is an advanced security solution that helps identify and protect ag
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│                   Cloudflare Tunnel (HTTPS)                     │
+│                  phishcatcher.dpdns.org                         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
 │                     Docker Infrastructure                        │
 │  ┌────────────┐ ┌────────────┐ ┌────────┐ ┌───────────────┐  │
 │  │ PostgreSQL │ │  MongoDB   │ │ Redis  │ │    MinIO     │  │
@@ -75,10 +81,12 @@ PhishCatcher is an advanced security solution that helps identify and protect ag
 2. **Setup Environment**
    ```bash
    # Copy the environment template
-   cp phishcatcher-backend/env-template phishcatcher-backend/.env
+   cp .env.example phishcatcher-backend/.env
+   cp .env.example phishcatcher-frontend/.env
    
-   # Edit .env with your configuration
+   # Edit .env files with your configuration
    nano phishcatcher-backend/.env
+   nano phishcatcher-frontend/.env
    ```
 
 3. **Start Infrastructure Services**
@@ -146,7 +154,6 @@ phishcatcher/
 │   ├── alembic/                  # Database migrations
 │   │   └── versions/              # Migration files
 │   ├── scripts/                   # Utility scripts
-│   ├── env-template              # Environment template
 │   └── requirements.txt          # Python dependencies
 │
 ├── phishcatcher-frontend/        # React frontend
@@ -291,6 +298,7 @@ Key environment variables to configure:
 
 ## 🛡️ Security Features
 
+- **OAuth Token Encryption**: Gmail OAuth tokens encrypted at rest using Fernet encryption
 - **Encryption**: All sensitive data encrypted at rest
 - **Authentication**: Multi-factor authentication support
 - **Authorization**: Role-based access control

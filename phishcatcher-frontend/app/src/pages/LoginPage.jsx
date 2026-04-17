@@ -240,7 +240,7 @@ export default function LoginPage() {
             className="w-4 h-4"
             style={{ color: 'var(--brand)' }}
           />
-          Protected by enterprise-grade phishing detection
+          Protected by Lynx Security
         </p>
       </div>
     </div>

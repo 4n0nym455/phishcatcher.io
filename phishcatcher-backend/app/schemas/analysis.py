@@ -170,6 +170,9 @@ class AnalysisResponse(BaseModel):
     # ML Analysis details
     ml_analysis: Optional[Dict[str, Any]] = None
     
+    # Threat Intelligence
+    threat_intelligence: Optional[Dict[str, Any]] = None
+    
     # Report
     report_generated: bool = False
     report_url: Optional[str] = None
@@ -247,6 +250,8 @@ class WeeklyReport(BaseModel):
     """Weekly report schema."""
     week_start: datetime
     week_end: datetime
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
     total_analyses: int
     total_emails: int
     phishing_detected: int

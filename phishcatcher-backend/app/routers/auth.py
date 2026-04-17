@@ -35,7 +35,7 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Request, status, Depends, Body, Form
 from fastapi import UploadFile, File
 from fastapi.security import OAuth2PasswordBearer
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,11 +44,12 @@ from app.database import get_db, get_redis, get_db_session
 from app.models.user import User
 from app.models.audit_log import AuditLog, AuditAction
 from app.core.session_manager import get_session_manager
-from app.services.email import (
+from app.services.email_service import (
     send_password_reset_email,
     send_password_change_notification,
+    EmailService,
+    email_service,
 )
-from app.services.email_service import EmailService
 from app.services.password_history import check_password_reuse, save_password_to_history
 from app.services.google_oauth import google_oauth_service
 from app.services.activation_service import activation_service
@@ -60,12 +61,17 @@ from app.services.security import (
     should_lock_account, should_lock_otp_account, calculate_lock_time,
     check_mfa_rate_limit, clear_mfa_rate_limit,
     create_mfa_session_token,
-    should_lock_ip_based, increment_ip_failed_attempts, is_ip_locked,
-    lock_ip_address, reset_ip_failed_attempts,
+    is_ip_locked_async as is_ip_locked,
+    should_lock_ip_based_async as should_lock_ip_based,
+    increment_ip_failed_attempts_async as increment_ip_failed_attempts,
+    lock_ip_address_async as lock_ip_address,
+    reset_ip_failed_attempts_async as reset_ip_failed_attempts,
     verify_totp_token,
     validate_password_strength,
     generate_totp_secret, generate_totp_uri, generate_qr_code,
+    verify_token_ip, get_client_ip, encrypt_data, decrypt_data,
 )
+from app.services.token_service import token_service
 from app.schemas.auth import (
     UserCreate, UserResponse, Token, TokenRefresh,
     OTPVerify, ResendOTP,
@@ -104,7 +110,9 @@ def normalize_email(email: str) -> str:
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
+    request: Request = None,
     db:    AsyncSession = Depends(get_db),
+    redis = Depends(get_redis),
 ) -> User:
     exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -114,13 +122,58 @@ async def get_current_user(
     payload = verify_token(token, token_type="access")
     if not payload:
         raise exc
+    
+    jti = payload.get("jti")
+    if jti and await token_service.is_token_revoked(jti, redis):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
     user_id = payload.get("sub")
     if not user_id:
         raise exc
+    
+    if payload.get("ip"):
+        client_ip = get_client_ip(request)
+        if not verify_token_ip(payload, client_ip):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token IP mismatch. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    
     result = await db.execute(select(User).where(User.id == user_id))
     user   = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise exc
+    
+    if request and user.signing_key_hash:
+        signature = request.headers.get("X-Signature")
+        timestamp = request.headers.get("X-Timestamp")
+        nonce = request.headers.get("X-Nonce")
+        method = request.method
+        path = request.url.path
+        
+        if signature and timestamp and nonce:
+            import time
+            try:
+                ts = int(timestamp)
+                if abs(time.time() - ts) > 300:
+                    logger.warning("Request signature timestamp too old for user %s", user_id)
+            except ValueError:
+                pass
+            
+            if await token_service.is_nonce_used(nonce, redis):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Request replay detected.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            
+            await token_service.store_nonce(nonce, redis, 300)
+    
     return user
 
 
@@ -134,6 +187,12 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    from app.utils.validators import validate_email
+    
+    is_valid, err = validate_email(user_data.email)
+    if not is_valid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
+    
     normalized = normalize_email(user_data.email)
 
     # Duplicate check via indexed normalized_email column (exclude deleted accounts)
@@ -169,22 +228,6 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
     ))
     await db.commit()
 
-    # Send activation email (async, non-blocking on failure)
-    try:
-        token = await activation_service.generate_activation_token(str(user.id))
-        code  = await activation_service.generate_activation_code(str(user.id))
-        sent  = await activation_service.send_activation_email(
-            user_email=user.email,
-            user_name=user.full_name or user.email.split("@")[0],
-            user_id=str(user.id),
-            activation_token=token,
-            activation_code=code,
-        )
-        if not sent:
-            logger.warning("Activation email failed for %s – user created but not notified", user.email)
-    except Exception as exc:
-        logger.error("Error sending activation email for %s: %s", user.email, exc)
-
     logger.info("User registered: %s", user.email)
     return user
 
@@ -206,7 +249,7 @@ async def login(
     client_ip = request.client.host if request.client else None
     
     # Check if IP is locked
-    if is_ip_locked(redis, client_ip):
+    if await is_ip_locked(redis, client_ip):
         raise HTTPException(status.HTTP_423_LOCKED,
                             f"Too many failed attempts. This IP is temporarily locked. Try again later.")
 
@@ -230,11 +273,11 @@ async def login(
 
     if not user or not verify_password(password, user.password_hash):
         # Increment IP-based failed attempts
-        ip_attempts = increment_ip_failed_attempts(redis, client_ip)
+        ip_attempts = await increment_ip_failed_attempts(redis, client_ip)
         
         # Lock IP if too many failed attempts
-        if should_lock_ip_based(redis, client_ip):
-            lock_ip_address(redis, client_ip)
+        if await should_lock_ip_based(redis, client_ip):
+            await lock_ip_address(redis, client_ip)
             _bad_creds("ip_locked")
             await db.commit()
             raise HTTPException(status.HTTP_423_LOCKED,
@@ -267,7 +310,7 @@ async def login(
     # Reset failed attempts on successful credential check
     user.failed_login_attempts = 0
     user.locked_until = None
-    reset_ip_failed_attempts(redis, client_ip)  # Reset IP attempts on success
+    await reset_ip_failed_attempts(redis, client_ip)  # Reset IP attempts on success
 
     # Generate & store OTP
     otp     = generate_otp()
@@ -368,13 +411,14 @@ async def verify_otp(
                                        user={"id": str(user.id), "email": user.email,
                                              "full_name": user.full_name, "role": user.role})
 
-    # Issue tokens
-    access_token  = create_access_token({"sub": str(user.id)})
-    refresh_token = create_refresh_token({"sub": str(user.id)})
+    # Issue tokens with IP binding
+    client_ip = get_client_ip(request)
+    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
 
     session_mgr = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
-                                     ip_address=request.client.host if request.client else None,
+                                     ip_address=client_ip,
                                      user_agent=request.headers.get("user-agent", ""))
 
     db.add(AuditLog(user_id=user.id, user_email=user.email, action=AuditAction.LOGIN,
@@ -438,7 +482,7 @@ async def resend_otp(
 # ─── Token refresh ────────────────────────────────────────────────────────────
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(body: TokenRefresh, db: AsyncSession = Depends(get_db)):
+async def refresh_token(body: TokenRefresh, request: Request, db: AsyncSession = Depends(get_db)):
     payload = verify_token(body.refresh_token, token_type="refresh")
     if not payload:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token.")
@@ -456,13 +500,24 @@ async def refresh_token(body: TokenRefresh, db: AsyncSession = Depends(get_db)):
                             f"Account locked until {user.locked_until.strftime('%H:%M:%S')} UTC.")
 
     settings = get_settings()
-    return Token(
-        access_token=create_access_token({"sub": str(user.id)}),
-        refresh_token=create_refresh_token({"sub": str(user.id)}),
-        token_type="bearer",
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=UserResponse.model_validate(user),
-    )
+    client_ip = get_client_ip(request)
+    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
+    
+    import hashlib
+    response_data = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "user": UserResponse.model_validate(user).model_dump(),
+    }
+    
+    if body.signing_key:
+        user.signing_key_hash = hashlib.sha256(body.signing_key.encode()).hexdigest()
+        await db.commit()
+    
+    return response_data
 
 
 # ─── Logout ───────────────────────────────────────────────────────────────────
@@ -470,14 +525,21 @@ async def refresh_token(body: TokenRefresh, db: AsyncSession = Depends(get_db)):
 @router.post("/logout")
 async def logout(
     request: Request,
+    token: str = Depends(oauth2_scheme),
     current_user: User = Depends(get_current_user),
     redis = Depends(get_redis),
 ):
+    payload = verify_token(token)
+    jti = payload.get("jti") if payload else None
+    
+    if jti:
+        await token_service.revoke_token(jti, redis, ttl_seconds=3600)
+    
     await redis.delete(f"session:{current_user.id}")
     async with get_db_session() as db:
         db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
                         action=AuditAction.LOGOUT,
-                        ip_address=request.client.host if request.client else None,
+                        ip_address=get_client_ip(request),
                         status="success"))
         await db.commit()
     return {"message": "Logged out successfully."}
@@ -564,7 +626,8 @@ async def reset_password(
 # ─── Profile ──────────────────────────────────────────────────────────────────
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_active_user), storage_service: StorageService = Depends(StorageService)):
+async def get_me(current_user: User = Depends(get_current_active_user), request: Request = None):
+    settings = get_settings()
     # Add avatar URL to user response if available
     user_data = {
         "id": str(current_user.id),
@@ -578,20 +641,30 @@ async def get_me(current_user: User = Depends(get_current_active_user), storage_
         "mfa_enabled": current_user.mfa_enabled,
         "last_login": current_user.last_login,
         "created_at": current_user.created_at,
-        "avatar_url": None
+        "updated_at": current_user.updated_at,
+        "avatar_url": None,
+        "avatar_updated_at": None
     }
     
-    # Add avatar URL if user has one
+    # Add avatar URL if user has one - use proxy endpoint to avoid CORS issues
     if current_user.avatar_object_name and current_user.avatar_bucket:
         try:
-            url = storage_service.get_presigned_url(
-                current_user.avatar_object_name,
-                expires=timedelta(hours=1),
-                bucket=current_user.avatar_bucket,
-            )
-            user_data["avatar_url"] = url
+            # Use configured external URL if available, otherwise try X-Forwarded-Host
+            if settings.API_EXTERNAL_URL:
+                base_url = settings.API_EXTERNAL_URL.rstrip('/')
+            else:
+                proto = request.headers.get("X-Forwarded-Proto", "http")
+                forward_host = request.headers.get("X-Forwarded-Host")
+                if forward_host:
+                    base_url = f"{proto}://{forward_host}"
+                else:
+                    # Fallback: use Host header from request (this is the server's host, not client's)
+                    host_header = request.headers.get("host", "")
+                    base_url = f"{proto}://{host_header}"
+            
+            user_data["avatar_url"] = f"{base_url}/api/v1/auth/avatars/{current_user.id}"
+            user_data["avatar_updated_at"] = current_user.updated_at.isoformat() if current_user.updated_at else None
         except Exception:
-            # If we can't get the URL, just return None
             pass
     
     return user_data
@@ -633,6 +706,11 @@ async def upload_avatar(
     if not content:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty file.")
 
+    # Avatar size limit: 10MB
+    max_avatar_size = 10 * 1024 * 1024  # 10MB in bytes
+    if len(content) > max_avatar_size:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "File too large. Maximum size is 10MB.")
+
     # Delete previous avatar if it exists
     if current_user.avatar_object_name and current_user.avatar_bucket:
         try:
@@ -645,10 +723,13 @@ async def upload_avatar(
             pass
 
     # Store under user folder; keep private and serve via presigned URL
+    # Always use PNG since cropper outputs PNG format
+    safe_filename = "avatar.png"
+    safe_content_type = "image/png"
     upload = await storage_service.upload_bytes(
         data=content,
-        filename=file.filename or f"avatar.{allowed[file.content_type]}",
-        content_type=file.content_type,
+        filename=safe_filename,
+        content_type=safe_content_type,
         folder=f"avatars/{current_user.id}",
         is_public=False,
         bucket=settings.MINIO_BUCKET_AVATARS,
@@ -657,7 +738,8 @@ async def upload_avatar(
 
     current_user.avatar_object_name = upload["object_name"]
     current_user.avatar_bucket = upload["bucket"]
-    current_user.avatar_content_type = file.content_type
+    current_user.avatar_content_type = safe_content_type
+    current_user.updated_at = datetime.utcnow()
     await db.commit()
 
     return {"message": "Avatar uploaded", "avatar_url": upload["url"]}
@@ -666,16 +748,70 @@ async def upload_avatar(
 @router.get("/me/avatar")
 async def get_avatar_url(
     current_user: User = Depends(get_current_active_user),
+    request: Request = None,
 ):
+    settings = get_settings()
     if not current_user.avatar_object_name or not current_user.avatar_bucket:
         return {"avatar_url": None}
 
-    url = storage_service.get_presigned_url(
-        current_user.avatar_object_name,
-        expires=timedelta(hours=1),
-        bucket=current_user.avatar_bucket,
-    )
+    # Use proxy endpoint to avoid CORS issues
+    if settings.API_EXTERNAL_URL:
+        base_url = settings.API_EXTERNAL_URL.rstrip('/')
+    else:
+        proto = request.headers.get("X-Forwarded-Proto", "http")
+        forward_host = request.headers.get("X-Forwarded-Host")
+        if forward_host:
+            base_url = f"{proto}://{forward_host}"
+        else:
+            host_header = request.headers.get("host", "")
+            base_url = f"{proto}://{host_header}"
+    
+    url = f"{base_url}/api/v1/auth/avatars/{current_user.id}"
     return {"avatar_url": url}
+
+
+@router.get("/avatars/{user_id}")
+async def get_avatar_proxy(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxy avatar requests to avoid CORS issues with MinIO presigned URLs."""
+    import uuid
+    settings = get_settings()
+    
+    # Validate UUID format
+    try:
+        uuid.UUID(user_id)
+    except (ValueError, AttributeError):
+        logger.warning(f"Invalid UUID format requested: {user_id}")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Avatar not found")
+    
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user or not user.avatar_object_name or not user.avatar_bucket:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Avatar not found")
+    
+    try:
+        data = await storage_service.get_file_bytes(
+            user.avatar_object_name,
+            bucket=user.avatar_bucket,
+        )
+        
+        content_type = user.avatar_content_type or "image/png"
+        
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=3600",
+                "Content-Disposition": f'inline; filename="avatar.png"',
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch avatar for user {user_id}: {e}")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to load avatar")
 
 
 @router.put("/me/password")
@@ -782,6 +918,7 @@ async def google_auth_url():
 @router.post("/google/callback")
 async def google_callback(
     body:  GoogleCallback,
+    request: Request,
     db:    AsyncSession = Depends(get_db),
     redis  = Depends(get_redis),
 ):
@@ -854,11 +991,12 @@ async def google_callback(
                          "full_name": user.full_name, "role": user.role}}
 
     # Active user without MFA → issue tokens
-    access_token  = create_access_token({"sub": str(user.id)})
-    refresh_token = create_refresh_token({"sub": str(user.id)})
+    client_ip = get_client_ip(request)
+    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
     session_mgr   = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
-                                     ip_address="oauth", user_agent="Google OAuth")
+                                     ip_address=client_ip or "oauth", user_agent=request.headers.get("user-agent", "Google OAuth"))
     return {
         "access_token":  access_token,
         "refresh_token": refresh_token,
@@ -970,11 +1108,12 @@ async def mfa_verify(
         return {"message": "MFA enabled successfully."}
 
     # --- Login flow ---
-    access_token  = create_access_token({"sub": str(user.id)})
-    refresh_token = create_refresh_token({"sub": str(user.id)})
+    client_ip = get_client_ip(request)
+    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
     session_mgr   = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
-                                     ip_address=request.client.host if request.client else None,
+                                     ip_address=client_ip,
                                      user_agent=request.headers.get("user-agent", ""))
     db.add(AuditLog(user_id=user.id, user_email=user.email,
                     action=AuditAction.MFA_SUCCESS, status="success"))
@@ -1066,11 +1205,12 @@ async def verify_backup_code(
     current_user.mfa_backup_codes_used = [*used, normalized]
     clear_mfa_rate_limit(str(current_user.id), "backup_code")
 
-    access_token  = create_access_token({"sub": str(current_user.id)})
-    refresh_token = create_refresh_token({"sub": str(current_user.id)})
+    client_ip = get_client_ip(request)
+    access_token, _ = create_access_token({"sub": str(current_user.id)}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(current_user.id)}, ip_address=client_ip)
     session_mgr   = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(current_user.id), user_email=current_user.email,
-                                     ip_address=request.client.host if request.client else None,
+                                     ip_address=client_ip,
                                      user_agent=request.headers.get("user-agent", ""))
 
     db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,

@@ -160,7 +160,7 @@ function NavBar() {
 /* ─── Data ────────────────────────────────────────────────────────────────── */
 const FEATURES = [
   {
-    icon: Shield, title: 'AI Threat Detection', color: 'var(--brand)', bg: 'var(--brand-dim)',
+    icon: Shield, title: 'ML Threat Detection', color: 'var(--brand)', bg: 'var(--brand-dim)',
     desc: 'ML model trained on millions of phishing samples. Detects spoofed domains, malicious URLs, and social engineering with 97.4% accuracy.',
   },
   {
@@ -168,8 +168,8 @@ const FEATURES = [
     desc: 'Upload any .eml file and receive a full threat report in under 3 seconds — with risk score, category, and per-indicator breakdown.',
   },
   {
-    icon: BarChart3, title: 'Weekly Reports', color: 'var(--success)', bg: 'var(--success-dim)',
-    desc: 'Automated weekly threat intelligence summaries showing attack trends, patterns, and your organisation\'s evolving risk posture.',
+    icon: BarChart3, title: 'Threat Reports', color: 'var(--success)', bg: 'var(--success-dim)',
+    desc: 'Custom date range threat intelligence reports showing attack trends, patterns, and your organisation\'s evolving risk posture.',
   },
   {
     icon: Mail, title: 'Gmail Integration', color: 'var(--brand)', bg: 'var(--brand-dim)',
@@ -193,14 +193,14 @@ const STATS = [
 ];
 
 const HOW_STEPS = [
-  { n: '01', title: 'Upload your email', desc: 'Drag and drop an .eml file, or connect Gmail for automatic continuous monitoring.' },
-  { n: '02', title: 'AI analysis',       desc: 'Headers, links, sender reputation, language patterns, and known attack signatures — all checked in parallel.' },
+  { n: '01', title: 'Upload your email', desc: 'Drag and drop an .eml file, or connect Gmail to verify if the email you received is safe.' },
+  { n: '02', title: 'ML analysis',       desc: 'Headers, links, sender reputation, language patterns, and known attack signatures — all checked in parallel.' },
   { n: '03', title: 'Get your report',   desc: 'A threat score, category, and full indicator breakdown ready in under 3 seconds.' },
 ];
 
 const SECURITY_ITEMS = [
   { icon: Lock,         title: 'End-to-end encryption',   desc: 'All data is TLS 1.3 in transit. Email body content is never permanently stored.' },
-  { icon: Shield,       title: 'Multi-factor auth',        desc: 'TOTP 2FA with backup codes, plus OTP email verification on every login attempt.' },
+  { icon: Shield,       title: 'Multi-factor auth',        desc: 'TOTP MFA with backup codes, plus OTP email verification on every login attempt.' },
   { icon: TrendingUp,   title: 'Audit logging',            desc: 'Every action timestamped with IP and user agent for compliance and forensics.' },
   { icon: CheckCircle,  title: 'Redis sessions',           desc: 'Short-lived JWTs with server-side invalidation — logout is immediate across all devices.' },
 ];

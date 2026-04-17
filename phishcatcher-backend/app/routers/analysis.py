@@ -8,11 +8,12 @@ This module handles email analysis endpoints including:
 - Report download
 """
 
+import io
 import logging
 import os
-import uuid
+from uuid import UUID
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.responses import FileResponse
@@ -34,6 +35,419 @@ from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _get_analysis_data_dict(
+    job,
+    mongo_id: str,
+    db: AsyncSession
+) -> Optional[dict]:
+    """
+    Get full analysis data as a dictionary.
+    Used by both the get_analysis endpoint and PDF download.
+    """
+    mongodb = get_mongodb_database()
+    detailed_result = None
+    
+    if mongo_id:
+        detailed_result = await mongodb.analysis_results.find_one({"_id": mongo_id})
+        if not detailed_result:
+            detailed_result = await mongodb.analysis_results.find_one({"job_id": mongo_id})
+    
+    if not detailed_result:
+        return None
+    
+    # Extract email metadata
+    email_meta_raw = detailed_result.get("email_metadata", {})
+    recipient_val = email_meta_raw.get("recipient", [])
+    if isinstance(recipient_val, str):
+        import re
+        email_match = re.search(r'<(.+?)>|^(.+?)$', recipient_val)
+        recipient_list = [email_match.group(1) or email_match.group(2) if email_match else recipient_val]
+    else:
+        recipient_list = recipient_val if isinstance(recipient_val, list) else []
+    
+    date_val = email_meta_raw.get("date")
+    date_parsed = None
+    if date_val and isinstance(date_val, str):
+        try:
+            from email.utils import parsedate_to_datetime
+            date_parsed = parsedate_to_datetime(date_val)
+        except Exception:
+            try:
+                date_parsed = datetime.strptime(date_val, '%a, %d %b %Y %H:%M:%S %z')
+            except Exception:
+                pass
+    
+    # Extract ML prediction
+    ml_prediction = detailed_result.get("ml_prediction", {})
+    ml_details = None
+    if ml_prediction:
+        ml_details = {
+            "is_phishing": ml_prediction.get("is_phishing"),
+            "phishing_probability": ml_prediction.get("phishing_probability"),
+            "safe_probability": ml_prediction.get("safe_probability"),
+            "category": ml_prediction.get("category"),
+            "confidence": ml_prediction.get("confidence"),
+            "model_version": ml_prediction.get("model_version"),
+            "features_used": ml_prediction.get("features_used")
+        }
+    
+    # Normalize threat intelligence
+    threat_intel = _normalize_threat_intelligence(detailed_result.get("threat_intelligence", {}))
+    
+    # Extract URL-specific TI scores from threat_intel indicators
+    # Also consider original_url for proper domain matching after redirects
+    url_ti_scores = {}
+    url_ti_domains = {}
+    for ind in threat_intel.get("indicators", []):
+        if ind.get("indicator_type") in ("url_reputation", "url_analysis", "phishing_check"):
+            indicator_value = ind.get("indicator_value", "")
+            original_url = ind.get("original_url", "")
+            
+            # Store the indicator data
+            ti_data = {
+                "score": ind.get("score", 0),
+                "risk_level": ind.get("risk_level", "none"),
+                "api_name": ind.get("api_name", ""),
+                "original_url": original_url
+            }
+            
+            # Store by exact value
+            if indicator_value:
+                url_ti_scores[indicator_value] = ti_data
+            
+            # Also store original URL for matching
+            if original_url:
+                url_ti_scores[original_url] = ti_data
+            
+            # Extract and store domains from both indicator_value and original_url
+            from urllib.parse import urlparse
+            for url_to_parse in [indicator_value, original_url]:
+                if not url_to_parse:
+                    continue
+                try:
+                    if not url_to_parse.startswith('http'):
+                        url_to_parse = 'https://' + url_to_parse
+                    parsed = urlparse(url_to_parse)
+                    ti_domain = parsed.netloc.lower()
+                    if ti_domain:
+                        url_ti_domains[ti_domain] = ti_data
+                except Exception:
+                    pass
+    
+    # Get URL expansions from threat_intel
+    url_expansions = threat_intel.get("url_expansions", {})
+    
+    # Normalize links with threat intelligence scores
+    links_analyzed = detailed_result.get("links_analyzed", [])
+    links_normalized = []
+    for link in links_analyzed:
+        if isinstance(link, dict):
+            url = link.get("url", "")
+            domain = link.get("domain", "")
+            
+            # Extract domain from URL if not present
+            if not domain and url:
+                try:
+                    parsed = urlparse(url)
+                    domain = parsed.netloc.lower()
+                except Exception:
+                    pass
+            
+            # Try to find a matching TI score
+            ti_score = link.get("risk_score", 0)
+            ti_risk = "none"
+            expansion = url_expansions.get(url, {})
+            
+            # Helper function to extract base domain (e.g., google.com from mail.google.com)
+            def get_base_domain(domain):
+                if not domain:
+                    return None
+                parts = domain.split('.')
+                # Common multi-part TLDs
+                multi_part_tlds = {
+                    'co.uk', 'co.jp', 'co.nz', 'co.in', 'co.za', 'co.kr',
+                    'com.au', 'com.br', 'com.mx', 'com.cn', 'com.sg',
+                    'net.au', 'org.uk', 'org.cn', 'ac.uk', 'gov.uk',
+                    'ne.jp', 'or.jp', 'ac.jp', 'ad.jp', 'gr.jp'
+                }
+                if len(parts) >= 3:
+                    tld = '.'.join(parts[-2:])
+                    if tld in multi_part_tlds:
+                        return '.'.join(parts[-3:])
+                return '.'.join(parts[-2:]) if len(parts) >= 2 else domain
+            
+            # Helper function to find best domain match (including subdomains)
+            def find_best_domain_match(link_domain, ti_domains):
+                if not link_domain:
+                    return None
+                
+                # Exact match
+                if link_domain in ti_domains:
+                    return ti_domains[link_domain]
+                
+                # Get base domains for comparison
+                link_base = get_base_domain(link_domain)
+                
+                # Check TI domains for base domain match
+                for ti_domain, ti_data in ti_domains.items():
+                    ti_base = get_base_domain(ti_domain)
+                    
+                    # Base domains match
+                    if link_base and ti_base and link_base == ti_base:
+                        return ti_data
+                    
+                    # TI domain is parent of link
+                    if link_domain.endswith('.' + ti_domain):
+                        return ti_data
+                    
+                    # Link domain is parent of TI domain
+                    if ti_domain.endswith('.' + link_domain):
+                        return ti_data
+                
+                return None
+            
+            # Check direct URL match
+            if url in url_ti_scores:
+                ti_score = int(url_ti_scores[url].get("score", 0) * 100)
+                ti_risk = url_ti_scores[url].get("risk_level", "none")
+            # Check domain match (including parent domain)
+            else:
+                match = find_best_domain_match(domain, url_ti_domains)
+                if match:
+                    ti_score = int(match.get("score", 0) * 100)
+                    ti_risk = match.get("risk_level", "none")
+                # Check expanded URL match
+                elif expansion.get("expanded"):
+                    expanded = expansion.get("expanded", "")
+                    if expanded in url_ti_scores:
+                        ti_score = int(url_ti_scores[expanded].get("score", 0) * 100)
+                        ti_risk = url_ti_scores[expanded].get("risk_level", "none")
+                    else:
+                        try:
+                            parsed_exp = urlparse(expanded)
+                            exp_domain = parsed_exp.netloc.lower()
+                            exp_match = find_best_domain_match(exp_domain, url_ti_domains)
+                            if exp_match:
+                                ti_score = int(exp_match.get("score", 0) * 100)
+                                ti_risk = exp_match.get("risk_level", "none")
+                        except Exception:
+                            pass
+            
+            # Set status based on TI results
+            link_status = link.get("status", "unknown")
+            if ti_risk in ("high", "critical"):
+                link_status = "suspicious"
+            elif ti_risk == "medium":
+                link_status = "caution"
+            elif ti_risk == "none" and link_status == "unknown":
+                link_status = "safe"
+            
+            links_normalized.append({
+                "url": url,
+                "display_text": link.get("display_text"),
+                "domain": domain,
+                "ip_address": link.get("ip_address"),
+                "status": link_status,
+                "risk_score": ti_score,
+                "reputation_score": link.get("reputation_score"),
+                "category": link.get("category"),
+                "redirects_to": expansion.get("expanded"),
+                "is_shortened": link.get("is_shortened", False),
+                "is_ip_based": link.get("is_ip_based", False),
+                "threat_intelligence": link.get("threat_intelligence", {})
+            })
+    
+    # Extract hash-specific TI scores from threat_intel indicators
+    hash_ti_scores = {}
+    for ind in threat_intel.get("indicators", []):
+        if ind.get("indicator_type") == "file_reputation":
+            indicator_value = ind.get("indicator_value", "")
+            if indicator_value:
+                hash_ti_scores[indicator_value] = {
+                    "score": ind.get("score", 0),
+                    "risk_level": ind.get("risk_level", "none"),
+                    "api_name": ind.get("api_name", ""),
+                    "details": ind.get("details", {})
+                }
+    
+    # Normalize attachments with threat intelligence scores
+    attachments_analyzed = detailed_result.get("attachments_analyzed", [])
+    attachments_normalized = []
+    for att in attachments_analyzed:
+        if isinstance(att, dict):
+            hash_sha256 = att.get("hash_sha256", "")
+            
+            # Try to find matching TI score by hash
+            att_score = att.get("risk_score", 0)
+            att_risk = "none"
+            ti_details = {}
+            if hash_sha256 in hash_ti_scores:
+                ti_data = hash_ti_scores[hash_sha256]
+                att_score = int(ti_data.get("score", 0) * 100)
+                att_risk = ti_data.get("risk_level", "none")
+                ti_details = ti_data.get("details", {})
+            
+            # Set status based on TI results
+            att_status = att.get("status", "unknown")
+            if att_risk in ("high", "critical"):
+                att_status = "suspicious"
+            elif att_risk == "medium":
+                att_status = "caution"
+            elif att_risk == "none" and att_status == "unknown":
+                att_status = "safe"
+            
+            attachments_normalized.append({
+                "filename": att.get("filename", ""),
+                "content_type": att.get("content_type", ""),
+                "size": att.get("size", 0),
+                "hash_md5": att.get("hash_md5"),
+                "hash_sha1": att.get("hash_sha1"),
+                "hash_sha256": hash_sha256,
+                "status": att_status,
+                "risk_score": att_score,
+                "threat_intelligence": att.get("threat_intelligence", {}),
+                "ti_details": ti_details,
+                "is_executable": att.get("is_executable", False),
+                "is_script": att.get("is_script", False)
+            })
+    
+    # Build the full dict
+    return {
+        "id": str(job.id),
+        "source_type": job.source_type,
+        "status": job.status,
+        "progress_percent": job.progress_percent,
+        "current_step": job.current_step,
+        "email_metadata": {
+            "subject": email_meta_raw.get("subject"),
+            "sender": email_meta_raw.get("sender"),
+            "sender_name": email_meta_raw.get("sender_name"),
+            "recipient": recipient_list,
+            "cc": email_meta_raw.get("cc", []),
+            "bcc": email_meta_raw.get("bcc", []),
+            "date": date_parsed,
+            "message_id": email_meta_raw.get("message_id"),
+            "reply_to": email_meta_raw.get("reply_to"),
+            "return_path": email_meta_raw.get("return_path"),
+        },
+        "risk_score": job.risk_score,
+        "threat_category": job.threat_category,
+        "confidence": job.confidence,
+        "findings": detailed_result.get("findings", []),
+        "findings_count": job.findings_count,
+        "critical_findings": job.critical_findings,
+        "high_findings": job.high_findings,
+        "medium_findings": job.medium_findings,
+        "low_findings": job.low_findings,
+        "links_analyzed": links_normalized,
+        "urls_analyzed": links_normalized,
+        "attachments_analyzed": attachments_normalized,
+        "risk_factors": detailed_result.get("risk_factors"),
+        "ml_analysis": ml_details,
+        "threat_intelligence": threat_intel,
+        "report_generated": job.report_generated,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+        "duration_seconds": job.duration_seconds,
+        "email_headers": detailed_result.get("email_headers", {}),
+        "recommendations": detailed_result.get("recommendations", []),
+    }
+
+
+def _normalize_threat_intelligence(ti_data: dict) -> dict:
+    """
+    Normalize threat intelligence data for frontend consumption.
+    
+    Handles both old format (indicators as strings) and new format (indicators as objects).
+    """
+    if not ti_data:
+        return {
+            'overall_risk_score': 0,
+            'risk_category': 'unknown',
+            'confidence': 0,
+            'indicators': [],
+            'warnings': []
+        }
+    
+    indicators = ti_data.get('indicators', [])
+    
+    # Check if indicators are in old format (strings) and convert to objects
+    if indicators and isinstance(indicators, list):
+        first_ind = indicators[0] if indicators else None
+        if isinstance(first_ind, str):
+            # Old format: convert strings to objects
+            normalized_indicators = []
+            for ind_str in indicators:
+                if not isinstance(ind_str, str):
+                    continue
+                
+                # Parse string format: "api_name: description"
+                parts = ind_str.split(':', 1)
+                api_name = parts[0].strip() if parts else 'unknown'
+                description = parts[1].strip() if len(parts) > 1 else ''
+                
+                # Map API names
+                display_name = api_name
+                indicator_type = 'reputation'
+                
+                if api_name == 'abuseipdb':
+                    display_name = 'abuseipdb'
+                elif api_name in ('whoisjson', 'rdap'):
+                    display_name = 'rdap'
+                    indicator_type = 'domain_age'
+                elif api_name == 'abuseipdb_domain':
+                    display_name = 'abuseipdb_domain'
+                elif api_name in ('phishtank', 'urlscan'):
+                    display_name = 'phishtank'
+                    indicator_type = 'phishing_check'
+                elif 'virustotal' in api_name:
+                    display_name = 'virustotal_url'
+                    indicator_type = 'url_reputation'
+                
+                # Determine risk level from description
+                risk_level = 'none'
+                if 'high risk' in description.lower():
+                    risk_level = 'high'
+                elif 'medium' in description.lower():
+                    risk_level = 'medium'
+                elif 'low' in description.lower():
+                    risk_level = 'low'
+                
+                normalized_indicators.append({
+                    'api_name': display_name,
+                    'indicator_type': indicator_type,
+                    'indicator_value': '',
+                    'details': {'description': description},
+                    'score': 1.0 if risk_level in ('high', 'critical') else 0.5 if risk_level == 'medium' else 0.0,
+                    'risk_level': risk_level
+                })
+            
+            indicators = normalized_indicators
+        elif isinstance(first_ind, dict):
+            # New format - ensure all required fields exist
+            normalized_indicators = []
+            for ind in indicators:
+                if isinstance(ind, dict):
+                    normalized_indicators.append({
+                        'api_name': ind.get('api_name', 'unknown'),
+                        'indicator_type': ind.get('indicator_type', 'reputation'),
+                        'indicator_value': ind.get('indicator_value', ''),
+                        'details': ind.get('details', {}),
+                        'score': ind.get('score', 0),
+                        'risk_level': ind.get('risk_level', 'none')
+                    })
+            indicators = normalized_indicators
+    
+    return {
+        'overall_risk_score': ti_data.get('overall_risk_score', 0),
+        'risk_category': ti_data.get('risk_category', ti_data.get('category', 'unknown')),
+        'confidence': ti_data.get('confidence', 0),
+        'indicators': indicators if isinstance(indicators, list) else [],
+        'warnings': ti_data.get('warnings', [])
+    }
 
 
 @router.post("/upload", response_model=AnalysisStatus, status_code=status.HTTP_202_ACCEPTED)
@@ -354,9 +768,12 @@ async def get_analysis(
         category_raw = mongo_result.get("risk_assessment", {}).get("category", "")
         valid_categories = {"phishing", "malware", "spoofing", "spam", "safe", "suspicious"}
         if category_raw.lower() not in valid_categories:
-            # Map invalid categories to valid ones
             category_map = {"caution": "suspicious", "unknown": "suspicious", "safe": "safe"}
             category_raw = category_map.get(category_raw.lower(), "suspicious")
+        
+        # Extract threat intelligence data
+        raw_ti = mongo_result.get("threat_intelligence", {})
+        threat_intelligence = _normalize_threat_intelligence(raw_ti)
         
         return AnalysisResponse(
             id=original_id,
@@ -382,7 +799,8 @@ async def get_analysis(
             findings=mongo_result.get("findings", []),
             findings_count=len(mongo_result.get("findings", [])),
             created_at=mongo_result.get("created_at"),
-            completed_at=mongo_result.get("created_at")
+            completed_at=mongo_result.get("created_at"),
+            threat_intelligence=threat_intelligence
         )
     
     # Check ownership
@@ -459,7 +877,6 @@ async def get_analysis(
             # Extract ML prediction details if available
             ml_prediction = detailed_result.get("ml_prediction", {})
             if ml_prediction:
-                # Add ML details to the response
                 ml_details = {
                     "is_phishing": ml_prediction.get("is_phishing"),
                     "phishing_probability": ml_prediction.get("phishing_probability"),
@@ -469,8 +886,10 @@ async def get_analysis(
                     "model_version": ml_prediction.get("model_version"),
                     "features_used": ml_prediction.get("features_used")
                 }
-                # Store in a custom field for frontend
                 detailed_result["ml_analysis"] = ml_details
+            
+            # Extract threat intelligence data
+            threat_intelligence = _normalize_threat_intelligence(detailed_result.get("threat_intelligence", {}))
     
     # Normalize links_analyzed to ensure required fields
     links_analyzed_normalized = []
@@ -527,6 +946,7 @@ async def get_analysis(
         attachments_analyzed=attachments_analyzed_normalized,
         risk_factors=risk_factors,
         ml_analysis=detailed_result.get("ml_analysis") if detailed_result else None,
+        threat_intelligence=threat_intelligence if detailed_result else None,
         report_generated=job.report_generated,
         created_at=job.created_at,
         started_at=job.started_at,
@@ -659,6 +1079,8 @@ async def delete_analysis(
             detail="Analysis not found"
         )
     
+    from app.database import get_mongodb_database
+    
     import re
     hex_id_pattern = re.compile(r'^[0-9a-f]{32}$', re.I)
     is_hex_32 = bool(hex_id_pattern.match(analysis_id))
@@ -689,7 +1111,6 @@ async def delete_analysis(
     
     if is_hex_32 and not is_uuid:
         # Delete from MongoDB directly
-        from app.database import get_mongodb_database
         mongodb = get_mongodb_database()
         await mongodb.analysis_results.delete_one({"_id": analysis_id})
         return None
@@ -742,18 +1163,18 @@ async def download_report(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Download analysis report."""
-    # Validate analysis_id
+    """Download analysis report as PDF."""
+    from fastapi.responses import StreamingResponse
+    from app.services.report_service import report_service
+    
     if not analysis_id or analysis_id in ('None', 'null', 'undefined', ''):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid analysis ID"
         )
     
-    # Validate UUID format
     try:
-        import uuid
-        uuid.UUID(analysis_id)
+        UUID(analysis_id)
     except (ValueError, AttributeError):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -783,10 +1204,32 @@ async def download_report(
             detail="Analysis not completed yet"
         )
     
-    # TODO: Generate report file
-    # For now, return JSON data
+    mongo_id = job.mongodb_result_id.replace("-", "") if job.mongodb_result_id else None
+    analysis_doc = await _get_analysis_data_dict(job, mongo_id, db)
     
-    # Log download
+    if not analysis_doc:
+        analysis_doc = {
+            "id": str(job.id),
+            "risk_score": job.risk_score or 0,
+            "threat_category": job.threat_category or "Unknown",
+            "confidence": job.confidence or 0.85,
+            "email_metadata": {
+                "sender": job.file_name or "Unknown",
+                "subject": job.file_name or "Email Analysis Report",
+                "date": job.created_at
+            },
+            "findings": [],
+            "threat_intelligence": {"overall_risk_score": 0, "indicators": [], "warnings": []},
+            "links_analyzed": [],
+            "urls_analyzed": [],
+            "attachments_analyzed": [],
+            "recommendations": [],
+            "risk_factors": {},
+            "created_at": job.created_at
+        }
+    
+    pdf_bytes = report_service.generate_analysis_pdf(analysis_doc, show_sensitive=False)
+    
     audit_log = AuditLog(
         user_id=current_user.id,
         user_email=current_user.email,
@@ -799,65 +1242,93 @@ async def download_report(
     db.add(audit_log)
     await db.commit()
     
-    return {"message": "Report generation not implemented yet"}
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=phishcatcher-report-{analysis_id}.pdf"}
+    )
 
 
 @router.get("/reports/weekly", response_model=WeeklyReport)
 async def get_weekly_report(
     week_start: Optional[datetime] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Get weekly analysis report."""
+    """Get analysis report for a custom date range or week."""
     from datetime import timedelta
+    from sqlalchemy import or_, and_
     
-    if not week_start:
-        today = datetime.utcnow()
-        week_start = today - timedelta(days=today.weekday())
-        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    week_end = week_start + timedelta(days=7)
+    if start_date and end_date:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59)
+    elif week_start:
+        start_dt = week_start
+        end_dt = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+    else:
+        start_dt = datetime.utcnow() - timedelta(days=7)
+        end_dt = datetime.utcnow()
     
     result = await db.execute(
-        select(AnalysisJob).where(
-            AnalysisJob.user_id == current_user.id,
-            AnalysisJob.status == "completed",
-            AnalysisJob.completed_at >= week_start,
-            AnalysisJob.completed_at < week_end
+        select(AnalysisJob)
+        .where(AnalysisJob.user_id == current_user.id)
+        .where(AnalysisJob.status == "completed")
+        .where(
+            or_(
+                and_(
+                    AnalysisJob.completed_at.isnot(None),
+                    AnalysisJob.completed_at >= start_dt,
+                    AnalysisJob.completed_at <= end_dt
+                ),
+                and_(
+                    AnalysisJob.completed_at.is_(None),
+                    AnalysisJob.created_at >= start_dt,
+                    AnalysisJob.created_at <= end_dt
+                )
+            )
         )
+        .order_by(desc(AnalysisJob.completed_at))
     )
     jobs = result.scalars().all()
     
     total_analyses = len(jobs)
-    phishing_detected = sum(1 for j in jobs if j.threat_category == "phishing")
-    malware_detected = sum(1 for j in jobs if j.threat_category == "malware")
-    suspicious_detected = sum(1 for j in jobs if j.threat_category == "suspicious")
-    safe_emails = sum(1 for j in jobs if j.threat_category == "safe")
+    # Use risk_score like frontend: >=70 = threat, >=40 and <70 = suspicious, <40 = safe
+    phishing_detected = sum(1 for j in jobs if j.threat_category in ["phishing", "malware"] and j.risk_score and j.risk_score >= 70)
+    malware_detected = sum(1 for j in jobs if j.threat_category == "malware" and j.risk_score and j.risk_score >= 70)
+    suspicious_detected = sum(1 for j in jobs if j.risk_score and j.risk_score >= 40 and j.risk_score < 70)
+    safe_emails = sum(1 for j in jobs if j.risk_score and j.risk_score < 40)
     
     risk_scores = [j.risk_score for j in jobs if j.risk_score is not None]
     average_risk_score = sum(risk_scores) / len(risk_scores) if risk_scores else 0
     
+    # Generate daily breakdown for the period
     daily_breakdown = []
-    day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-    for i, day_name in enumerate(day_names):
-        day_start = week_start + timedelta(days=i)
-        day_jobs = [j for j in jobs if j.completed_at and j.completed_at.date() == day_start.date()]
+    current_date = start_dt.date()
+    period_end_date = end_dt.date()
+    while current_date <= period_end_date:
+        day_name = current_date.strftime('%a')
+        day_jobs = [j for j in jobs if 
+            (j.completed_at and j.completed_at.date() == current_date) or
+            (not j.completed_at and j.created_at and j.created_at.date() == current_date)
+        ]
         daily_breakdown.append({
             "day": day_name,
             "analyzed": len(day_jobs),
-            "threats": sum(1 for j in day_jobs if j.threat_category in ["phishing", "malware"]),
-            "suspicious": sum(1 for j in day_jobs if j.threat_category == "suspicious")
+            "threats": sum(1 for j in day_jobs if j.risk_score and j.risk_score >= 70),
+            "suspicious": sum(1 for j in day_jobs if j.risk_score and j.risk_score >= 40 and j.risk_score < 70)
         })
+        current_date += timedelta(days=1)
     
     threats_by_category = {}
     for j in jobs:
-        if j.threat_category in ["phishing", "malware"]:
-            cat = j.threat_category
+        if j.risk_score and j.risk_score >= 70:
+            cat = j.threat_category or "threat"
             if cat not in threats_by_category:
                 threats_by_category[cat] = {"count": 0, "risk_score": 0}
             threats_by_category[cat]["count"] += 1
-            if j.risk_score:
-                threats_by_category[cat]["risk_score"] += j.risk_score
+            threats_by_category[cat]["risk_score"] += j.risk_score
     
     top_threats = []
     for cat, data in threats_by_category.items():
@@ -873,8 +1344,10 @@ async def get_weekly_report(
     top_threats = sorted(top_threats, key=lambda x: x["count"], reverse=True)[:5]
     
     return WeeklyReport(
-        week_start=week_start,
-        week_end=week_end,
+        week_start=start_dt,
+        week_end=end_dt,
+        period_start=start_dt.isoformat(),
+        period_end=end_dt.isoformat(),
         total_analyses=total_analyses,
         total_emails=total_analyses,
         phishing_detected=phishing_detected,
@@ -884,6 +1357,382 @@ async def get_weekly_report(
         average_risk_score=average_risk_score,
         top_threats=top_threats,
         daily_breakdown=daily_breakdown
+    )
+
+
+@router.get("/reports/batch")
+async def get_batch_report(
+    ids: List[str] = Query(..., description="List of analysis IDs"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get batch report for selected analyses."""
+    if not ids:
+        raise HTTPException(status_code=400, detail="No analysis IDs provided")
+    
+    if len(ids) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 analyses allowed")
+    
+    # Fetch analyses
+    result = await db.execute(
+        select(AnalysisJob).where(
+            AnalysisJob.id.in_([UUID(i) for i in ids if i]),
+            AnalysisJob.user_id == current_user.id,
+            AnalysisJob.status == "completed"
+        )
+    )
+    jobs = result.scalars().all()
+    
+    if not jobs:
+        raise HTTPException(status_code=404, detail="No analyses found")
+    
+    total_analyses = len(jobs)
+    phishing_detected = sum(1 for j in jobs if j.threat_category == "phishing")
+    malware_detected = sum(1 for j in jobs if j.threat_category == "malware")
+    suspicious_detected = sum(1 for j in jobs if j.threat_category == "suspicious")
+    safe_emails = sum(1 for j in jobs if j.threat_category == "safe")
+    
+    # Daily breakdown
+    daily_map = {}
+    for j in jobs:
+        if j.completed_at:
+            day = j.completed_at.strftime('%a')
+            if day not in daily_map:
+                daily_map[day] = {"day": day, "analyzed": 0, "threats": 0}
+            daily_map[day]["analyzed"] += 1
+            if j.threat_category in ["phishing", "malware"]:
+                daily_map[day]["threats"] += 1
+    
+    daily_breakdown = list(daily_map.values())[:7]
+    
+    return {
+        "total_analyses": total_analyses,
+        "phishing_detected": phishing_detected,
+        "malware_detected": malware_detected,
+        "suspicious_detected": suspicious_detected,
+        "safe_emails": safe_emails,
+        "daily_breakdown": daily_breakdown,
+    }
+
+
+@router.get("/reports/summary/download")
+async def download_summary_report(
+    start_date: str,
+    end_date: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Download summary report as PDF for a date range."""
+    from fastapi.responses import StreamingResponse
+    from app.services.report_service import report_service
+    from sqlalchemy import or_, and_
+    
+    if not start_date or not end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Start date and end date are required"
+        )
+    
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date format. Use ISO format (YYYY-MM-DD)"
+        )
+    
+    result = await db.execute(
+        select(AnalysisJob)
+        .where(AnalysisJob.user_id == current_user.id)
+        .where(AnalysisJob.status == "completed")
+        .where(
+            or_(
+                and_(
+                    AnalysisJob.completed_at.isnot(None),
+                    AnalysisJob.completed_at >= start_dt,
+                    AnalysisJob.completed_at <= end_dt
+                ),
+                and_(
+                    AnalysisJob.completed_at.is_(None),
+                    AnalysisJob.created_at >= start_dt,
+                    AnalysisJob.created_at <= end_dt
+                )
+            )
+        )
+        .order_by(desc(AnalysisJob.completed_at))
+    )
+    jobs = result.scalars().all()
+    
+    logger.info(f"Summary report: date range {start_date} to {end_date}, found {len(jobs)} jobs")
+    for j in jobs[:3]:
+        logger.info(f"  Job: id={j.id}, status={j.status}, completed_at={j.completed_at}, created_at={j.created_at}, threat_category={j.threat_category}")
+    
+    total_analyses = len(jobs)
+    threats = sum(1 for j in jobs if j.risk_score and j.risk_score >= 70)
+    phishing_detected = sum(1 for j in jobs if j.threat_category == "phishing" and j.risk_score and j.risk_score >= 70)
+    malware_detected = sum(1 for j in jobs if j.threat_category == "malware" and j.risk_score and j.risk_score >= 70)
+    suspicious_detected = sum(1 for j in jobs if j.risk_score and j.risk_score >= 40 and j.risk_score < 70)
+    safe_emails = sum(1 for j in jobs if not j.risk_score or j.risk_score < 40)
+    
+    daily_map = {}
+    for j in jobs:
+        date_to_use = j.completed_at or j.created_at
+        if date_to_use:
+            day = date_to_use.strftime('%Y-%m-%d')
+            if day not in daily_map:
+                daily_map[day] = {"day": day, "analyzed": 0, "threats": 0, "suspicious": 0}
+            daily_map[day]["analyzed"] += 1
+            if j.threat_category in ["phishing", "malware"]:
+                daily_map[day]["threats"] += 1
+            elif j.threat_category in ["suspicious", "caution"]:
+                daily_map[day]["suspicious"] += 1
+    
+    daily_breakdown = sorted(list(daily_map.values()), key=lambda x: x["day"])
+    
+    from app.database import get_mongodb_database
+    mongodb = get_mongodb_database()
+    
+    job_data_map = {}
+    for j in jobs:
+        job_data_map[str(j.id)] = {
+            "subject": j.file_name or "Unknown",
+            "sender": "Unknown",
+        }
+    
+    found_count = 0
+    for j in jobs:
+        jid = str(j.id)
+        mongo_id = j.mongodb_result_id
+        
+        if mongo_id:
+            doc = await mongodb.analysis_results.find_one({"_id": mongo_id})
+            if doc:
+                email_meta = doc.get('email_metadata', {})
+                sender = email_meta.get('sender', email_meta.get('from', ''))
+                subject = email_meta.get('subject', '')
+                if sender:
+                    job_data_map[jid]['sender'] = sender
+                if subject:
+                    job_data_map[jid]['subject'] = subject
+                found_count += 1
+                continue
+        
+        doc = await mongodb.analysis_results.find_one({"job_id": jid})
+        if not doc:
+            clean_id = jid.replace('-', '')
+            doc = await mongodb.analysis_results.find_one({"job_id": clean_id})
+        
+        if doc:
+            email_meta = doc.get('email_metadata', {})
+            sender = email_meta.get('sender', email_meta.get('from', ''))
+            subject = email_meta.get('subject', '')
+            if sender:
+                job_data_map[jid]['sender'] = sender
+            if subject:
+                job_data_map[jid]['subject'] = subject
+            found_count += 1
+    
+    logger.info(f"Summary report: MongoDB lookup found {found_count} matches out of {len(jobs)} jobs")
+    if found_count > 0:
+        for jid, data in list(job_data_map.items())[:3]:
+            logger.info(f"  {jid}: sender={data['sender']}")
+    
+    top_threats = []
+    threat_jobs = [j for j in jobs if j.risk_score and j.risk_score >= 70]
+    for j in threat_jobs[:10]:
+        jid = str(j.id)
+        data = job_data_map.get(jid, {"subject": j.file_name or "Unknown", "sender": "Unknown"})
+        top_threats.append({
+            "subject": data.get("subject", j.file_name or "Unknown"),
+            "sender": data.get("sender", "Unknown"),
+            "risk_score": j.risk_score or 0,
+            "category": j.threat_category or "Unknown"
+        })
+    
+    sender_map = {}
+    for j in jobs:
+        jid = str(j.id)
+        sender = job_data_map.get(jid, {}).get("sender", "Unknown")
+        if sender not in sender_map:
+            sender_map[sender] = 0
+        sender_map[sender] += 1
+    
+    top_senders = [{"sender": s, "count": c} for s, c in sorted(sender_map.items(), key=lambda x: -x[1])[:10]]
+    
+    report_data = {
+        "total_analyses": total_analyses,
+        "threats": threats,
+        "phishing_detected": phishing_detected,
+        "malware_detected": malware_detected,
+        "suspicious_detected": suspicious_detected,
+        "safe_emails": safe_emails,
+        "daily_breakdown": daily_breakdown,
+        "top_threats": top_threats,
+        "top_senders": top_senders,
+    }
+    
+    pdf_bytes = report_service.generate_summary_pdf(report_data, start_date, end_date)
+    
+    filename = f"phishcatcher-summary-{start_date}-to-{end_date}.pdf"
+    
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@router.post("/reports/combined/download")
+async def download_combined_report(
+    body: dict,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Download combined PDF report for multiple analyses."""
+    from fastapi.responses import StreamingResponse
+    from app.services.report_service import report_service
+    from app.models.analysis_job import AnalysisJob
+    
+    ids = body.get("ids", [])
+    
+    if not ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No analysis IDs provided")
+    
+    if len(ids) > 5:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Maximum 5 analyses can be combined")
+    
+    analyses = []
+    start_date = None
+    end_date = None
+    
+    for analysis_id in ids:
+        try:
+            UUID(analysis_id)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid analysis ID: {analysis_id}")
+        
+        result = await db.execute(
+            select(AnalysisJob).where(AnalysisJob.id == analysis_id)
+        )
+        job = result.scalar_one_or_none()
+        
+        if not job:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Analysis not found: {analysis_id}")
+        
+        if str(job.user_id) != str(current_user.id) and not current_user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        
+        if job.status != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Analysis not completed: {analysis_id}"
+            )
+        
+        mongodb = get_mongodb_database()
+        
+        analysis_doc = None
+        lookup_reason = "not_tried"
+        
+        # Try multiple lookup strategies
+        search_ids = [analysis_id, job.mongodb_result_id]
+        # Clean UUID (remove dashes)
+        clean_id = analysis_id.replace('-', '')
+        if clean_id != analysis_id:
+            search_ids.append(clean_id)
+        
+        for search_id in search_ids:
+            if not search_id:
+                continue
+            # Try _id
+            analysis_doc = await mongodb.analysis_results.find_one({"_id": search_id})
+            if analysis_doc:
+                lookup_reason = f"found_by_id:{search_id}"
+                break
+            # Try job_id
+            analysis_doc = await mongodb.analysis_results.find_one({"job_id": search_id})
+            if analysis_doc:
+                lookup_reason = f"found_by_job_id:{search_id}"
+                break
+        
+        # If still not found, search by job_id across all documents
+        if not analysis_doc:
+            analysis_doc = await mongodb.analysis_results.find_one({"job_id": analysis_id})
+            if analysis_doc:
+                lookup_reason = f"found_by_job_id_fallback:{analysis_id}"
+        
+        if analysis_doc:
+            logger.info(f"Combined report: MongoDB lookup for {analysis_id}: {lookup_reason}")
+        else:
+            logger.warning(f"Combined report: MongoDB NOT FOUND for {analysis_id}, mongodb_result_id={job.mongodb_result_id}")
+        
+        if analysis_doc:
+            analysis_doc = dict(analysis_doc)
+            if "_id" in analysis_doc:
+                del analysis_doc["_id"]
+            if "user_id" in analysis_doc:
+                del analysis_doc["user_id"]
+        else:
+            analysis_doc = {
+                "id": str(job.id),
+                "job_id": str(job.id),
+                "risk_score": job.risk_score or 0,
+                "risk_assessment": {
+                    "overall_score": job.risk_score or 0,
+                    "category": job.threat_category or "Unknown",
+                    "confidence": job.confidence,
+                },
+                "confidence": job.confidence,
+                "source_type": job.source_type,
+                "file_name": job.file_name,
+                "email_metadata": {
+                    "sender": job.file_name or "Unknown",
+                    "subject": job.file_name or "Email Analysis Report",
+                    "date": str(job.created_at) if job.created_at else None
+                },
+                "findings_count": job.findings_count or 0,
+                "critical_findings": job.critical_findings or 0,
+                "high_findings": job.high_findings or 0,
+                "medium_findings": job.medium_findings or 0,
+                "low_findings": job.low_findings or 0,
+                "findings": [],
+                "links_analyzed": [],
+                "attachments_analyzed": [],
+            }
+        
+        if job.created_at:
+            if not start_date or job.created_at < start_date:
+                start_date = job.created_at
+            if not end_date or job.created_at > end_date:
+                end_date = job.created_at
+        
+        analyses.append(analysis_doc)
+        
+        audit_log = AuditLog(
+            user_id=current_user.id,
+            user_email=current_user.email,
+            action=AuditAction.REPORT_DOWNLOADED,
+            resource_type="analysis",
+            resource_id=analysis_id,
+            ip_address=None,
+            status="success",
+            details={"report_type": "combined", "analysis_count": len(analyses)},
+        )
+        db.add(audit_log)
+    
+    await db.commit()
+    
+    start_str = start_date.strftime('%Y-%m-%d') if start_date else datetime.now().strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d') if end_date else datetime.now().strftime('%Y-%m-%d')
+    
+    pdf_bytes = report_service.generate_combined_pdf(analyses, start_str, end_str)
+    
+    filename = f"phishcatcher-combined-{datetime.now().strftime('%Y-%m-%d')}.pdf"
+    
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
 

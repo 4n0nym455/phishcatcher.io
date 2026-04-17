@@ -170,6 +170,16 @@ export default function RegisterPage() {
           {error && <div className="alert-error mb-5">{error}</div>}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Hidden dummy password field to satisfy browser password manager */}
+            <input
+              type="password"
+              name="hidden-password"
+              autoComplete="current-password"
+              tabIndex={-1}
+              aria-hidden="true"
+              style={{ position: 'absolute', left: '-9999px', width: '1px', height: '1px', opacity: 0 }}
+            />
+
             {/* Full name */}
             <div>
               <label className="form-label">Full name</label>
@@ -179,7 +189,7 @@ export default function RegisterPage() {
                 onChange={set('fullName')}
                 placeholder="Jane Smith"
                 required
-                autoComplete="name"
+                autoComplete="off"
                 className="input-base"
               />
             </div>
@@ -193,7 +203,8 @@ export default function RegisterPage() {
                 onChange={set('email')}
                 placeholder="you@company.com"
                 required
-                autoComplete="email"
+                autoComplete="off"
+                spellCheck="false"
                 className="input-base"
               />
             </div>
@@ -212,7 +223,7 @@ export default function RegisterPage() {
                 value={form.company}
                 onChange={set('company')}
                 placeholder="Acme Corp"
-                autoComplete="organization"
+                autoComplete="off"
                 className="input-base"
               />
             </div>

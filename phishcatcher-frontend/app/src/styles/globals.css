@@ -14,21 +14,51 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Smooth theme transition ───────────────────────────────────────────────── */
+html, body, body * {
+  transition-property: background-color, color, border-color, fill, stroke !important;
+  transition-duration: 0s !important;
+  transition-timing-function: ease !important;
+}
+
+html[data-theme-changing="true"], 
+html[data-theme-changing="true"] body, 
+html[data-theme-changing="true"] body * {
+  transition-duration: 0.8s !important;
+}
+
+/* Exclude interactive elements from long transition */
+button, a, input, select, textarea, [role="button"] {
+  transition-duration: 0.2s !important;
+}
+
+html[data-theme-changing="true"] button,
+html[data-theme-changing="true"] a,
+html[data-theme-changing="true"] input,
+html[data-theme-changing="true"] select,
+html[data-theme-changing="true"] textarea,
+html[data-theme-changing="true"] [role="button"] {
+  transition-duration: 0.2s !important;
+}
+
 /* ─── Light mode tokens ────────────────────────────────────────────────────── */
 :root {
-  /* Background layers */
-  --bg-base:        #f0f2f7;       /* page background */
-  --bg-surface:     #ffffff;       /* cards, panels */
-  --bg-elevated:    #f8fafc;       /* inputs, table rows */
+  /* Font size scaling */
+  --font-scale: 1;
+
+  /* Background layers - DIMMED */
+  --bg-base:        #e5e7eb;       /* page background */
+  --bg-surface:     #f8f9fa;       /* cards, panels */
+  --bg-elevated:    #eef0f3;       /* inputs, table rows */
   --bg-overlay:     rgba(255,255,255,0.85);
 
   /* Borders */
-  --border:         #dde3ed;
+  --border:         #d1d5db;
   --border-strong:  #c5cfe0;
 
   /* Text */
   --text-primary:   #0f1623;       /* headings */
-  --text-secondary: #3d4d6b;       /* body */
+  --text-secondary: #4b5563;       /* body */
   --text-muted:     #7c8dab;       /* captions, placeholders */
   --text-inverse:   #ffffff;
 
@@ -68,7 +98,7 @@
   --shadow-glow:0 0 24px rgba(14, 165, 199, 0.20);
 
   /* Scrollbar */
-  --scrollbar-track: #f0f2f7;
+  --scrollbar-track: #e5e7eb;
   --scrollbar-thumb: #c5cfe0;
 }
 
@@ -126,7 +156,7 @@
 
   html {
     font-family: 'DM Sans', system-ui, sans-serif;
-    font-size: 15px;
+    font-size: calc(16px * var(--font-scale));
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     scroll-behavior: smooth;
@@ -220,11 +250,34 @@
 
   /* Auth card — used on login/register/otp pages */
   .auth-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 100%;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: 20px;
     box-shadow: var(--shadow-lg);
-    padding: 2.5rem;
+    padding: 2rem;
+    box-sizing: border-box;
+  }
+  
+  .auth-card > * {
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  
+  .auth-card > .flex-1,
+  .auth-card > [style*="flex: 1"],
+  .auth-card > [class*="flex-1"] {
+    flex: 1;
+  }
+  
+  .auth-card input,
+  .auth-card select,
+  .auth-card textarea {
+    width: 100%;
+    box-sizing: border-box;
   }
 
   /* Input */

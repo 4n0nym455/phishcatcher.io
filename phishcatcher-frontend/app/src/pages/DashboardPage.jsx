@@ -7,9 +7,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Upload, Shield, AlertTriangle, CheckCircle, TrendingUp,
+  Upload, Shield, AlertTriangle, CheckCircle, TrendingUp, TrendingDown,
   FileText, ChevronRight, Mail, Clock, RefreshCw, BarChart3,
-  TrendingDown, Globe, Zap, Activity
 } from 'lucide-react';
 import { analysisApi, authApi } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
@@ -87,6 +86,7 @@ export default function DashboardPage() {
   const navigate  = useNavigate();
 
   const [analyses,    setAnalyses]    = useState([]);
+  const [totalAnalyses, setTotalAnalyses] = useState(0);
   const [gmailStatus, setGmailStatus] = useState(null);
   const [loading,     setLoading]     = useState(true);
   const [refreshing,  setRefreshing]  = useState(false);
@@ -95,12 +95,13 @@ export default function DashboardPage() {
     showRefreshSpinner ? setRefreshing(true) : setLoading(true);
     try {
       const [histRes, gmailRes] = await Promise.allSettled([
-        analysisApi.getHistory({ pageSize: 8 }),
+        analysisApi.getHistory({ pageSize: 100 }),
         authApi.gmail.getStatus(),
       ]);
       if (histRes.status === 'fulfilled') {
         const items = histRes.value.items ?? histRes.value.analyses ?? histRes.value ?? [];
         setAnalyses(Array.isArray(items) ? items : []);
+        setTotalAnalyses(histRes.value.total ?? items.length ?? 0);
       }
       if (gmailRes.status === 'fulfilled') {
         setGmailStatus(gmailRes.value);
@@ -114,7 +115,7 @@ export default function DashboardPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   // Derived stats
-  const total      = analyses.length;
+  const total      = totalAnalyses;
   const phishing   = analyses.filter(a => riskScore(a) >= 70).length;
   const suspicious = analyses.filter(a => riskScore(a) >= 40 && riskScore(a) < 70).length;
   const safe       = total - phishing - suspicious;
@@ -153,8 +154,8 @@ export default function DashboardPage() {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-heading font-bold" style={{ color: 'var(--text-primary)' }}>
-            {greeting}, {firstName} 👋
+          <h1 className="text-2xl sm:text-3xl font-heading font-800" style={{ color: 'var(--text-primary)' }}>
+            {greeting}, {firstName} <span>👋</span>
           </h1>
           <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
             Here's your email threat overview
@@ -192,7 +193,7 @@ export default function DashboardPage() {
           <div className="lg:col-span-2 card p-4 sm:p-6">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 sm:mb-6">
               <div>
-                <h3 className="text-base sm:text-lg font-heading font-semibold" style={{ color: 'var(--text-primary)' }}>Analysis Trend</h3>
+                <h3 className="text-base sm:text-lg font-heading font-600" style={{ color: 'var(--text-primary)' }}>Analysis Trend</h3>
                 <p className="text-xs sm:text-sm" style={{ color: 'var(--text-muted)' }}>Last 14 days</p>
               </div>
               <div className="flex items-center gap-3 sm:gap-4 text-xs sm:text-sm">
@@ -249,7 +250,7 @@ export default function DashboardPage() {
 
           {/* Threat Distribution Pie Chart */}
           <div className="card p-4 sm:p-6">
-            <h3 className="text-base sm:text-lg font-heading font-semibold mb-1 sm:mb-2" style={{ color: 'var(--text-primary)' }}>Threat Types</h3>
+            <h3 className="text-base sm:text-lg font-heading font-600 mb-1 sm:mb-2" style={{ color: 'var(--text-primary)' }}>Threat Types</h3>
             <p className="text-xs sm:text-sm mb-4 sm:mb-6" style={{ color: 'var(--text-muted)' }}>Distribution by category</p>
             <div className="h-40 sm:h-48">
               <ResponsiveContainer width="100%" height="100%">
@@ -295,7 +296,7 @@ export default function DashboardPage() {
         {[
           { to: '/upload',         icon: Upload,    title: 'Analyze Email',  desc: 'Upload an .eml file for instant threat detection', color: 'var(--brand)',   bg: 'var(--brand-dim)'   },
           { to: '/analysis',       icon: FileText,  title: 'View History',   desc: 'Browse all your previous analysis reports',       color: 'var(--threat)',  bg: 'var(--threat-dim)'  },
-          { to: '/weekly-reports', icon: BarChart3, title: 'Weekly Reports', desc: 'Threat intelligence summaries and trend data',     color: 'var(--success)', bg: 'var(--success-dim)' },
+          { to: '/reports', icon: BarChart3, title: 'Reports', desc: 'Threat intelligence summaries and trend data',     color: 'var(--success)', bg: 'var(--success-dim)' },
         ].map(item => (
           <Link
             key={item.to}
@@ -309,7 +310,7 @@ export default function DashboardPage() {
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1">
-                <p className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{item.title}</p>
+                <p className="font-600 text-sm" style={{ color: 'var(--text-primary)' }}>{item.title}</p>
                 <ChevronRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5"
                   style={{ color: 'var(--text-muted)' }} />
               </div>
@@ -418,9 +419,8 @@ export default function DashboardPage() {
             </p>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
               {gmailConnected
-                ? 'PhishCatcher is monitoring your inbox automatically'
-                : 'Let PhishCatcher continuously monitor your inbox for threats'
-              }
+                ? 'Connect your Gmail, no more second guessing — the email you received is safe'
+                : 'Connect your Gmail, no more second guessing — the email you received is safe'}
             </p>
           </div>
         </div>

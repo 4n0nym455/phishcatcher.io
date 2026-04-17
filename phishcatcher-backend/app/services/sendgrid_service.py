@@ -1,191 +1,268 @@
 """
-SendGrid Email Service for Security Verification
+SendGrid Email Service for PhishCatcher
 
-This service handles sending emails through SendGrid API for:
-- Email verification codes
-- Security notifications
-- Password change notifications
-- Account deletion confirmations
+Consolidated email service with consistent dark theme styling.
 """
 
-import os
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-import secrets
-import httpx
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
-from jinja2 import Template
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+
 class SendGridService:
-    """Enterprise-grade email service using SendGrid."""
-    
+    """Enterprise-grade email service using SendGrid with consistent dark theme."""
+
     def __init__(self):
         self.settings = get_settings()
-        
-        # Use SendGrid API key if available, otherwise fall back to SMTP
+
         api_key = getattr(self.settings, 'SENDGRID_API_KEY', None) or getattr(self.settings, 'SMTP_PASSWORD', None)
         if api_key and api_key.startswith('SG.'):
             self.client = SendGridAPIClient(api_key=api_key)
         else:
             self.client = None
             logger.warning("SendGrid API key not configured or invalid format")
-        
-        # Use SendGrid from email if available, otherwise fall back to FROM_EMAIL
+
         self.from_email = getattr(self.settings, 'SENDGRID_FROM_EMAIL', None) or getattr(self.settings, 'FROM_EMAIL', 'noreply@phishcatcher.io')
         self.from_name = getattr(self.settings, 'SENDGRID_FROM_NAME', 'PhishCatcher')
-        
-        # Email templates
-        self.templates = {
-            'email_verification': {
-                'subject': 'PhishCatcher - Verification Code',
-                'template': '''
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PhishCatcher - Email Verification</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8f9fa; margin: 0; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .header { background: linear-gradient(135deg, #7c3aed 0%, #6a11cb 100%); color: white; padding: 30px; border-radius: 8px 8px 0 0; text-align: center; }
-        .logo { font-size: 24px; font-weight: bold; margin-bottom: 10px; }
-        .content { padding: 30px; }
-        .code-box { background-color: #f3f4f6; border: 2px dashed #d1d5db; border-radius: 8px; padding: 20px; text-align: center; margin: 20px 0; }
-        .code { font-size: 32px; font-weight: bold; color: #1a73e8; letter-spacing: 4px; font-family: 'Courier New', monospace; }
-        .footer { background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; color: #6b7280; font-size: 14px; }
-        .security-info { background-color: #e3f2fd; border-left: 4px solid #3b82f6; padding: 15px; margin: 20px 0; border-radius: 4px; }
-        .button { display: inline-block; background-color: #7c3aed; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 500; }
-        .button:hover { background-color: #6a11cb; }
-        .expiry { color: #dc3545; font-size: 14px; margin-top: 10px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">🔒 PhishCatcher</div>
-            <h1>Email Verification</h1>
-        </div>
-        
-        <div class="content">
-            <p>Hello,</p>
-            
-            <p>You requested to perform a sensitive action on your PhishCatcher account. To proceed, please use the verification code below:</p>
-            
-            <div class="security-info">
-                <strong>🔐 Security Information:</strong>
-                <ul>
-                    <li>This code expires in <strong>10 minutes</strong></li>
-                    <li>Never share this code with anyone</li>
-                    <li>PhishCatcher will never ask for your password via email</li>
-                </ul>
-            </div>
-            
-            <div class="code-box">
-                <div class="code">{{ code }}</div>
-                <div class="expiry">⏰ Expires: {{ expiry_time }}</div>
-            </div>
-            
-            <p>If you didn't request this verification, please secure your account immediately and contact support.</p>
-        </div>
-        
-        <div class="footer">
-            <p>This is an automated message from PhishCatcher Security Team.</p>
-            <p>© 2024 PhishCatcher. All rights reserved.</p>
-        </div>
-    </div>
-</body>
-</html>
-                '''
-            },
-            'security_alert': {
-                'subject': 'PhishCatcher - Security Alert',
-                'template': '''
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PhishCatcher - Security Alert</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8f9fa; margin: 0; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .header { background: linear-gradient(135deg, #dc3545 0%, #c82333 100%); color: white; padding: 30px; border-radius: 8px 8px 0 0; text-align: center; }
-        .alert { font-size: 48px; margin-bottom: 10px; }
-        .content { padding: 30px; }
-        .details { background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; padding: 20px; margin: 20px 0; }
-        .footer { background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; color: #6b7280; font-size: 14px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="alert">🚨</div>
-            <h1>Security Alert</h1>
-        </div>
-        
-        <div class="content">
-            <p>A sensitive action was performed on your PhishCatcher account:</p>
-            
-            <div class="details">
-                <h3>📋 Action Details:</h3>
-                <ul>
-                    <li><strong>Action:</strong> {{ action }}</li>
-                    <li><strong>Time:</strong> {{ timestamp }}</li>
-                    <li><strong>IP Address:</strong> {{ ip_address }}</li>
-                    <li><strong>Device:</strong> {{ user_agent }}</li>
-                </ul>
-            </div>
-            
-            <p><strong>If this was you:</strong></p>
-            <ul>
-                <li>No action is needed - your account is secure</li>
-                <li>Review your account settings if concerned</li>
-                <li>Contact support immediately if you suspect unauthorized access</li>
-            </ul>
-            
-            <p><strong>If this was NOT you:</strong></p>
-            <ul>
-                <li>Change your password immediately</li>
-                <li>Enable two-factor authentication</li>
-                <li>Review your account activity</li>
-                <li>Contact support at support@phishcatcher.com</li>
-            </ul>
-        </div>
-        
-        <div class="footer">
-            <p>This is an automated security message from PhishCatcher Security Team.</p>
-            <p>© 2024 PhishCatcher. All rights reserved.</p>
-        </div>
-    </div>
-</body>
-</html>
-                '''
-            }
+
+    def _build_email(self, subject: str, title: str, message: str,
+                     action_url: Optional[str] = None, action_text: Optional[str] = None,
+                     security_info: Optional[str] = None, status: str = "default") -> str:
+        """Build email HTML with consistent dark theme."""
+        status_colors = {
+            'default': ('rgba(139, 92, 246, 0.2)', 'rgba(139, 92, 246, 0.2)'),
+            'success': ('rgba(34, 197, 94, 0.2)', 'rgba(34, 197, 94, 0.3)'),
+            'warning': ('rgba(245, 158, 11, 0.2)', 'rgba(245, 158, 11, 0.3)'),
+            'error': ('rgba(239, 68, 68, 0.2)', 'rgba(239, 68, 68, 0.3)'),
         }
-    
-    def _render_template(self, template_name: str, context: Dict[str, Any]) -> str:
-        """Render email template with context."""
-        template_data = self.templates.get(template_name, {})
-        template_str = template_data.get('template', '')
-        
-        # Simple string replacement for now to avoid Jinja2 complexity
-        for key, value in context.items():
-            template_str = template_str.replace(f'{{ {key} }}', str(value))
-        
-        return template_str
-    
+        border_color, shadow_color = status_colors.get(status, status_colors['default'])
+
+        return f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhishCatcher - {subject}</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: #e2e8f0;
+            line-height: 1.6;
+            padding: 20px;
+        }}
+        .email-container {{
+            max-width: 600px;
+            margin: 0 auto;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid {border_color};
+            border-radius: 16px;
+            overflow: hidden;
+        }}
+        .header {{
+            padding: 40px 40px 20px 40px;
+            text-align: center;
+            border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+        }}
+        .logo {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }}
+        .logo-icon {{
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            background: rgba(139, 92, 246, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }}
+        .logo-text {{
+            font-size: 24px;
+            font-weight: 700;
+            color: #ffffff;
+        }}
+        .content {{
+            padding: 30px 40px;
+        }}
+        .title {{
+            font-size: 24px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 16px;
+            text-align: center;
+        }}
+        .message {{
+            color: #cbd5e1;
+            margin-bottom: 24px;
+            line-height: 1.7;
+        }}
+        .code-box {{
+            background: rgba(139, 92, 246, 0.1);
+            border: 2px dashed rgba(139, 92, 246, 0.3);
+            border-radius: 12px;
+            padding: 24px;
+            text-align: center;
+            margin: 24px 0;
+        }}
+        .code {{
+            font-size: 36px;
+            font-weight: 700;
+            color: #a78bfa;
+            letter-spacing: 6px;
+            font-family: 'Courier New', monospace;
+        }}
+        .expiry {{
+            color: #94a3b8;
+            font-size: 14px;
+            margin-top: 12px;
+        }}
+        .button-container {{
+            text-align: center;
+            margin: 30px 0;
+        }}
+        .action-button {{
+            display: inline-block;
+            padding: 14px 28px;
+            background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 16px;
+            box-shadow: 0 4px 14px {shadow_color};
+        }}
+        .security-info {{
+            background: rgba(139, 92, 246, 0.1);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+            margin: 24px 0;
+        }}
+        .security-title {{
+            font-weight: 600;
+            color: #a78bfa;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .security-text {{
+            color: #cbd5e1;
+            font-size: 14px;
+        }}
+        .details-box {{
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+            margin: 24px 0;
+        }}
+        .details-title {{
+            font-weight: 600;
+            color: #fca5a5;
+            margin-bottom: 12px;
+        }}
+        .details-list {{
+            list-style: none;
+            color: #cbd5e1;
+        }}
+        .details-list li {{
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(239, 68, 68, 0.1);
+        }}
+        .details-list li:last-child {{
+            border-bottom: none;
+        }}
+        .footer {{
+            padding: 20px 40px 40px 40px;
+            text-align: center;
+            border-top: 1px solid rgba(139, 92, 246, 0.1);
+            background: rgba(15, 23, 42, 0.5);
+        }}
+        .footer-text {{
+            color: #94a3b8;
+            font-size: 12px;
+        }}
+        .footer-link {{
+            color: #a78bfa;
+            text-decoration: none;
+        }}
+        @media (max-width: 600px) {{
+            .header, .content, .footer {{
+                padding: 30px 25px;
+            }}
+            .title {{
+                font-size: 20px;
+            }}
+            .code {{
+                font-size: 28px;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <div class="logo">
+                <div class="logo-icon">🛡️</div>
+                <span class="logo-text">PhishCatcher</span>
+            </div>
+        </div>
+
+        <div class="content">
+            <h1 class="title">{title}</h1>
+
+            <div class="message">
+                {message}
+            </div>
+''' + (f'''
+            <div class="code-box">
+                <div class="code">{action_text}</div>
+            </div>
+''' if action_text and not action_url else '') + f'''
+''' + (f'''
+            <div class="button-container">
+                <a href="{action_url}" class="action-button">{action_text or 'Click Here'}</a>
+            </div>
+''' if action_url else '') + f'''
+''' + (f'''
+            <div class="security-info">
+                <div class="security-title">🔒 Security Information</div>
+                <div class="security-text">{security_info}</div>
+            </div>
+''' if security_info else '') + '''
+        </div>
+
+        <div class="footer">
+            <div class="footer-text">
+                This email was sent by PhishCatcher. If you didn't request this, please
+                contact support.
+                <br><br>
+                © 2026 PhishCatcher. All rights reserved.
+            </div>
+        </div>
+    </div>
+</body>
+</html>'''
+
     def send_email(self, to_email: str, subject: str, html_content: str) -> bool:
         """Send email using SendGrid."""
         if not self.client:
             logger.error("SendGrid client not initialized")
             return False
-            
+
         try:
             message = Mail(
                 from_email=self.from_email,
@@ -193,82 +270,107 @@ class SendGridService:
                 subject=subject,
                 html_content=html_content
             )
-            
+
             response = self.client.send(message)
-            
+
             if response.status_code == 202:
                 logger.info(f"Email sent successfully to {to_email}")
                 return True
             else:
                 logger.error(f"Failed to send email to {to_email}: {response.status_code} {response.body}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"Error sending email to {to_email}: {e}")
             return False
-    
+
     def send_verification_code(self, to_email: str, code: str, action: str = "security_action") -> bool:
         """Send email verification code."""
-        expiry_time = (datetime.utcnow() + timedelta(minutes=10)).strftime('%I:%M %p, %B %Y')
-        
-        context = {
-            'code': code,
-            'expiry_time': expiry_time,
-            'action': action.replace('_', ' ').title()
-        }
-        
-        html_content = self._render_template('email_verification', context)
-        subject = f"PhishCatcher - Verification Code for {action.replace('_', ' ').title()}"
-        
-        return self.send_email(to_email, subject, html_content)
-    
+        expiry_time = (datetime.utcnow() + timedelta(minutes=10)).strftime('%I:%M %p UTC')
+
+        html = self._build_email(
+            subject=f"PhishCatcher - Verification Code",
+            title="Verify Your Email",
+            message=f"You requested to perform <strong>{action.replace('_', ' ').title()}</strong> on your PhishCatcher account. Use the code below to verify:",
+            action_text=code,
+            security_info=f"🔐 This code expires in <strong>10 minutes</strong> ({expiry_time})<br>Never share this code with anyone. PhishCatcher will never ask for your password via email.",
+            status="default"
+        )
+
+        return self.send_email(to_email, f"PhishCatcher - Verification Code for {action.replace('_', ' ').title()}", html)
+
+    def send_password_reset(self, to_email: str, reset_url: str) -> bool:
+        """Send password reset email."""
+        html = self._build_email(
+            subject="PhishCatcher - Password Reset Request",
+            title="Reset Your Password",
+            message="You requested a password reset for your PhishCatcher account. Click the button below to set a new password:",
+            action_url=reset_url,
+            action_text="Reset Password",
+            security_info="This link will expire in <strong>1 hour</strong> for security reasons. If you didn't request this reset, please ignore this email.",
+            status="warning"
+        )
+
+        return self.send_email(to_email, "PhishCatcher - Password Reset Request", html)
+
+    def send_password_changed(self, to_email: str) -> bool:
+        """Send password changed notification."""
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+
+        html = self._build_email(
+            subject="PhishCatcher - Password Changed",
+            title="Password Successfully Changed",
+            message="Your PhishCatcher account password has been changed successfully.",
+            security_info=f"Changed at: <strong>{timestamp}</strong><br>If you didn't change your password, please contact support immediately.",
+            status="success"
+        )
+
+        return self.send_email(to_email, "PhishCatcher - Password Changed", html)
+
     def send_security_alert(self, to_email: str, action: str, ip_address: str = None, user_agent: str = None) -> bool:
         """Send security alert email."""
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        
-        context = {
-            'action': action.replace('_', ' ').title(),
-            'timestamp': timestamp,
-            'ip_address': ip_address or 'Unknown',
-            'user_agent': user_agent or 'Unknown'
-        }
-        
-        html_content = self._render_template('security_alert', context)
-        subject = f"PhishCatcher - Security Alert: {action.replace('_', ' ').title()}"
-        
-        return self.send_email(to_email, subject, html_content)
-    
-    def send_password_change_notification(self, to_email: str) -> bool:
-        """Send password change notification."""
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        
-        context = {
-            'action': 'Password Changed',
-            'timestamp': timestamp,
-            'ip_address': 'Current Session',
-            'user_agent': 'Web Application'
-        }
-        
-        html_content = self._render_template('security_alert', context)
-        subject = "PhishCatcher - Password Changed"
-        
-        return self.send_email(to_email, subject, html_content)
-    
-    def send_account_deletion_notification(self, to_email: str) -> bool:
-        """Send account deletion notification."""
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        
-        context = {
-            'action': 'Account Deleted',
-            'timestamp': timestamp,
-            'ip_address': 'Final Action',
-            'user_agent': 'Web Application'
-        }
-        
-        html_content = self._render_template('security_alert', context)
-        subject = "PhishCatcher - Account Deletion Confirmation"
-        
-        return self.send_email(to_email, subject, html_content)
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
 
-# Global instance
+        html = self._build_email(
+            subject=f"PhishCatcher - Security Alert",
+            title="⚠️ Security Alert",
+            message=f"A sensitive action was performed on your PhishCatcher account.",
+            security_info=f'''<strong>Action:</strong> {action.replace('_', ' ').title()}<br>
+<strong>Time:</strong> {timestamp}<br>
+<strong>IP Address:</strong> {ip_address or 'Unknown'}<br>
+<strong>Device:</strong> {user_agent or 'Unknown'}''',
+            status="error"
+        )
+
+        return self.send_email(to_email, f"PhishCatcher - Security Alert: {action.replace('_', ' ').title()}", html)
+
+    def send_account_deletion(self, to_email: str) -> bool:
+        """Send account deletion notification."""
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+
+        html = self._build_email(
+            subject="PhishCatcher - Account Deleted",
+            title="Account Deleted",
+            message="Your PhishCatcher account has been permanently deleted.",
+            security_info=f"Deleted at: <strong>{timestamp}</strong><br>All your data has been removed from our systems.",
+            status="error"
+        )
+
+        return self.send_email(to_email, "PhishCatcher - Account Deleted", html)
+
+    def send_welcome(self, to_email: str, login_url: str) -> bool:
+        """Send welcome email."""
+        html = self._build_email(
+            subject="Welcome to PhishCatcher",
+            title="🎉 Welcome to PhishCatcher",
+            message="Your account has been created successfully. Start analyzing emails for phishing threats today!",
+            action_url=login_url,
+            action_text="Go to Dashboard",
+            security_info="Your account is secured with multi-factor authentication support.",
+            status="success"
+        )
+
+        return self.send_email(to_email, "Welcome to PhishCatcher", html)
+
+
 sendgrid_service = SendGridService()

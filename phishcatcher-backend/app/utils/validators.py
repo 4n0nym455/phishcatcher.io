@@ -26,7 +26,7 @@ def validate_email(email: str) -> Tuple[bool, Optional[str]]:
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     
     if not re.match(pattern, email):
-        return False, "Invalid email format"
+        return False, "Invalid email. Check your email format and try again"
     
     if len(email) > 255:
         return False, "Email too long (max 255 characters)"

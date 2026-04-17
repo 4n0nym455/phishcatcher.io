@@ -67,6 +67,9 @@ class User(Base):
     mfa_backup_codes = Column(Text, nullable=True)  # Encrypted JSON string of backup codes
     mfa_backup_codes_used = Column(ARRAY(String(8)), nullable=True)  # Track used backup codes (plaintext for easy lookup)
     
+    # Request signing key for HMAC-SHA256
+    signing_key_hash = Column(String(64), nullable=True)  # SHA256 hash of client's signing key
+    
     # Gmail integration
     gmail_credentials = Column(Text, nullable=True)  # Encrypted Gmail OAuth credentials
     gmail_email = Column(String(255), nullable=True)  # Connected Gmail email

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Shield, Smartphone, Key, AlertCircle, CheckCircle, X, Copy } from 'lucide-react';
+import { Shield, Smartphone, Key, AlertCircle, CheckCircle, X, Copy, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -263,8 +263,9 @@ export default function MFASettings({ embedded = false }) {
                     </div>
                   ))}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  ⚠️ Save these backup codes in a secure location. Each code can only be used once to recover your account if you lose access to your authenticator app.
+                <p className="text-xs text-muted-foreground flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400" />
+                  Save these backup codes in a secure location. Each code can only be used once to recover your account if you lose access to your authenticator app.
                 </p>
               </div>
               
@@ -384,7 +385,7 @@ export default function MFASettings({ embedded = false }) {
   return (
     <div className="max-w-2xl mx-auto p-6">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">Multi-Factor Authentication</h1>
+        <h1 className="text-3xl font-700 text-white mb-2">Multi-Factor Authentication</h1>
         <p className="text-gray-400">
           Add an extra layer of security to your account by requiring a verification code in addition to your password.
         </p>
@@ -508,9 +509,10 @@ export default function MFASettings({ embedded = false }) {
                   </div>
                 ))}
               </div>
-              <p className="text-xs text-muted-foreground">
-                ⚠️ Save these backup codes in a secure location. Each code can only be used once to recover your account if you lose access to your authenticator app.
-              </p>
+<p className="text-xs text-muted-foreground flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400" />
+                  Save these backup codes in a secure location. Each code can only be used once to recover your account if you lose access to your authenticator app.
+                </p>
             </div>
             
             {/* Verification Code */}

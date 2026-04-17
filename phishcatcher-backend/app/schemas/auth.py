@@ -13,14 +13,14 @@ import re
 
 class UserBase(BaseModel):
     """Base user schema."""
-    email: EmailStr
+    email: str = Field(..., min_length=5, max_length=254)
     full_name: Optional[str] = None
     company: Optional[str] = None
 
 
 class UserCreate(UserBase):
     """User registration schema."""
-    password: str = Field(..., min_length=12, max_length=128)
+    password: str = Field(..., min_length=8, max_length=128)
     confirm_password: str
     accept_terms_and_privacy: bool = Field(..., description="Must accept Terms & Conditions and Privacy Policy")
     
@@ -68,7 +68,9 @@ class UserResponse(UserBase):
     mfa_enabled: bool
     last_login: Optional[datetime] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
     avatar_url: Optional[str] = None
+    avatar_updated_at: Optional[datetime] = None
     
     @field_validator('id', mode='before')
     @classmethod
@@ -102,6 +104,7 @@ class Token(BaseModel):
 class TokenRefresh(BaseModel):
     """Token refresh request schema."""
     refresh_token: str
+    signing_key: Optional[str] = None  # Optional HMAC signing key from client
 
 
 class OTPVerify(BaseModel):

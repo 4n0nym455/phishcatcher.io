@@ -32,7 +32,14 @@ export function ThemeProvider({ children }) {
   }, [theme]);
 
   const toggle = useCallback(() => {
-    setThemeState(t => (t === 'dark' ? 'light' : 'dark'));
+    const root = document.documentElement;
+    root.setAttribute('data-theme-changing', 'true');
+    requestAnimationFrame(() => {
+      setThemeState(t => (t === 'dark' ? 'light' : 'dark'));
+      setTimeout(() => {
+        root.removeAttribute('data-theme-changing');
+      }, 800);
+    });
   }, []);
 
   const setTheme = useCallback((value) => {

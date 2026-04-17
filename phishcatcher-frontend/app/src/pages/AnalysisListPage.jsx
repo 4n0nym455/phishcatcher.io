@@ -2,6 +2,7 @@
  * AnalysisListPage.jsx
  * Searchable, filterable table of all email analyses with delete and load-more.
  * Also handles queued analyses from Gmail integration.
+ * Supports searching by analysis ID and batch report generation.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -10,72 +11,10 @@ import {
   Search, Upload, FileText, Clock, RefreshCw, Loader2,
   X, AlertTriangle, CheckCircle, Shield, Play, Layers,
   CheckSquare, Square, Settings, FileJson, File, FileCode, Zap, Trash2,
-  ChevronDown,
+  ChevronDown, FileBarChart,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { analysisApi, authApi } from '@/lib/api';
-
-/* ─── Analysis Format Dialog ─────────────────────────────────────────────── */
-function FormatDialog({ open, onClose, onSubmit, selectedCount }) {
-  const [format, setFormat] = useState('detailed');
-  const [analyzing, setAnalyzing] = useState(false);
-
-  const formats = [
-    { value: 'detailed', label: 'Detailed', icon: FileCode, desc: 'Full analysis with all checks' },
-    { value: 'quick', label: 'Quick Scan', icon: Zap, desc: 'Fast analysis, basic checks' },
-    { value: 'deep', label: 'Deep Analysis', icon: Shield, desc: 'Comprehensive analysis' },
-  ];
-
-  const handleSubmit = async () => {
-    setAnalyzing(true);
-    try {
-      await onSubmit(format);
-      onClose();
-    } catch (err) { toast.error(err.message ?? 'Analysis failed'); }
-    finally { setAnalyzing(false); }
-  };
-
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-md mx-4 shadow-2xl">
-        <h3 className="text-lg font-600 mb-1" style={{ color: 'var(--text-primary)' }}>Analysis Options</h3>
-        <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
-          {selectedCount} item{selectedCount > 1 ? 's' : ''} selected
-        </p>
-
-        <div className="space-y-2 mb-6">
-          {formats.map(f => (
-            <button
-              key={f.value}
-              onClick={() => setFormat(f.value)}
-              className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all ${
-                format === f.value ? 'border-brand bg-brand/10' : 'border-transparent'
-              }`}
-              style={{ background: format === f.value ? 'var(--brand-dim)' : 'var(--bg-surface)' }}
-            >
-              {format === f.value ? <CheckSquare className="w-5 h-5" style={{ color: 'var(--brand)' }} /> : <Square className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />}
-              <div className="text-left">
-                <p className="text-sm font-500" style={{ color: 'var(--text-primary)' }}>{f.label}</p>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{f.desc}</p>
-              </div>
-            </button>
-          ))}
-        </div>
-
-        <div className="flex gap-3">
-          <button onClick={onClose} className="btn-ghost flex-1">Cancel</button>
-          <button onClick={handleSubmit} disabled={analyzing} className="btn-primary flex-1">
-            {analyzing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Play className="w-4 h-4 mr-2" />}
-            Analyze
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
 function score(a)     { return a.threat_score ?? a.risk_score ?? 0; }
@@ -108,16 +47,22 @@ export default function AnalysisListPage() {
   const [items,    setItems]    = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [search,   setSearch]   = useState('');
+  const [idSearch, setIdSearch] = useState('');
   const [filter,   setFilter]   = useState('all');
   const [page,     setPage]     = useState(1);
   const [hasMore,  setHasMore]  = useState(false);
   const [deleting, setDeleting] = useState(null);
 
+  /* ── Batch report state ── */
+  const [selectedItems, setSelectedItems] = useState([]);
+  const [showBatchReport, setShowBatchReport] = useState(false);
+  const [batchReportData, setBatchReportData] = useState(null);
+  const [loadingBatchReport, setLoadingBatchReport] = useState(false);
+
   /* ── Queue state ── */
   const [queueData, setQueueData] = useState({ pending: [], processing: [], completed: [], counts: {} });
   const [selectedIds, setSelectedIds] = useState([]);
   const [expandedQueue, setExpandedQueue] = useState({});
-  const [showFormatDialog, setShowFormatDialog] = useState(false);
   const [showClearDialog, setShowClearDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [deleteItem, setDeleteItem] = useState(null);
@@ -172,14 +117,29 @@ export default function AnalysisListPage() {
     );
   };
 
-  const handleAnalyzeAll = () => {
+  const handleAnalyzeAll = async () => {
     if (selectedIds.length === 0) {
       setSelectedIds(queueData.pending.map(q => q.message_id));
     }
-    setShowFormatDialog(true);
+    setAnalyzing(true);
+    try {
+      for (const id of selectedIds) {
+        await authApi.gmail.processQueueItem(id);
+      }
+      toast.success(`${selectedIds.length} analyses started`);
+      setSelectedIds([]);
+      loadQueue();
+      setActiveTab('results');
+      load(1, true);
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to start analysis');
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const handleAnalyzeSingle = async (item) => {
+    setAnalyzing(true);
     try {
       const result = await authApi.gmail.processQueueItem(item.message_id);
       const analysisId = result.analysis_id;
@@ -191,6 +151,8 @@ export default function AnalysisListPage() {
       }
     } catch (err) {
       toast.error(err.message ?? 'Failed to start analysis');
+    } finally {
+      setAnalyzing(false);
     }
   };
 
@@ -265,6 +227,63 @@ export default function AnalysisListPage() {
   }, []);
 
   useEffect(() => { load(1, true); loadQueue(); }, [load]);
+
+  // Handle ID search
+  const handleIdSearch = () => {
+    const id = idSearch.trim();
+    if (!id) return;
+    
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const hexRegex = /^[0-9a-f]{32}$/i;
+    
+    if (uuidRegex.test(id) || hexRegex.test(id)) {
+      navigate(`/analysis/${id}`);
+    } else {
+      toast.error('Invalid analysis ID format');
+    }
+  };
+
+  // Handle batch report generation
+  const handleGenerateBatchReport = async () => {
+    if (selectedItems.length === 0) {
+      toast.error('Please select at least one analysis');
+      return;
+    }
+    if (selectedItems.length > 100) {
+      toast.error('Maximum 100 analyses can be included in a report');
+      return;
+    }
+
+    setLoadingBatchReport(true);
+    try {
+      const ids = selectedItems.map(item => item.id);
+      const result = await analysisApi.getBatchReport(ids);
+      setBatchReportData(result);
+      setShowBatchReport(true);
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to generate batch report');
+    } finally {
+      setLoadingBatchReport(false);
+    }
+  };
+
+  const handleToggleSelectItem = (item) => {
+    setSelectedItems(prev => {
+      const exists = prev.find(i => i.id === item.id);
+      if (exists) {
+        return prev.filter(i => i.id !== item.id);
+      }
+      return [...prev, item];
+    });
+  };
+
+  const handleSelectAllItems = () => {
+    if (selectedItems.length === filtered.length) {
+      setSelectedItems([]);
+    } else {
+      setSelectedItems([...filtered]);
+    }
+  };
 
   const handleDelete = async (e, id) => {
     e.stopPropagation();
@@ -399,10 +418,10 @@ export default function AnalysisListPage() {
                       </button>
                       <button
                         onClick={handleAnalyzeAll}
-                        disabled={selectedIds.length === 0}
+                        disabled={selectedIds.length === 0 || analyzing}
                         className="btn-primary h-8 px-3 text-xs"
                       >
-                        <Play className="w-3 h-3 mr-1" /> Analyze ({selectedIds.length})
+                        <Play className="w-3 h-3 mr-1" /> {analyzing ? 'Analyzing...' : `Analyze (${selectedIds.length})`}
                       </button>
                     </div>
                   </div>
@@ -435,9 +454,10 @@ export default function AnalysisListPage() {
                             </button>
                             <button
                               onClick={() => handleAnalyzeSingle(item)}
-                              className="btn-ghost h-8 px-3 text-xs"
+                              disabled={analyzing}
+                              className="btn-ghost h-8 px-3 text-xs disabled:opacity-50"
                             >
-                              Analyze
+                              {analyzing ? '…' : 'Analyze'}
                             </button>
                             <button
                               onClick={() => { setDeleteItem(item); setShowDeleteDialog(true); }}
@@ -596,6 +616,40 @@ export default function AnalysisListPage() {
             </button>
           )}
         </div>
+        
+        {/* ID Search */}
+        <div className="relative flex-shrink-0">
+          <input
+            type="text"
+            placeholder="Search by ID…"
+            value={idSearch}
+            onChange={e => setIdSearch(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleIdSearch()}
+            className="input-base w-40 sm:w-48 pr-8"
+          />
+          {idSearch && (
+            <button onClick={() => setIdSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }}>
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+        
+        {/* Generate Batch Report Button */}
+        {selectedItems.length > 0 && (
+          <button
+            onClick={handleGenerateBatchReport}
+            disabled={loadingBatchReport}
+            className="btn-primary h-9 px-4 text-sm flex items-center gap-2"
+          >
+            {loadingBatchReport ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <FileBarChart className="w-4 h-4" />
+            )}
+            Report ({selectedItems.length})
+          </button>
+        )}
+        
         <div className="flex gap-2 flex-wrap">
           {FILTER_OPTS.map(o => (
             <button
@@ -642,6 +696,15 @@ export default function AnalysisListPage() {
             <table className="table-base">
               <thead>
                 <tr>
+                  <th className="w-10">
+                    <button onClick={handleSelectAllItems} className="p-1">
+                      {selectedItems.length === filtered.length && filtered.length > 0 ? (
+                        <CheckSquare className="w-4 h-4" style={{ color: 'var(--brand)' }} />
+                      ) : (
+                        <Square className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                      )}
+                    </button>
+                  </th>
                   <th>Subject / File</th>
                   <th className="hidden sm:table-cell">Category</th>
                   <th>Risk</th>
@@ -656,8 +719,18 @@ export default function AnalysisListPage() {
                   const subject = a.subject ?? a.email_metadata?.subject ?? a.file_name ?? a.filename ?? a.email_subject ?? 'Untitled';
                   const cat     = a.threat_category ?? a.category ?? '—';
                   const date    = a.created_at ?? a.analyzed_at;
+                  const isSelected = selectedItems.some(i => i.id === a.id);
                   return (
                     <tr key={a.id} className="cursor-pointer" onClick={() => navigate(`/analysis/${a.id}`)}>
+                      <td className="w-10" onClick={e => e.stopPropagation()}>
+                        <button onClick={() => handleToggleSelectItem(a)}>
+                          {isSelected ? (
+                            <CheckSquare className="w-4 h-4" style={{ color: 'var(--brand)' }} />
+                          ) : (
+                            <Square className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                          )}
+                        </button>
+                      </td>
                       <td>
                         <p className="font-500 text-sm truncate max-w-[200px]" style={{ color: 'var(--text-primary)' }}>
                           {subject}
@@ -710,13 +783,6 @@ export default function AnalysisListPage() {
       </div>
       </>
       )}
-
-      <FormatDialog
-        open={showFormatDialog}
-        onClose={() => setShowFormatDialog(false)}
-        onSubmit={handleAnalyze}
-        selectedCount={selectedIds.length}
-      />
 
       {showClearDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -799,6 +865,93 @@ export default function AnalysisListPage() {
           </div>
         </div>
       )}
+      
+      {showBatchReport && (
+        <BatchReportModal 
+          data={batchReportData} 
+          onClose={() => setShowBatchReport(false)} 
+        />
+      )}
+    </div>
+  );
+}
+
+/* ─── Batch Report Modal ────────────────────────────────────────────────── */
+function BatchReportModal({ data, onClose }) {
+  if (!data) return null;
+  
+  const stats = [
+    { label: 'Total Analyzed', value: data.total_analyses ?? data.total ?? 0 },
+    { label: 'Phishing', value: data.phishing_detected ?? 0 },
+    { label: 'Malware', value: data.malware_detected ?? 0 },
+    { label: 'Suspicious', value: data.suspicious_detected ?? 0 },
+    { label: 'Safe', value: data.safe_emails ?? 0 },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative rounded-xl p-6 w-full max-w-2xl mx-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+        style={{ background: 'var(--bg-surface)' }}>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-700" style={{ color: 'var(--text-primary)' }}>
+            Batch Report
+          </h2>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-[var(--bg-elevated)]">
+            <X className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
+          </button>
+        </div>
+
+        <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>
+          Report for {data.total_analyses ?? data.analyses?.length ?? 0} selected analyses
+        </p>
+
+        {/* Stats */}
+        <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-6">
+          {stats.map(s => (
+            <div key={s.label} className="text-center p-3 rounded-lg" style={{ background: 'var(--bg-elevated)' }}>
+              <div className="font-heading font-700 text-xl" style={{ color: 'var(--text-primary)' }}>{s.value}</div>
+              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Threat breakdown */}
+        {data.threat_breakdown && data.threat_breakdown.length > 0 && (
+          <div className="mb-6">
+            <h3 className="font-600 text-sm mb-3" style={{ color: 'var(--text-primary)' }}>Threat Breakdown</h3>
+            <div className="space-y-2">
+              {data.threat_breakdown.map((t, i) => (
+                <div key={i} className="flex items-center justify-between p-2 rounded" style={{ background: 'var(--bg-elevated)' }}>
+                  <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{t.category}</span>
+                  <span className="font-600 text-sm" style={{ color: t.category === 'Safe' ? 'var(--success)' : 'var(--danger)' }}>
+                    {t.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Daily breakdown */}
+        {data.daily_breakdown && data.daily_breakdown.length > 0 && (
+          <div>
+            <h3 className="font-600 text-sm mb-3" style={{ color: 'var(--text-primary)' }}>Daily Activity</h3>
+            <div className="grid grid-cols-7 gap-1">
+              {data.daily_breakdown.slice(0, 7).map((d, i) => (
+                <div key={i} className="text-center p-2 rounded" style={{ background: 'var(--bg-elevated)' }}>
+                  <div className="text-xs font-500" style={{ color: 'var(--text-muted)' }}>{d.day}</div>
+                  <div className="text-sm font-600" style={{ color: 'var(--text-primary)' }}>{d.analyzed ?? 0}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+          <button onClick={onClose} className="btn-primary w-full">Close</button>
+        </div>
+      </div>
     </div>
   );
 }

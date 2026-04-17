@@ -57,6 +57,7 @@ class EmailProviderResponse(EmailProviderBase):
     last_sync_at: Optional[datetime] = None
     is_active: bool
     is_connected: bool
+    is_default: bool = False
     sync_folder: str
     max_emails_per_sync: int
     created_at: datetime

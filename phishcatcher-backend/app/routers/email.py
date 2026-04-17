@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
+from app.config import get_settings
 from app.models.audit_log import AuditLog, AuditAction
 from app.services.email_service import email_service
 from app.services.security_service import security_service
@@ -139,8 +140,10 @@ async def request_password_reset(
     """Request password reset email."""
     try:
         # Generate reset code
+        settings = get_settings()
         code = security_service.generate_email_code(request.email)
-        reset_url = f"http://localhost:5173/reset-password?email={request.email}&code={code}"
+        frontend_url = settings.FRONTEND_URL.rstrip('/')
+        reset_url = f"{frontend_url}/reset-password?email={request.email}&code={code}"
         
         # Send email
         success = await email_service.send_password_reset(

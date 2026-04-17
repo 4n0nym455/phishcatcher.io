@@ -102,7 +102,7 @@ export default function MFAVerificationPage() {
 
           <div className="mb-6">
             <h1 className="font-heading text-2xl font-700 mb-1" style={{ color: 'var(--text-primary)' }}>
-              Two-factor authentication
+              Multi-Factor Auth
             </h1>
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
               {useBackup

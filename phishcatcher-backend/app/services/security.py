@@ -182,16 +182,17 @@ def create_mfa_session_token(data: Dict[str, Any], expires_delta: Optional[timed
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None, ip_address: Optional[str] = None) -> tuple[str, Dict[str, Any]]:
     """
-    Create a JWT access token.
+    Create a JWT access token with optional IP binding.
     
     Args:
         data: Data to encode in token
         expires_delta: Optional custom expiration time
+        ip_address: Optional IP address to bind token to
         
     Returns:
-        JWT access token
+        Tuple of (JWT access token, token payload)
     """
     settings = get_settings()
     to_encode = data.copy()
@@ -201,36 +202,47 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
+    jti = secrets.token_urlsafe(16)
+    
     to_encode.update({
         "exp": expire,
         "iat": datetime.utcnow(),
-        "type": "access"
+        "type": "access",
+        "jti": jti,
+        "ip": ip_address,
     })
     
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    token = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return token, to_encode
 
 
-def create_refresh_token(data: Dict[str, Any]) -> str:
+def create_refresh_token(data: Dict[str, Any], ip_address: Optional[str] = None) -> tuple[str, Dict[str, Any]]:
     """
-    Create a JWT refresh token.
+    Create a JWT refresh token with optional IP binding.
     
     Args:
         data: Data to encode in token
+        ip_address: Optional IP address to bind token to
         
     Returns:
-        JWT refresh token
+        Tuple of (JWT refresh token, token payload)
     """
     settings = get_settings()
     expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    jti = secrets.token_urlsafe(16)
     
     to_encode = {
         **data,
         "exp": expire,
         "iat": datetime.utcnow(),
-        "type": "refresh"
+        "type": "refresh",
+        "jti": jti,
+        "ip": ip_address,
     }
     
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    token = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return token, to_encode
 
 
 def verify_token(token: str, token_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -256,6 +268,60 @@ def verify_token(token: str, token_type: Optional[str] = None) -> Optional[Dict[
         return payload
     except JWTError:
         return None
+
+
+def verify_token_ip(payload: Dict[str, Any], client_ip: Optional[str]) -> bool:
+    """
+    Verify if token IP matches client IP (IP binding).
+    Skips validation for localhost addresses for development flexibility.
+    
+    Args:
+        payload: Decoded token payload
+        client_ip: Client's IP address
+        
+    Returns:
+        True if IP matches, no IP binding, or is localhost (development)
+    """
+    token_ip = payload.get("ip")
+    
+    if not token_ip:
+        return True
+    
+    if not client_ip:
+        return False
+    
+    localhost_patterns = ['localhost', '127.0.0.1', '::1', '0.0.0.0']
+    is_localhost_client = any(pattern in client_ip.lower() for pattern in localhost_patterns)
+    is_localhost_token = any(pattern in token_ip.lower() for pattern in localhost_patterns)
+    
+    if is_localhost_client or is_localhost_token:
+        return True
+    
+    return token_ip == client_ip
+
+
+def get_client_ip(request) -> Optional[str]:
+    """
+    Extract client IP from request, handling proxies.
+    
+    Args:
+        request: FastAPI request object
+        
+    Returns:
+        Client IP address or None
+    """
+    if not request or not request.client:
+        return None
+    
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip
+    
+    return request.client.host
 
 
 def get_token_expiry(token: str) -> Optional[datetime]:
@@ -586,6 +652,48 @@ def decrypt_backup_codes(encrypted_codes: str) -> list[str]:
     return json.loads(decrypted_json)
 
 
+# OAuth Token Encryption
+def encrypt_oauth_token(token_data: str) -> str:
+    """
+    Encrypt OAuth token data (access token, refresh token, etc.) for secure storage.
+    
+    Args:
+        token_data: OAuth token data (JSON string or token value)
+        
+    Returns:
+        Encrypted token data
+    """
+    return encrypt_data(token_data)
+
+
+def decrypt_oauth_token(encrypted_token_data: str) -> str:
+    """
+    Decrypt OAuth token data from storage.
+    
+    Args:
+        encrypted_token_data: Encrypted OAuth token data
+        
+    Returns:
+        Decrypted token data
+    """
+    return decrypt_data(encrypted_token_data)
+
+
+def is_encrypted_token(token_data: str) -> bool:
+    """
+    Check if a token is encrypted (Fernet encrypted tokens start with 'gAAAAA').
+    
+    Args:
+        token_data: Token data to check
+        
+    Returns:
+        True if token appears to be encrypted
+    """
+    if not token_data:
+        return False
+    return token_data.startswith('gAAAAA')
+
+
 # Account Lockout Functions
 def should_lock_account(failed_attempts: int) -> bool:
     """
@@ -687,6 +795,124 @@ def reset_ip_failed_attempts(redis_client, ip_address: str) -> None:
     
     key = f"failed_attempts:ip:{ip_address}"
     redis_client.delete(key)
+
+
+# ─── Async versions for use with async Redis client ──────────────────────────
+
+def _is_local_or_private_ip(ip: str) -> bool:
+    """
+    Check if IP is localhost or private IP range.
+    
+    Args:
+        ip: IP address to check
+        
+    Returns:
+        True if IP is localhost/private
+    """
+    if not ip:
+        return True
+    
+    ip_lower = ip.lower()
+    localhost_patterns = ['127.0.0.1', 'localhost', '::1', '0.0.0.0']
+    if ip_lower in localhost_patterns:
+        return True
+    
+    import ipaddress
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_reserved
+    except (ValueError, TypeError):
+        return False
+
+
+async def is_ip_locked_async(redis_client, ip_address: str) -> bool:
+    """
+    Async check if IP address is currently locked.
+    
+    Args:
+        redis_client: Async Redis client instance
+        ip_address: IP address to check
+        
+    Returns:
+        True if IP is locked
+    """
+    if _is_local_or_private_ip(ip_address):
+        return False
+    
+    key = f"ip_locked:{ip_address}"
+    result = await redis_client.exists(key)
+    return result > 0
+
+
+async def should_lock_ip_based_async(redis_client, ip_address: str, max_attempts: int = 10) -> bool:
+    """
+    Async check if IP address should be locked based on failed attempts.
+    
+    Args:
+        redis_client: Async Redis client instance
+        ip_address: IP address to check
+        max_attempts: Maximum attempts before lockout
+        
+    Returns:
+        True if IP should be locked
+    """
+    if _is_local_or_private_ip(ip_address):
+        return False
+    
+    key = f"failed_attempts:ip:{ip_address}"
+    attempts = await redis_client.get(key)
+    return int(attempts or 0) >= max_attempts
+
+
+async def increment_ip_failed_attempts_async(redis_client, ip_address: str) -> int:
+    """
+    Async increment failed attempts for an IP address.
+    
+    Args:
+        redis_client: Async Redis client instance
+        ip_address: IP address to increment
+        
+    Returns:
+        Current failed attempts count
+    """
+    if _is_local_or_private_ip(ip_address):
+        return 0
+    
+    key = f"failed_attempts:ip:{ip_address}"
+    count = await redis_client.incr(key)
+    await redis_client.expire(key, 3600)
+    return count
+
+
+async def lock_ip_address_async(redis_client, ip_address: str, lock_minutes: int = 15) -> None:
+    """
+    Async lock an IP address for specified duration.
+    
+    Args:
+        redis_client: Async Redis client instance
+        ip_address: IP address to lock
+        lock_minutes: Duration to lock in minutes
+    """
+    if _is_local_or_private_ip(ip_address):
+        return
+    
+    key = f"ip_locked:{ip_address}"
+    await redis_client.setex(key, lock_minutes * 60, "locked")
+
+
+async def reset_ip_failed_attempts_async(redis_client, ip_address: str) -> None:
+    """
+    Async reset failed attempts for an IP address.
+    
+    Args:
+        redis_client: Async Redis client instance
+        ip_address: IP address to reset
+    """
+    if _is_local_or_private_ip(ip_address):
+        return
+    
+    key = f"failed_attempts:ip:{ip_address}"
+    await redis_client.delete(key)
 
 
 def should_lock_otp_account(failed_otp_attempts: int) -> bool:

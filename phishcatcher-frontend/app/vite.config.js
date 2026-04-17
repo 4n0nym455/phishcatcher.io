@@ -21,11 +21,19 @@ function copyServiceWorker() {
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: './',
+  base: '/',
   plugins: [react(), copyServiceWorker()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+  },
+  server: {
+    allowedHosts: [
+      'phishcatcher.dpdns.org',
+      'localhost',
+      '10.10.3.245',
+      '127.0.0.1',
+    ],
   },
 });

@@ -1,9 +1,10 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 
 const ThemeContext = createContext({
   theme: "system",
   setTheme: () => null,
   resolvedTheme: "dark",
+  toggleTheme: () => null,
 });
 
 export function ThemeProvider({
@@ -58,10 +59,22 @@ export function ThemeProvider({
     }
   }, [theme]);
 
+  const toggleTheme = useCallback(() => {
+    const root = window.document.documentElement;
+    root.classList.add('theme-transition');
+    const currentResolved = resolvedTheme;
+    const newTheme = currentResolved === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    setTimeout(() => {
+      root.classList.remove('theme-transition');
+    }, 900);
+  }, [resolvedTheme]);
+
   const value = {
     theme,
     setTheme: (newTheme) => setTheme(newTheme),
     resolvedTheme,
+    toggleTheme,
   };
 
   return (

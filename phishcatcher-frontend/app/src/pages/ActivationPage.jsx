@@ -9,7 +9,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import {
   Mail, CheckCircle, RefreshCw, Loader2,
-  ArrowRight, XCircle,
+  ArrowRight, XCircle, Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
@@ -252,28 +252,8 @@ export function ActivateAccountPage() {
    Router state: { email }
 ══════════════════════════════════════════════════════ */
 export function ActivationPendingPage() {
-  const navigate  = useNavigate();
   const location  = useLocation();
   const email     = location.state?.email ?? '';
-
-  const [resending, setResending] = useState(false);
-  const [resent,    setResent]    = useState(false);
-  const [error,     setError]     = useState('');
-
-  const handleResend = async () => {
-    if (!email) return;
-    setResending(true);
-    setError('');
-    try {
-      await authApi.resendActivation(email);
-      setResent(true);
-      toast.success('Activation email resent!');
-    } catch (err) {
-      setError(err.message ?? 'Failed to resend email.');
-    } finally {
-      setResending(false);
-    }
-  };
 
   return (
     <div className="auth-bg flex items-center justify-center p-4">
@@ -290,65 +270,34 @@ export function ActivationPendingPage() {
         <div className="auth-card text-center">
           <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6"
             style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}>
-            <Mail className="w-8 h-8" />
+            <Clock className="w-8 h-8" />
           </div>
 
           <h1 className="font-heading text-2xl font-700 mb-2" style={{ color: 'var(--text-primary)' }}>
-            Check your inbox
+            Waiting for admin approval
           </h1>
           <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>
-            We sent an activation email{email && (
-              <> to{' '}
+            Your account has been created{email && (
+              <> for{' '}
                 <span className="font-600" style={{ color: 'var(--text-secondary)' }}>{email}</span>
               </>
-            )}. Click the link and enter your activation code to get started.
+            )} and is pending approval from an administrator.
           </p>
 
-          {/* Steps */}
-          <div className="text-left rounded-xl p-4 mb-6 space-y-3"
+          {/* Info box */}
+          <div className="text-left rounded-xl p-4 mb-6"
             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
-            <p className="text-xs font-700 uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-              Next steps
-            </p>
-            {[
-              'Check your inbox (and spam folder)',
-              'Click the activation link in the email',
-              'Enter the 6-digit code on the activation page',
-              'Accept the Terms & Privacy Policy',
-            ].map((step, i) => (
-              <div key={i} className="flex items-start gap-2.5 text-sm" style={{ color: 'var(--text-secondary)' }}>
-                <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-700 shrink-0 mt-0.5"
-                  style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}>
-                  {i + 1}
-                </span>
-                {step}
-              </div>
-            ))}
-          </div>
-
-          {error && <div className="alert-error mb-4 text-left">{error}</div>}
-
-          <div className="space-y-3">
-            {resent ? (
-              <p className="text-sm font-600 flex items-center justify-center gap-2"
-                style={{ color: 'var(--success)' }}>
-                <CheckCircle className="w-4 h-4" /> Email resent successfully
+            <div className="flex items-start gap-3">
+              <Mail className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--brand)' }} />
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                You will receive an email once your account is activated.
               </p>
-            ) : (
-              <button
-                onClick={handleResend}
-                disabled={resending || !email}
-                className="btn-ghost w-full h-10 justify-center text-sm"
-              >
-                {resending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                Resend activation email
-              </button>
-            )}
-
-            <Link to="/login" className="btn-primary w-full h-10 justify-center text-sm inline-flex">
-              Back to sign in <ArrowRight className="w-4 h-4" />
-            </Link>
+            </div>
           </div>
+
+          <Link to="/login" className="btn-primary w-full h-10 justify-center text-sm inline-flex">
+            Back to sign in <ArrowRight className="w-4 h-4" />
+          </Link>
         </div>
       </div>
     </div>

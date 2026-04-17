@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     DEBUG: bool = Field(default=False, description="Debug mode")
     ENVIRONMENT: str = Field(default="development", description="Environment (development/staging/production)")
     FRONTEND_URL: str = Field(default="http://localhost:5173", description="Frontend URL for redirects")
+    API_EXTERNAL_URL: Optional[str] = Field(
+        default=None,
+        description="External API URL for avatar URLs (e.g., http://192.168.1.100:8000). If not set, will use request host."
+    )
     
     # Security Settings
     SECRET_KEY: str = Field(
@@ -102,6 +106,10 @@ class Settings(BaseSettings):
     MINIO_REGION: str = Field(default="us-east-1", description="MinIO region")
     MINIO_PORT: int = Field(default=9000, description="MinIO port")
     MINIO_CONSOLE_PORT: int = Field(default=9001, description="MinIO console port")
+    MINIO_EXTERNAL_URL: Optional[str] = Field(
+        default=None,
+        description="External MinIO URL for public access (e.g., http://192.168.1.100:9000)"
+    )
     
     # JWT Configuration
     JWT_SECRET_KEY: str = Field(description="JWT secret key")
@@ -150,7 +158,6 @@ class Settings(BaseSettings):
     PHISHTANK_API_KEY: Optional[str] = Field(default=None, description="PhishTank API key")
     URLSCAN_API_KEY: Optional[str] = Field(default=None, description="URLScan API key (backup for URLs)")
     ABUSEIPDB_API_KEY: Optional[str] = Field(default=None, description="AbuseIPDB API key (IP/domain reputation)")
-    WHOISJSON_API_KEY: Optional[str] = Field(default=None, description="WhoisJSON API key (domain age)")
     
     # ML/Ensemble Settings
     ML_WEIGHT: float = Field(default=0.4, description="ML model weight in ensemble (0.0-1.0)")

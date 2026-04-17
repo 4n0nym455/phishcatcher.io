@@ -24,7 +24,6 @@ echo "📁 Creating necessary directories..."
 mkdir -p phishcatcher-backend/models
 mkdir -p phishcatcher-backend/uploads
 mkdir -p phishcatcher-backend/logs
-mkdir -p phishcatcher-backend/nginx/ssl
 
 # Stop any existing containers
 echo "🛑 Stopping existing containers..."

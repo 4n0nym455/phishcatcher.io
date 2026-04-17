@@ -18,11 +18,26 @@ import { useAuth } from '@/context/AuthContext';
 import { ThemeToggle }   from './ThemeToggle';
 import { toast }         from 'sonner';
 
+function getAvatarUrlWithTimestamp(avatarUrl, avatarUpdatedAt) {
+  if (!avatarUrl) return null;
+  if (!avatarUpdatedAt) return avatarUrl;
+  
+  // Parse ISO timestamp and convert to Unix timestamp
+  try {
+    const date = new Date(avatarUpdatedAt);
+    if (isNaN(date.getTime())) return avatarUrl;
+    const timestamp = Math.floor(date.getTime() / 1000);
+    return `${avatarUrl}?t=${timestamp}`;
+  } catch {
+    return avatarUrl;
+  }
+}
+
 const USER_NAV = [
   { path: '/dashboard',      label: 'Dashboard',       icon: Home },
   { path: '/upload',         label: 'Email Upload',     icon: Upload },
-  { path: '/analysis',       label: 'Analysis History', icon: FileText },
-  { path: '/weekly-reports', label: 'Weekly Reports',   icon: FileBarChart },
+  { path: '/analysis',       label: 'Analysis', icon: FileText },
+  { path: '/reports',        label: 'Reports',          icon: FileBarChart },
   { path: '/settings',       label: 'Settings',         icon: Settings },
 ];
 const ADMIN_NAV = [
@@ -127,10 +142,10 @@ export default function Layout() {
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full overflow-hidden shrink-0">
               {user?.avatar_url ? (
-                <img src={user.avatar_url} alt="Profile avatar" className="w-full h-full object-cover" />
+                <img src={getAvatarUrlWithTimestamp(user.avatar_url, user.avatar_updated_at)} alt="Profile avatar" className="w-full h-full object-cover" />
               ) : (
                 <div
-                  className="w-full h-full flex items-center justify-center text-xs font-bold"
+                  className="w-full h-full flex items-center justify-center text-xs font-700"
                   style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}
                 >
                   {(user?.full_name || user?.email || 'U')[0].toUpperCase()}
@@ -191,9 +206,9 @@ export default function Layout() {
                   color: 'var(--text-primary)',
                 }}
               >
-                <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-bold">
+                <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center text-xs font-700">
                 {user?.avatar_url ? (
-                  <img src={user.avatar_url} alt="Profile avatar" className="w-full h-full object-cover" />
+                  <img src={getAvatarUrlWithTimestamp(user.avatar_url, user.avatar_updated_at)} alt="Profile avatar" className="w-full h-full object-cover" />
                 ) : (
                   <div style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}>
                     {(user?.full_name || user?.email || 'U')[0].toUpperCase()}

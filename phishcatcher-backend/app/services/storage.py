@@ -150,12 +150,12 @@ class StorageService:
         
         settings = get_settings()
         
-        # Validate file extension
-        ext = Path(filename).suffix.lower().lstrip('.')
+        ext = Path(filename).suffix.lower().lstrip('.') if filename else ''
+        if not ext:
+            raise ValueError("File must have an extension (e.g., .png, .jpg)")
         if ext not in settings.allowed_extensions_set:
             raise ValueError(f"File type .{ext} not allowed. Allowed: {settings.ALLOWED_FILE_EXTENSIONS}")
         
-        # Generate unique object name
         file_id = str(uuid.uuid4())
         ext = Path(filename).suffix.lower()
         
@@ -266,6 +266,12 @@ class StorageService:
         except MinioException as e:
             logger.error(f"Failed to get file {object_name}: {e}")
             raise
+
+    async def get_file_bytes(self, object_name: str, bucket: Optional[str] = None) -> bytes:
+        """Async wrapper for get_file."""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.get_file, object_name, bucket)
     
     def get_file_stream(self, object_name: str, bucket: Optional[str] = None):
         """Get a file stream for chunked reading."""
@@ -289,6 +295,7 @@ class StorageService:
     ) -> str:
         """Generate a presigned URL for temporary access."""
         target_bucket = self._get_bucket(bucket)
+        settings = get_settings()
         try:
             url = self._client.presigned_get_object(
                 target_bucket,
@@ -296,6 +303,13 @@ class StorageService:
                 expires=expires,
                 response_headers=response_headers
             )
+            
+            if settings.MINIO_EXTERNAL_URL:
+                internal_url = f"http://{settings.MINIO_ENDPOINT}" if not settings.MINIO_SECURE else f"https://{settings.MINIO_ENDPOINT}"
+                if not internal_url.startswith("http"):
+                    internal_url = f"http://{internal_url}"
+                url = url.replace(internal_url, settings.MINIO_EXTERNAL_URL)
+            
             return url
         except MinioException as e:
             logger.error(f"Failed to generate presigned URL for {object_name}: {e}")

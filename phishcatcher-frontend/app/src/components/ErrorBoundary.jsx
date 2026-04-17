@@ -31,7 +31,7 @@ class ErrorBoundary extends React.Component {
                   </svg>
                 </div>
                 <div>
-                  <h1 className="text-xl font-bold text-gray-900">Something went wrong</h1>
+                  <h1 className="text-xl font-700 text-gray-900">Something went wrong</h1>
                   <p className="text-gray-600 mt-2">An error occurred while loading this page.</p>
                   <details className="mt-4">
                     <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700">

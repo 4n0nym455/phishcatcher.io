@@ -19,10 +19,13 @@ scikit-learn
 numpy
 pandas
 joblib
+seaborn
 transformers
 torch
 shap
 lime
+ipykernel
+jupyter
 
 # Gmail Integration
 google-auth
@@ -35,6 +38,7 @@ mail-parser
 python-dateutil
 sendgrid
 jinja2
+beautifulsoup4
 
 # HTTP Client
 httpx
@@ -67,3 +71,7 @@ pytest-cov
 # Documentation
 mkdocs
 mkdocs-material
+
+# PDF Generation
+reportlab
+pillow

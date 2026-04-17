@@ -138,8 +138,8 @@ export default function MFASettingsPage() {
   return (
     <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
       <div className="page-header">
-        <h1 className="page-title">Two-Factor Authentication</h1>
-        <p className="page-subtitle">Protect your account with TOTP-based 2FA</p>
+        <h1 className="page-title">Multi-Factor Authentication</h1>
+        <p className="page-subtitle">Protect your account with TOTP-based MFA</p>
       </div>
 
       {/* ── Status card ── */}

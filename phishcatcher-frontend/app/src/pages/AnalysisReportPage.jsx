@@ -17,9 +17,10 @@ import {
   Link as LinkIcon,
   Paperclip,
   ArrowLeft, CheckCircle, ChevronDown, ChevronUp, ExternalLink, Globe, User,
-  Eye, EyeOff, Printer, Flag, Info, FileText
+  Eye, EyeOff, Info, FileText, Search
 } from 'lucide-react';
 import { analysisApi } from '@/lib/api';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import MLAnalysisCard from '@/components/MLAnalysisCard';
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -105,18 +106,33 @@ export default function AnalysisReportPage() {
   const [blurSensitive, setBlurSensitive] = useState(true);
   const [showHeaders, setShowHeaders] = useState(false);
   const [expandedFinding, setExpandedFinding] = useState(null);
+  const [analysisList, setAnalysisList] = useState([]);
+
+  // Fetch analysis list for dropdown
+  useEffect(() => {
+    const fetchAnalysisList = async () => {
+      try {
+        const response = await analysisApi.getHistory({ page: 1, pageSize: 50 });
+        if (response.items) {
+          setAnalysisList(response.items);
+        }
+      } catch (err) {
+        console.error('Failed to fetch analysis list:', err);
+      }
+    };
+    fetchAnalysisList();
+  }, []);
 
   useEffect(() => {
-    // Validate ID - accept both PostgreSQL UUIDs and 32-char hex IDs
+    // Validate ID - be permissive since IDs can come in various formats
     const isValidId = (id) => {
       if (!id || typeof id !== 'string') return false;
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      const hexRegex = /^[0-9a-f]{32}$/i;
-      return uuidRegex.test(id) || hexRegex.test(id);
+      if (id === 'None' || id === 'null' || id === 'undefined') return false;
+      if (id.startsWith('fallback_')) return false;
+      return id.length >= 8;
     };
     
-    if (!id || id === 'None' || id === 'null' || id === 'undefined' || 
-        id.startsWith('fallback_') || !isValidId(id)) {
+    if (!isValidId(id)) {
       setError('Invalid analysis ID');
       setLoading(false);
       return;
@@ -124,16 +140,24 @@ export default function AnalysisReportPage() {
     
     (async () => {
       setLoading(true);
+      setError('');
       try {
         const data = await analysisApi.getAnalysis(id);
         setAnalysis(data);
       } catch (err) {
+        console.error('Failed to load analysis:', err);
         setError(err.message ?? 'Failed to load analysis report.');
       } finally {
         setLoading(false);
       }
     })();
   }, [id]);
+
+  const handleAnalysisSelect = (newId) => {
+    if (newId && newId !== id) {
+      navigate(`/analysis/${newId}`, { replace: true });
+    }
+  };
 
   const handleDelete = async () => {
     if (!window.confirm('Delete this analysis? This cannot be undone.')) return;
@@ -150,15 +174,19 @@ export default function AnalysisReportPage() {
 
   const handleDownload = async () => {
     try {
-      const data = await analysisApi.downloadReport(id, 'pdf');
-      const url  = URL.createObjectURL(new Blob([data]));
-      const a    = document.createElement('a');
+      toast.success('Generating report...');
+      const blob = await analysisApi.downloadReport(id, 'pdf');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
       a.href = url;
       a.download = `phishcatcher-report-${id}.pdf`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch {
-      toast.error('Download failed');
+      toast.success('Report downloaded');
+    } catch (err) {
+      toast.error(err.message ?? 'Download failed');
     }
   };
 
@@ -205,14 +233,6 @@ export default function AnalysisReportPage() {
   const recs       = analysis.recommendations ?? [];
   const headers    = analysis.email_headers ?? {};
 
-  const handleFlag = () => {
-    toast.success('Email flagged for security team review');
-  };
-
-  const handlePrint = () => {
-    window.print();
-  };
-
   const riskColors = {
     bg: s >= 70 ? 'rgba(255, 77, 141, 0.15)' : s >= 40 ? 'rgba(255, 209, 102, 0.15)' : 'rgba(39, 211, 199, 0.15)',
     text: s >= 70 ? '#FF4D8D' : s >= 40 ? '#FFD166' : '#27D3C7',
@@ -241,11 +261,50 @@ export default function AnalysisReportPage() {
             <ArrowLeft className="w-4 sm:w-5 h-4 sm:h-5" />
           </button>
           <div>
-            <h1 className="text-xl sm:text-2xl font-heading font-bold" style={{ color: 'var(--text-primary)' }}>Analysis Report</h1>
+            <h1 className="text-xl sm:text-2xl font-heading font-800" style={{ color: 'var(--text-primary)' }}>Analysis Results</h1>
             <p className="text-xs sm:text-sm" style={{ color: 'var(--text-muted)' }}>ID: {id} • Analyzed {fmtDate(analysis.created_at ?? analysis.analyzed_at)}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          {/* Analysis ID Dropdown */}
+          <Select value={id} onValueChange={handleAnalysisSelect}>
+            <SelectTrigger 
+              className="h-9 sm:h-10 min-w-[180px] sm:min-w-[240px] text-xs sm:text-sm border rounded-lg transition-colors"
+              style={{ 
+                borderColor: 'var(--brand)', 
+                color: 'var(--text-primary)',
+                backgroundColor: 'transparent'
+              }}
+            >
+              <SelectValue placeholder="Select analysis..." />
+            </SelectTrigger>
+            <SelectContent className="max-h-[400px]">
+              <div className="px-2 py-1.5 text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">
+                Recent Analyses
+              </div>
+              {analysisList.length === 0 ? (
+                <div className="px-2 py-4 text-center text-sm text-muted-foreground">
+                  No analyses found
+                </div>
+              ) : (
+                analysisList.map((item) => (
+                  <SelectItem 
+                    key={item.id} 
+                    value={item.id} 
+                    className="text-xs py-2 cursor-pointer hover:bg-brand-dim"
+                  >
+                    <div className="flex flex-col gap-0.5">
+                      <span className="font-mono text-[10px] sm:text-xs truncate max-w-[220px]">{item.id}</span>
+                      <span className="text-[9px] sm:text-[10px] text-muted-foreground truncate">
+                        {item.subject || item.file_name || 'Untitled'} • {item.risk_score ?? 0}%
+                      </span>
+                    </div>
+                  </SelectItem>
+                ))
+              )}
+            </SelectContent>
+          </Select>
+          
           {/* Blur Toggle */}
           <button
             onClick={() => setBlurSensitive(!blurSensitive)}
@@ -257,30 +316,12 @@ export default function AnalysisReportPage() {
           </button>
           
           <button
-            onClick={handlePrint}
-            className="h-9 sm:h-10 px-3 rounded-lg border bg-transparent hover:bg-brand-dim text-xs sm:text-sm flex items-center gap-1.5 transition-colors"
-            style={{ borderColor: 'var(--brand)', color: 'var(--brand)' }}
-          >
-            <Printer className="w-4 h-4" />
-            <span className="hidden sm:inline">Print</span>
-          </button>
-          
-          <button
             onClick={handleDownload}
             className="h-9 sm:h-10 px-3 rounded-lg border bg-transparent hover:bg-brand-dim text-xs sm:text-sm flex items-center gap-1.5 transition-colors"
             style={{ borderColor: 'var(--brand)', color: 'var(--brand)' }}
           >
             <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Export</span>
-          </button>
-          
-          <button
-            onClick={handleFlag}
-            className="h-9 sm:h-10 px-3 rounded-lg text-xs sm:text-sm flex items-center gap-1.5 transition-colors"
-            style={{ background: 'var(--danger-dim)', border: '1px solid var(--danger)', color: 'var(--danger)' }}
-          >
-            <Flag className="w-4 h-4" />
-            Flag
+            <span className="hidden sm:inline">Download</span>
           </button>
         </div>
       </div>
@@ -297,7 +338,7 @@ export default function AnalysisReportPage() {
                 <Mail className="w-5 sm:w-7 h-5 sm:h-7" style={{ color: riskColors.text }} />
               </div>
               <div className="flex-1 min-w-0">
-                <h2 className="text-base sm:text-xl font-heading font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+                <h2 className="text-base sm:text-xl font-heading font-600 mb-1" style={{ color: 'var(--text-primary)' }}>
                   <SensitiveText blurSensitive={blurSensitive}>{subject}</SensitiveText>
                 </h2>
                 <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-xs sm:text-sm">
@@ -317,7 +358,7 @@ export default function AnalysisReportPage() {
             <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6 mb-5 sm:mb-6">
               <div className="w-20 sm:w-24 h-20 sm:h-24 rounded-2xl flex flex-col items-center justify-center flex-shrink-0"
                 style={{ background: riskColors.bg, border: `2px solid ${riskColors.border}` }}>
-                <span className="text-2xl sm:text-3xl font-mono font-bold" style={{ color: riskColors.text }}>
+                <span className="text-2xl sm:text-3xl font-mono font-800" style={{ color: riskColors.text }}>
                   {s}%
                 </span>
                 <span className="text-xs" style={{ color: riskColors.text }}>Risk</span>
@@ -407,7 +448,7 @@ export default function AnalysisReportPage() {
 
       {/* ── Summary ── */}
       {summary && (
-        <Section title="AI Summary" icon={Shield} accentColor="var(--brand)">
+        <Section title="ML Summary" icon={Shield} accentColor="var(--brand)">
           <p className="text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{summary}</p>
         </Section>
       )}
@@ -513,7 +554,7 @@ export default function AnalysisReportPage() {
       {/* ── Findings ── */}
       {(analysis.findings?.length > 0) && (
         <div className="card p-4 sm:p-6">
-          <h3 className="text-base sm:text-lg font-heading font-semibold mb-4 sm:mb-6" style={{ color: 'var(--text-primary)' }}>Detailed Findings</h3>
+          <h3 className="text-base sm:text-lg font-heading font-600 mb-4 sm:mb-6" style={{ color: 'var(--text-primary)' }}>Detailed Findings</h3>
           <div className="space-y-3 sm:space-y-4">
             {analysis.findings.map((finding, i) => {
               const isExpanded = expandedFinding === i;
@@ -709,25 +750,25 @@ export default function AnalysisReportPage() {
                       </div>
                     </div>
 
-                    {/* WhoisJSON */}
+                    {/* RDAP (Domain Age) */}
                     <div className="p-3 rounded-xl" style={{ 
-                      background: analysis.threat_intelligence.indicators?.some(i => i.api_name === 'whoisjson' && i.details?.age_days < 30) 
+                      background: analysis.threat_intelligence.indicators?.some(i => i.api_name === 'rdap' && i.details?.age_in_days < 30) 
                         ? 'var(--threat-dim)' : 'var(--success-dim)',
-                      border: `1px solid ${analysis.threat_intelligence.indicators?.some(i => i.api_name === 'whoisjson' && i.details?.age_days < 30) ? 'var(--threat)' : 'var(--success)'}`
+                      border: `1px solid ${analysis.threat_intelligence.indicators?.some(i => i.api_name === 'rdap' && i.details?.age_in_days < 30) ? 'var(--threat)' : 'var(--success)'}`
                     }}>
                       <div className="flex items-center gap-2 mb-2">
-                        {analysis.threat_intelligence.indicators?.some(i => i.api_name === 'whoisjson' && i.details?.age_days < 30) ? (
+                        {analysis.threat_intelligence.indicators?.some(i => i.api_name === 'rdap' && i.details?.age_in_days < 30) ? (
                           <AlertTriangle className="w-4 h-4" style={{ color: 'var(--threat)' }} />
                         ) : (
                           <CheckCircle className="w-4 h-4" style={{ color: 'var(--success)' }} />
                         )}
-                        <span className="font-600 text-sm" style={{ color: 'var(--text-primary)' }}>WhoisJSON</span>
+                        <span className="font-600 text-sm" style={{ color: 'var(--text-primary)' }}>RDAP (Domain Age)</span>
                       </div>
                       <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                         {(() => {
-                          const ind = analysis.threat_intelligence.indicators?.find(i => i.api_name === 'whoisjson');
-                          return ind?.details?.age_days !== undefined
-                            ? `Domain age: ${ind.details.age_days} days`
+                          const ind = analysis.threat_intelligence.indicators?.find(i => i.api_name === 'rdap');
+                          return ind?.details?.age_in_days !== undefined
+                            ? `Domain age: ${ind.details.age_in_days} days`
                             : 'Check unavailable';
                         })()}
                       </div>
@@ -923,7 +964,8 @@ export default function AnalysisReportPage() {
             {links.map((link, i) => {
               const url = typeof link === 'string' ? link : link.url ?? link.href ?? JSON.stringify(link);
               const displayText = typeof link === 'string' ? null : link.display_text ?? link.displayText ?? null;
-              const status = typeof link === 'string' ? 'unknown' : link.status ?? 'unknown';
+              const rawStatus = typeof link === 'string' ? null : link.status ?? link.risk_category ?? null;
+              const status = rawStatus || (s >= 70 ? 'suspicious' : s >= 40 ? 'suspicious' : 'safe');
               return (
                 <div key={i} className="flex items-start gap-3 p-3 rounded-xl"
                   style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>

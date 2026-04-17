@@ -5,6 +5,12 @@ Main entry point for the PhishCatcher API.
 """
 
 import logging
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file from the backend directory
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(env_path)
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -16,7 +22,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.config import get_settings
 from app.database import init_databases, close_databases, check_database_health
-from app.routers import auth, analysis, providers, admin, health, gmail, notifications, security, email, activation, server_oauth, session, ml
+from app.routers import auth, analysis, providers, admin, health, gmail, notifications, security, email, activation, session, ml
 
 # Configure logging
 logging.basicConfig(
@@ -220,13 +226,6 @@ def _include_routers(app: FastAPI):
         activation.router,
         prefix=f"{api_prefix}",
         tags=["Activation"]
-    )
-    
-    # Server-Side OAuth
-    app.include_router(
-        server_oauth.router,
-        prefix=f"{api_prefix}",
-        tags=["Server-OAuth"]
     )
     
     # Notifications

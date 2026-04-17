@@ -4,45 +4,106 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Loader2, Activity, X, Calendar } from 'lucide-react';
+import { Clock, Loader2, Activity, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { adminApi } from '@/lib/api';
 
 const PAGE_SIZE = 50;
 
 const ACTION_COLORS = {
-  LOGIN_SUCCESS: 'var(--success)',
-  LOGIN_FAILURE: 'var(--danger)',
-  ADMIN_USER_CREATED: 'var(--brand)',
-  ADMIN_USER_UPDATED: 'var(--brand)',
-  ADMIN_USER_DELETED: 'var(--danger)',
-  SYSTEM_SETTING_CHANGED: 'var(--threat)',
-  PASSWORD_CHANGED: 'var(--threat)',
-  PASSWORD_RESET_COMPLETED: 'var(--threat)',
-  ACCOUNT_LOCKED: 'var(--danger)',
-  ACCOUNT_UNLOCKED: 'var(--success)',
-  SUSPICIOUS_ACTIVITY: 'var(--danger)',
-  MFA_ENABLED: 'var(--success)',
-  MFA_DISABLED: 'var(--threat)',
-  MFA_FAILURE: 'var(--danger)',
-  USER_REGISTERED: 'var(--brand)',
-  USER_DELETED: 'var(--danger)',
-  ANALYSIS_COMPLETED: 'var(--success)',
-  ANALYSIS_FAILED: 'var(--danger)',
+  LOGIN: 'var(--brand)',
+  PASSWORD: 'var(--threat)',
+  MFA: 'var(--brand)',
+  USER_UPDATE: 'var(--brand)',
+  REGISTER: 'var(--brand)',
 };
 
-const FILTERABLE_ACTIONS = Object.keys(ACTION_COLORS);
+const ACTION_LABELS = {
+  LOGIN: 'Login',
+  PASSWORD: 'Password Change',
+  MFA: 'MFA',
+  USER_UPDATE: 'User Update',
+  REGISTER: 'Account Registration',
+};
 
-const RESOURCE_TYPES = [
-  'user', 'analysis', 'provider', 'system', 'session'
-];
+const ACTION_TO_CATEGORY = {
+  'LOGIN': ['login', 'logout', 'token', 'login_success', 'login_failure'],
+  'PASSWORD': ['password', 'password_changed', 'password_reset'],
+  'MFA': ['mfa', 'otp', 'mfa_enabled', 'mfa_disabled', 'otp_sent', 'otp_verified'],
+  'USER_UPDATE': ['user_updated', 'user_created', 'user_deleted', 'admin_user_updated', 'admin_user_created'],
+  'REGISTER': ['register', 'registered', 'email_verified', 'user_registered'],
+};
+
+const ACTION_FILTER_VALUES = {
+  LOGIN: ['login', 'logout', 'token_refresh', 'token_revoked', 'login_success', 'login_failure'],
+  PASSWORD: ['password_changed', 'password_reset_requested', 'password_reset_completed'],
+  MFA: ['mfa_enabled', 'mfa_disabled', 'mfa_setup_initiated', 'mfa_challenge', 'mfa_success', 'mfa_failure', 'otp_sent', 'otp_verified', 'otp_failed', 'mfa_required', 'mfa_backup_code_used'],
+  USER_UPDATE: ['user_updated', 'user_created', 'user_deleted', 'admin_user_created', 'admin_user_updated', 'admin_user_deleted'],
+  REGISTER: ['user_registered', 'email_verified'],
+};
+
+function getActionCategory(action) {
+  if (!action) return null;
+  const a = action.toLowerCase();
+  if (a.includes('login') || a.includes('logout') || a.includes('token')) return 'LOGIN';
+  if (a.includes('password')) return 'PASSWORD';
+  if (a.includes('mfa') || a.includes('otp')) return 'MFA';
+  if (a.includes('user') && (a.includes('update') || a.includes('created') || a.includes('deleted'))) return 'USER_UPDATE';
+  if (a.includes('register') || a.includes('verified')) return 'REGISTER';
+  return null;
+}
+
+function getBackendActions(category) {
+  if (!category) return undefined;
+  const actions = ACTION_FILTER_VALUES[category];
+  return actions ? actions.join(',') : undefined;
+}
+
+function getTodayStr() {
+  try {
+    return new Date().toISOString().split('T')[0];
+  } catch {
+    return '';
+  }
+}
+
+function isValidDate(dateStr) {
+  if (!dateStr) return false;
+  const today = new Date().toISOString().split('T')[0];
+  return dateStr <= today;
+}
 
 function fmtDate(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 }
 
-function getTodayStr() {
-  return new Date().toISOString().split('T')[0];
+function getResultValue(log) {
+  const val = log.status ?? '';
+  if (val === 'success') return 'Success';
+  if (val === 'failure') return 'Failed';
+  return val || '—';
+}
+
+function getResultClass(log) {
+  const val = log.status ?? '';
+  if (val === 'success') return 'badge badge-success';
+  if (val === 'failure') return 'badge badge-danger';
+  return '';
+}
+
+function getStatusValue(log) {
+  const action = (log.action ?? '').toLowerCase();
+  if (action.includes('locked') || action.includes('disabled')) return 'Disabled';
+  if (action.includes('unlocked') || action.includes('enabled')) return 'Enabled';
+  return '—';
+}
+
+function getStatusClass(log) {
+  const action = (log.action ?? '').toLowerCase();
+  if (action.includes('locked') || action.includes('disabled')) return 'badge badge-danger';
+  if (action.includes('unlocked') || action.includes('enabled')) return 'badge badge-success';
+  return '';
 }
 
 export default function AuditLogs() {
@@ -53,9 +114,8 @@ export default function AuditLogs() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [action, setAction] = useState('');
+  const [result, setResult] = useState('');
   const [status, setStatus] = useState('');
-  const [ipAddress, setIpAddress] = useState('');
-  const [resourceType, setResourceType] = useState('');
   const [email, setEmail] = useState('');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -66,16 +126,14 @@ export default function AuditLogs() {
       const params = {
         page: pg,
         pageSize: PAGE_SIZE,
-        action: action || undefined,
-        status: status || undefined,
-        ip_address: ipAddress || undefined,
-        resource_type: resourceType || undefined,
-        user_email: email || undefined,
+        action: action ? getBackendActions(action) : undefined,
+        status: status || result || undefined,
+        userEmail: email || undefined,
       };
 
       if (customDate) {
-        if (startDate) params.start_date = startDate;
-        if (endDate) params.end_date = endDate;
+        if (startDate) params.startDate = startDate;
+        if (endDate) params.endDate = endDate;
       } else {
         params.days = days;
       }
@@ -85,11 +143,13 @@ export default function AuditLogs() {
       setLogs(prev => reset ? list : [...prev, ...list]);
       setHasMore(list.length === PAGE_SIZE);
       setPage(pg);
-    } catch { /* silent */ }
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to load audit logs');
+    }
     finally { setLoading(false); }
-  }, [days, action, status, ipAddress, resourceType, email, customDate, startDate, endDate]);
+  }, [days, action, result, status, email, customDate, startDate, endDate]);
 
-  useEffect(() => { load(1, true); }, [days, action, status, ipAddress, resourceType, email, customDate, startDate, endDate]);
+  useEffect(() => { load(1, true); }, [days, action, result, status, email, customDate, startDate, endDate]);
 
   const handleDateTypeChange = (useCustom) => {
     setCustomDate(useCustom);
@@ -97,7 +157,7 @@ export default function AuditLogs() {
       setStartDate('');
       setEndDate('');
     } else {
-      const today = getTodayStr();
+      const today = new Date().toISOString().split('T')[0];
       const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       setStartDate(weekAgo);
       setEndDate(today);
@@ -145,7 +205,14 @@ export default function AuditLogs() {
               <input
                 type="date"
                 value={startDate}
-                onChange={e => setStartDate(e.target.value)}
+                max={getTodayStr()}
+                onChange={e => {
+                  const val = e.target.value;
+                  if (isValidDate(val)) {
+                    setStartDate(val);
+                    if (endDate && val > endDate) setEndDate(val);
+                  }
+                }}
                 className="input-base w-auto"
               />
             </div>
@@ -154,7 +221,14 @@ export default function AuditLogs() {
               <input
                 type="date"
                 value={endDate}
-                onChange={e => setEndDate(e.target.value)}
+                min={startDate}
+                max={getTodayStr()}
+                onChange={e => {
+                  const val = e.target.value;
+                  if (isValidDate(val)) {
+                    setEndDate(val);
+                  }
+                }}
                 className="input-base w-auto"
               />
             </div>
@@ -177,10 +251,20 @@ export default function AuditLogs() {
         <div>
           <label className="form-label">Action</label>
           <select value={action} onChange={e => setAction(e.target.value)} className="input-base w-auto">
-            <option value="">All actions</option>
-            {FILTERABLE_ACTIONS.map(a => (
-              <option key={a} value={a}>{a.replace(/_/g, ' ')}</option>
+            <option value="">All</option>
+            {Object.keys(ACTION_LABELS).map(a => (
+              <option key={a} value={a}>{ACTION_LABELS[a]}</option>
             ))}
+          </select>
+        </div>
+
+        {/* Result Filter */}
+        <div>
+          <label className="form-label">Result</label>
+          <select value={result} onChange={e => setResult(e.target.value)} className="input-base w-auto">
+            <option value="">All</option>
+            <option value="success">Success</option>
+            <option value="failure">Failed</option>
           </select>
         </div>
 
@@ -189,46 +273,31 @@ export default function AuditLogs() {
           <label className="form-label">Status</label>
           <select value={status} onChange={e => setStatus(e.target.value)} className="input-base w-auto">
             <option value="">All</option>
-            <option value="success">Success</option>
-            <option value="failure">Failure</option>
-          </select>
-        </div>
-
-        {/* IP Address Filter */}
-        <div>
-          <label className="form-label">IP Address</label>
-          <input
-            type="text"
-            placeholder="e.g. 192.168.1.1"
-            value={ipAddress}
-            onChange={e => setIpAddress(e.target.value)}
-            className="input-base w-auto min-w-[140px]"
-          />
-        </div>
-
-        {/* Resource Type Filter */}
-        <div>
-          <label className="form-label">Resource</label>
-          <select value={resourceType} onChange={e => setResourceType(e.target.value)} className="input-base w-auto">
-            <option value="">All</option>
-            {RESOURCE_TYPES.map(r => (
-              <option key={r} value={r}>{r}</option>
-            ))}
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
           </select>
         </div>
       </div>
 
       {/* Clear Filters */}
-      {(email || action || status || ipAddress || resourceType) && (
+      {(email || action || result || status || customDate || startDate || endDate) && (
         <div className="mb-4">
           <button
-            onClick={() => { setEmail(''); setAction(''); setStatus(''); setIpAddress(''); setResourceType(''); }}
+            onClick={() => { setEmail(''); setAction(''); setResult(''); setStatus(''); setCustomDate(false); setDays(7); setStartDate(''); setEndDate(''); }}
             className="text-xs flex items-center gap-1"
             style={{ color: 'var(--text-muted)' }}
           >
             <X className="w-3 h-3" /> Clear filters
           </button>
         </div>
+      )}
+
+      {/* Pagination info */}
+      {!loading && logs.length > 0 && (
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+          Showing {logs.length} log{logs.length !== 1 ? 's' : ''}
+          {hasMore && ' (load more below)'}
+        </p>
       )}
 
       <div className="rounded-2xl overflow-hidden"
@@ -250,10 +319,8 @@ export default function AuditLogs() {
                 <tr>
                   <th>Action</th>
                   <th className="hidden sm:table-cell">User</th>
-                  <th className="hidden md:table-cell">Resource</th>
-                  <th className="hidden md:table-cell">Resource ID</th>
+                  <th>Result</th>
                   <th>Status</th>
-                  <th className="hidden lg:table-cell">IP Address</th>
                   <th className="hidden lg:table-cell">Time</th>
                 </tr>
               </thead>
@@ -262,10 +329,11 @@ export default function AuditLogs() {
                   <tr key={log.id ?? `${log.user_id}-${log.created_at}`}>
                     <td>
                       <span
-                        className="text-xs font-700 font-mono"
-                        style={{ color: ACTION_COLORS[log.action] ?? 'var(--text-secondary)' }}
+                        className="text-xs font-600"
+                        style={{ color: ACTION_COLORS[getActionCategory(log.action)] ?? 'var(--text-secondary)' }}
                       >
-                        {(log.action ?? '—').replace(/_/g, ' ')}
+                        {/* Show raw action if category mapping fails */}
+                        {ACTION_LABELS[getActionCategory(log.action)] || log.action?.replace(/_/g, ' ') || '—'}
                       </span>
                     </td>
                     <td className="hidden sm:table-cell">
@@ -273,24 +341,14 @@ export default function AuditLogs() {
                         {log.user_email ?? log.user_id ?? '—'}
                       </p>
                     </td>
-                    <td className="hidden md:table-cell">
-                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                        {log.resource_type ?? '—'}
-                      </span>
-                    </td>
-                    <td className="hidden md:table-cell">
-                      <span className="text-xs font-mono truncate max-w-[100px] block" style={{ color: 'var(--text-muted)' }}>
-                        {log.resource_id ?? '—'}
+                    <td>
+                      <span className={getResultClass(log)}>
+                        {getResultValue(log)}
                       </span>
                     </td>
                     <td>
-                      <span className={log.status === 'success' ? 'badge badge-success' : 'badge badge-danger'}>
-                        {log.status ?? '—'}
-                      </span>
-                    </td>
-                    <td className="hidden lg:table-cell">
-                      <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
-                        {log.ip_address ?? '—'}
+                      <span className={getStatusClass(log)}>
+                        {getStatusValue(log)}
                       </span>
                     </td>
                     <td className="hidden lg:table-cell">

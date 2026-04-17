@@ -5,11 +5,12 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Search, UserCheck, UserX, Edit2, Trash2,
+  Search, UserCheck, UserX, Edit2, Trash2, CheckCircle,
   X, Loader2, Users, AlertTriangle, ArrowUpDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { adminApi } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
 
 const PAGE_SIZE = 25;
 
@@ -139,6 +140,7 @@ function EditModal({ user, onClose, onSave }) {
 
 /* ─── Main ─────────────────────────────────────────────────────────────── */
 export default function UserManagement() {
+  const { user: currentUser } = useAuth();
   const [users,    setUsers]   = useState([]);
   const [loading,  setLoading] = useState(true);
   const [search,   setSearch]  = useState('');
@@ -167,6 +169,7 @@ export default function UserManagement() {
       if (roleFilter) params.role = roleFilter;
       if (statusFilter === 'active') params.isActive = true;
       if (statusFilter === 'inactive') params.isActive = false;
+      if (statusFilter === 'pending') params.accountStatus = 'pending';
 
       const res = await adminApi.listUsers(params);
       const list = res.users ?? res.items ?? (Array.isArray(res) ? res : []);
@@ -193,6 +196,19 @@ export default function UserManagement() {
       toast.success(`User ${user.is_active ? 'deactivated' : 'activated'}`);
     } catch (err) {
       toast.error(err.message ?? 'Failed to update user');
+    } finally {
+      setToggling(null);
+    }
+  };
+
+  const handleApprove = async user => {
+    setToggling(user.id);
+    try {
+      await adminApi.updateUser(user.id, { account_status: 'active' });
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, account_status: 'active', is_active: true } : u));
+      toast.success('User approved');
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to approve user');
     } finally {
       setToggling(null);
     }
@@ -293,6 +309,7 @@ export default function UserManagement() {
             <option value="">All</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
+            <option value="pending">Pending</option>
           </select>
         </div>
 
@@ -367,8 +384,8 @@ export default function UserManagement() {
                       </span>
                     </td>
                     <td>
-                      <span className={u.is_active ? 'badge badge-success' : 'badge badge-danger'}>
-                        {u.is_active ? 'Active' : 'Inactive'}
+                      <span className={u.account_status === 'pending' ? 'badge badge-warning' : u.is_active ? 'badge badge-success' : 'badge badge-danger'}>
+                        {u.account_status === 'pending' ? 'Pending' : u.is_active ? 'Active' : 'Inactive'}
                       </span>
                     </td>
                     <td className="hidden lg:table-cell">
@@ -388,6 +405,21 @@ export default function UserManagement() {
                     </td>
                     <td>
                       <div className="flex items-center gap-2">
+                        {/* Approve (for pending users) */}
+                        {u.account_status === 'pending' && (
+                          <button
+                            onClick={() => handleApprove(u)}
+                            disabled={toggling === u.id}
+                            title="Approve user"
+                            className="p-1.5 rounded-lg transition-opacity hover:opacity-70 disabled:opacity-40"
+                            style={{ color: 'var(--success)' }}
+                          >
+                            {toggling === u.id
+                              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              : <CheckCircle className="w-3.5 h-3.5" />
+                            }
+                          </button>
+                        )}
                         {/* Edit */}
                         <button
                           onClick={() => setEditing(u)}
@@ -410,19 +442,21 @@ export default function UserManagement() {
                             : u.is_active ? <UserX className="w-3.5 h-3.5" /> : <UserCheck className="w-3.5 h-3.5" />
                           }
                         </button>
-                        {/* Delete */}
-                        <button
-                          onClick={() => handleDeleteClick(u)}
-                          disabled={deleting === u.id}
-                          title="Delete user"
-                          className="p-1.5 rounded-lg transition-opacity hover:opacity-70 disabled:opacity-40"
-                          style={{ color: 'var(--danger)' }}
-                        >
-                          {deleting === u.id
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <Trash2 className="w-3.5 h-3.5" />
-                          }
-                        </button>
+                        {/* Delete - hide for own account */}
+                        {u.id !== currentUser?.id && (
+                          <button
+                            onClick={() => handleDeleteClick(u)}
+                            disabled={deleting === u.id}
+                            title="Delete user"
+                            className="p-1.5 rounded-lg transition-opacity hover:opacity-70 disabled:opacity-40"
+                            style={{ color: 'var(--danger)' }}
+                          >
+                            {deleting === u.id
+                              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              : <Trash2 className="w-3.5 h-3.5" />
+                            }
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

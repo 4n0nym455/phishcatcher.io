@@ -148,7 +148,6 @@ async def init_databases():
     # Initialize PostgreSQL
     engine = get_engine()
     async with engine.begin() as conn:
-        # Create tables if they don't exist
         await conn.run_sync(Base.metadata.create_all)
     logger.info("PostgreSQL initialized")
     

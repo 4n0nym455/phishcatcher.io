@@ -7,11 +7,22 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   User, Lock, Shield, Mail, Trash2,
-  Eye, EyeOff, Loader2, ChevronRight, AlertTriangle, CheckCircle2, XCircle,
+  Eye, EyeOff, Loader2, ChevronRight, AlertTriangle, CheckCircle2, XCircle, Plus, Settings,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi, clearTokens } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+
+const MAX_AVATAR_SIZE = 10 * 1024 * 1024; // 10MB
+
+function getAvatarUrlWithTimestamp(avatarUrl, timestamp) {
+  if (!avatarUrl) return null;
+  if (!timestamp) return avatarUrl;
+  const ts = typeof timestamp === 'string' 
+    ? Math.floor(new Date(timestamp).getTime() / 1000)
+    : timestamp;
+  return `${avatarUrl}?t=${ts}`;
+}
 
 /* ─── Password strength ─────────────────────────────────────────────────── */
 const PWD_RULES = [
@@ -88,6 +99,7 @@ export default function AccountSettingsPage() {
   const [company,    setCompany]   = useState(user?.company ?? '');
   const [profSaving, setProfSave]  = useState(false);
   const [avatarUrl, setAvatarUrl]  = useState(null);
+  const [avatarTimestamp, setAvatarTimestamp] = useState(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
   /* ── Password change state ── */
@@ -103,6 +115,8 @@ export default function AccountSettingsPage() {
   const [gmailStatus, setGmailStatus] = useState(null);
   const [gmailLoading, setGmailLoading] = useState(false);
   const [showGmailDisconnectDialog, setShowGmailDisconnectDialog] = useState(false);
+  const [accountToDisconnect, setAccountToDisconnect] = useState(null);
+  const [showGmailConnecting, setShowGmailConnecting] = useState(false);
 
   /* ── MFA status ── */
   const [mfaStatus, setMfaStatus] = useState(null);
@@ -121,7 +135,10 @@ export default function AccountSettingsPage() {
         if (m.status === 'fulfilled') setMfaStatus(m.value);
       });
       authApi.getAvatarUrl()
-        .then((res) => setAvatarUrl(res?.avatar_url ?? null))
+        .then((res) => {
+          setAvatarUrl(res?.avatar_url ?? null);
+          setAvatarTimestamp(user?.avatar_updated_at ?? Date.now());
+        })
         .catch(() => setAvatarUrl(null));
     };
 
@@ -143,6 +160,7 @@ export default function AccountSettingsPage() {
     const handleGmailMessage = (event) => {
       if (event.data?.type === 'gmail-connected') {
         setGmailLoading(false);
+        setShowGmailConnecting(false);
         setGmailStatus({ connected: true, email: event.data.email });
         toast.success('Gmail connected successfully!');
       } else if (event.data?.type === 'gmail-error') {
@@ -174,14 +192,26 @@ export default function AccountSettingsPage() {
   const handleAvatarUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('Please select an image (JPG, PNG, or WEBP)');
+      e.target.value = '';
+      return;
+    }
+
+    if (file.size > MAX_AVATAR_SIZE) {
+      toast.error('File too large. Maximum size is 10MB.');
+      e.target.value = '';
+      return;
+    }
+
     setAvatarUploading(true);
     try {
       const res = await authApi.uploadAvatar(file);
       setAvatarUrl(res.avatar_url ?? null);
-      
-      // Update user context with new avatar URL
+      setAvatarTimestamp(Date.now());
       refreshUser();
-      
       toast.success('Profile picture updated');
     } catch (err) {
       toast.error(err.message ?? 'Failed to upload profile picture');
@@ -209,6 +239,7 @@ export default function AccountSettingsPage() {
 
   /* ── Gmail ── */
   const handleGmailConnect = async () => {
+    setShowGmailConnecting(true);
     setGmailLoading(true);
     try {
       const data = await authApi.gmail.getAuthUrl();
@@ -223,20 +254,34 @@ export default function AccountSettingsPage() {
           clearInterval(checkClosed);
           authApi.gmail.getStatus().then(setGmailStatus).catch(() => {});
           setGmailLoading(false);
+          setShowGmailConnecting(false);
         }
       }, 500);
-    } catch (err) { toast.error(err.message ?? 'Failed to initiate Gmail connection'); setGmailLoading(false); }
+    } catch (err) { 
+      toast.error(err.message ?? 'Failed to initiate Gmail connection'); 
+      setGmailLoading(false);
+      setShowGmailConnecting(false);
+    }
   };
 
   const handleGmailDisconnect = async () => {
     setShowGmailDisconnectDialog(false);
     setGmailLoading(true);
     try {
-      await authApi.gmail.disconnect();
-      setGmailStatus(prev => ({ ...prev, connected: false, email: null }));
-      toast.success('Gmail disconnected');
+      if (accountToDisconnect?.id) {
+        await authApi.gmail.removeAccount(accountToDisconnect.id);
+      } else {
+        await authApi.gmail.disconnect();
+      }
+      // Refresh status to get updated accounts list
+      const status = await authApi.gmail.getStatus();
+      setGmailStatus(status);
+      toast.success('Account removed successfully');
     } catch (err) { toast.error(err.message ?? 'Failed to disconnect'); }
-    finally { setGmailLoading(false); }
+    finally { 
+      setGmailLoading(false);
+      setAccountToDisconnect(null);
+    }
   };
 
   /* ── Delete account ── */
@@ -269,13 +314,11 @@ export default function AccountSettingsPage() {
       {/* ── Profile ── */}
       <Section title="Profile" subtitle="Your personal information" icon={User}>
         <div className="flex items-center gap-4 pb-2">
-          <div className="w-16 h-16 rounded-full overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+          <div className="w-16 h-16 rounded-full overflow-hidden border flex items-center justify-center" style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}>
             {avatarUrl ? (
-              <img src={avatarUrl} alt="Profile avatar" className="w-full h-full object-cover" />
+              <img src={getAvatarUrlWithTimestamp(avatarUrl, avatarTimestamp)} alt="Profile avatar" className="w-full h-full object-cover" />
             ) : (
-              <div className="w-full h-full flex items-center justify-center text-lg font-700" style={{ background: 'var(--brand-dim)', color: 'var(--brand)' }}>
-                {(user?.full_name || user?.email || 'U')[0].toUpperCase()}
-              </div>
+              <User className="w-8 h-8" style={{ color: 'var(--text-muted)' }} />
             )}
           </div>
           <label className="btn-ghost h-9 px-3 text-sm cursor-pointer">
@@ -368,7 +411,7 @@ export default function AccountSettingsPage() {
       </Section>
 
       {/* ── MFA ── */}
-      <Section title="Two-Factor Authentication" subtitle="TOTP-based 2FA for extra security" icon={Shield}>
+      <Section title="Multi-Factor Authentication" subtitle="TOTP-based MFA for extra security" icon={Shield}>
         <div className="flex items-center justify-between gap-4">
           <div>
             <p className="text-sm font-500" style={{ color: 'var(--text-primary)' }}>
@@ -389,56 +432,38 @@ export default function AccountSettingsPage() {
         </div>
       </Section>
 
-      {/* ── Gmail ── */}
-      <Section title="Gmail Integration" subtitle="Monitor your inbox automatically" icon={Mail}>
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <p className="text-sm font-500" style={{ color: 'var(--text-primary)' }}>
-              {gmailConnected ? `Connected: ${gmailStatus?.email ?? 'Gmail'}` : 'Not connected'}
-            </p>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              {gmailConnected
-                ? 'PhishCatcher is monitoring your inbox for threats'
-                : 'Connect Gmail to enable automatic inbox monitoring'}
-            </p>
-          </div>
-          {gmailConnected ? (
-            <button onClick={() => setShowGmailDisconnectDialog(true)} disabled={gmailLoading}
-              className="btn-ghost h-9 px-3 text-sm shrink-0"
-              style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>
-              {gmailLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-              Disconnect
-            </button>
-          ) : (
-            <button onClick={handleGmailConnect} disabled={gmailLoading}
-              className="btn-primary h-9 px-4 text-sm shrink-0">
-              {gmailLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
-              Connect Gmail
-            </button>
-          )}
-        </div>
-
-        {gmailConnected && (
-          <>
-            <div className="grid grid-cols-2 gap-3 mt-2">
+{/* ── Gmail ── */}
+      <Section title="Gmail Integration" subtitle="Connect your Gmail, no more second guessing — the email you received is safe" icon={Mail}>
+        <div className="space-y-3">
+          {/* Connected accounts count */}
+          <p className="text-sm" style={{ color: 'var(--text-primary)' }}>
+            {gmailStatus?.connected 
+              ? `${gmailStatus.accounts?.length || 0} account${(gmailStatus.accounts?.length || 0) !== 1 ? 's' : ''} connected`
+              : 'No Gmail accounts connected'}
+          </p>
+          
+          {/* Stats - always show if available */}
+          {gmailStatus?.connected && (
+            <div className="grid grid-cols-2 gap-3">
               {[
                 { label: 'Emails scanned', value: gmailStatus?.emails_scanned ?? '—' },
                 { label: 'Threats found',  value: gmailStatus?.threats_found  ?? '—' },
               ].map(s => (
                 <div key={s.label} className="rounded-xl p-3 text-center"
                   style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
-                  <div className="font-heading font-700 text-lg" style={{ color: 'var(--brand)' }}>{s.value}</div>
-                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
+                  <p className="text-lg font-600" style={{ color: 'var(--text-primary)' }}>{s.value}</p>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
                 </div>
               ))}
             </div>
-            <div className="mt-3">
-              <Link to="/upload" className="text-xs font-500 inline-flex items-center gap-1" style={{ color: 'var(--brand)' }}>
-                Load and analyze emails <ChevronRight className="w-3 h-3" />
-              </Link>
-            </div>
-          </>
-        )}
+          )}
+          
+          {/* Link to full Gmail settings page */}
+          <Link to="/settings/gmail" className="btn-primary h-10 px-4 text-sm w-full justify-center flex items-center gap-2 mt-2">
+            <Settings className="w-4 h-4" />
+            Manage connections
+          </Link>
+        </div>
       </Section>
 
       {/* ── Danger zone ── */}
@@ -506,6 +531,41 @@ export default function AccountSettingsPage() {
         )}
       </div>
 
+      {/* Gmail Connecting Dialog */}
+      {showGmailConnecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-sm mx-4 rounded-2xl p-6 text-center"
+            style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          >
+            <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
+              style={{ background: 'var(--brand-dim)' }}>
+              <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--brand)' }} />
+            </div>
+            
+            <h3 className="font-heading font-700 text-lg mb-2" style={{ color: 'var(--text-primary)' }}>
+              Connecting to Gmail...
+            </h3>
+            
+            <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+              A browser popup has opened. Sign in with your Google account and grant access to PhishCatcher.
+            </p>
+            
+            <p className="text-xs mb-6" style={{ color: 'var(--text-muted)' }}>
+              This window will close automatically once connected.
+            </p>
+            
+            <button
+              onClick={() => setShowGmailConnecting(false)}
+              className="btn-ghost w-full"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Gmail Disconnect Confirmation Dialog */}
       {showGmailDisconnectDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -516,20 +576,22 @@ export default function AccountSettingsPage() {
                 <AlertTriangle className="w-5 h-5" style={{ color: 'var(--danger)' }} />
               </div>
               <div>
-                <h3 className="text-lg font-600" style={{ color: 'var(--text-primary)' }}>Disconnect Gmail?</h3>
+                <h3 className="text-lg font-600" style={{ color: 'var(--text-primary)' }}>
+                  {accountToDisconnect ? `Remove ${accountToDisconnect.email}?` : 'Disconnect Gmail?'}
+                </h3>
                 <p className="text-sm" style={{ color: 'var(--text-muted)' }}>This action cannot be undone</p>
               </div>
             </div>
             
             <div className="mb-6 p-3 rounded-lg" style={{ background: 'var(--bg-elevated)' }}>
               <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                PhishCatcher will stop monitoring your inbox. You can reconnect at any time, but you'll need to re-authorize access.
+                PhishCatcher will stop analyzing this email account. You can reconnect at any time, but you'll need to re-authorize access.
               </p>
             </div>
 
             <div className="flex gap-3">
               <button 
-                onClick={() => setShowGmailDisconnectDialog(false)} 
+                onClick={() => { setShowGmailDisconnectDialog(false); setAccountToDisconnect(null); }} 
                 className="btn-ghost flex-1"
               >
                 Cancel
@@ -541,7 +603,7 @@ export default function AccountSettingsPage() {
                 style={{ background: 'var(--danger)', color: 'white' }}
               >
                 {gmailLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                Disconnect
+                Remove
               </button>
             </div>
           </div>

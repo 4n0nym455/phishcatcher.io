@@ -64,6 +64,7 @@ class EmailProvider(Base):
     # Status
     is_active = Column(Boolean, default=True)
     is_connected = Column(Boolean, default=False)
+    is_default = Column(Boolean, default=False)  # For multi-account support
     connection_error = Column(Text, nullable=True)
     last_error_at = Column(DateTime(timezone=True), nullable=True)
     

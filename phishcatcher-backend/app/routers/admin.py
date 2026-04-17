@@ -127,6 +127,10 @@ async def list_users(
     if role:
         query = query.where(User.role == role)
     
+    account_status = request.query_params.get("account_status")
+    if account_status:
+        query = query.where(User.account_status == account_status)
+    
     # Get total count
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -157,6 +161,7 @@ async def list_users(
                 "full_name": u.full_name,
                 "role": u.role,
                 "is_active": u.is_active,
+                "account_status": u.account_status,
                 "is_verified": u.is_verified,
                 "mfa_enabled": u.mfa_enabled,
                 "last_login": u.last_login,
@@ -278,8 +283,26 @@ async def update_user(
         user.full_name = user_data["full_name"]
     if "company" in user_data:
         user.company = user_data["company"]
+    if "account_status" in user_data:
+        user.account_status = user_data["account_status"]
+        if user_data["account_status"] == "active":
+            user.is_active = True
     
     await db.commit()
+    
+    # If account was approved, send notification email
+    if user_data.get("account_status") == "active":
+        try:
+            from app.services.email_service import email_service
+            settings = get_settings()
+            await email_service.send_account_approved(
+                to_email=user.email,
+                user_name=user.full_name or user.email.split("@")[0],
+                dashboard_url=f"{settings.FRONTEND_URL}/login"
+            )
+            logger.info(f"Approval email sent to {user.email}")
+        except Exception as e:
+            logger.error(f"Failed to send approval email to {user.email}: {e}")
     
     # Log successful update
     await log_admin_action(
@@ -399,6 +422,24 @@ async def get_system_stats(
         )
     )
     
+    # Pending activations
+    pending_activations = await db.execute(
+        select(func.count()).where(User.account_status == "pending")
+    )
+    
+    # MFA enabled users
+    mfa_enabled_users = await db.execute(
+        select(func.count()).where(User.mfa_enabled == True)
+    )
+    
+    # Gmail integrations - count from email_providers table
+    from app.models.email_provider import EmailProvider
+    gmail_connections = await db.execute(
+        select(func.count(EmailProvider.id))
+        .where(EmailProvider.provider_type == "gmail")
+        .where(EmailProvider.is_connected == True)
+    )
+    
     # Analysis statistics
     total_analyses = await db.execute(select(func.count()).select_from(AnalysisJob))
     completed_analyses = await db.execute(
@@ -410,37 +451,70 @@ async def get_system_stats(
         )
     )
     
+    # Email analysed active status (currently processing/pending)
+    email_analysed_active_result = await db.execute(
+        select(func.count()).where(
+            AnalysisJob.status.in_(["processing", "pending"])
+        )
+    )
+    email_analysed_active_count = email_analysed_active_result.scalar()
+    
     # Threat statistics
-    phishing_count = await db.execute(
+    phishing_result = await db.execute(
         select(func.count()).where(AnalysisJob.threat_category == "phishing")
     )
-    malware_count = await db.execute(
+    malware_result = await db.execute(
         select(func.count()).where(AnalysisJob.threat_category == "malware")
     )
+    phishing_count_val = phishing_result.scalar()
+    malware_count_val = malware_result.scalar()
+    threats_detected = phishing_count_val + malware_count_val
     
     # Average risk score
-    avg_risk = await db.execute(
+    avg_risk_result = await db.execute(
         select(func.avg(AnalysisJob.risk_score)).where(
             AnalysisJob.status == "completed"
         )
     )
+    avg_risk_val = avg_risk_result.scalar()
+    
+    # Get all scalar values first
+    total_users_val = total_users.scalar()
+    active_users_val = active_users.scalar()
+    new_today_val = new_users_today.scalar()
+    pending_activations_val = pending_activations.scalar()
+    mfa_enabled_users_val = mfa_enabled_users.scalar()
+    gmail_connections_val = gmail_connections.scalar()
+    total_analyses_val = total_analyses.scalar()
+    completed_analyses_val = completed_analyses.scalar()
+    analyses_today_val = analyses_today.scalar()
     
     return {
         "users": {
-            "total": total_users.scalar(),
-            "active": active_users.scalar(),
-            "new_today": new_users_today.scalar()
+            "total": total_users_val,
+            "active": active_users_val,
+            "new_today": new_today_val
         },
         "analyses": {
-            "total": total_analyses.scalar(),
-            "completed": completed_analyses.scalar(),
-            "today": analyses_today.scalar()
+            "total": total_analyses_val,
+            "completed": completed_analyses_val,
+            "today": analyses_today_val,
+            "active": email_analysed_active_count
         },
         "threats": {
-            "phishing_detected": phishing_count.scalar(),
-            "malware_detected": malware_count.scalar(),
-            "average_risk_score": round(avg_risk.scalar() or 0, 2)
+            "phishing_detected": phishing_count_val,
+            "malware_detected": malware_count_val,
+            "detected": threats_detected,
+            "average_risk_score": round(avg_risk_val or 0, 2)
         },
+        "pending_activations": pending_activations_val,
+        "gmail_connections": gmail_connections_val,
+        "mfa_enabled_users": mfa_enabled_users_val,
+        "total_users": total_users_val,
+        "active_users": active_users_val,
+        "total_emails": completed_analyses_val,
+        "threats_detected": threats_detected,
+        "avg_threat_score": round(avg_risk_val or 0, 2),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -580,7 +654,7 @@ async def get_analytics(
             "count": count.scalar() or 0
         })
     
-    # User activity (daily new users)
+    # User activity (daily new users and users active in period)
     user_activity = []
     for i in range(days):
         day = start_date + timedelta(days=i)
@@ -594,7 +668,8 @@ async def get_analytics(
             )
         )
         
-        active_users = await db.execute(
+        # Users who logged in on this specific day
+        active_users_day = await db.execute(
             select(func.count(User.id)).where(
                 User.last_login >= day_start,
                 User.last_login < day_end
@@ -604,15 +679,55 @@ async def get_analytics(
         user_activity.append({
             "date": day_start.strftime("%Y-%m-%d"),
             "new_users": new_users.scalar() or 0,
-            "active_users": active_users.scalar() or 0
+            "active_users": active_users_day.scalar() or 0
         })
+    
+    # Get current period stats (last 7 days or current period)
+    current_period_start = now - timedelta(days=min(7, days))
+    
+    current_phishing = await db.execute(
+        select(func.count(AnalysisJob.id)).where(
+            AnalysisJob.created_at >= current_period_start,
+            AnalysisJob.threat_category == "phishing"
+        )
+    )
+    
+    current_suspicious = await db.execute(
+        select(func.count(AnalysisJob.id)).where(
+            AnalysisJob.created_at >= current_period_start,
+            AnalysisJob.risk_score >= 40,
+            AnalysisJob.risk_score < 70
+        )
+    )
+    
+    current_safe = await db.execute(
+        select(func.count(AnalysisJob.id)).where(
+            AnalysisJob.created_at >= current_period_start,
+            AnalysisJob.risk_score < 40,
+            AnalysisJob.status == "completed"
+        )
+    )
+    
+    # Get users active in last 30 days
+    thirty_days_ago = now - timedelta(days=30)
+    active_users_30d = await db.execute(
+        select(func.count(User.id)).where(
+            User.last_login >= thirty_days_ago
+        )
+    )
     
     return {
         "daily_analyses": daily_data,
         "category_breakdown": category_breakdown,
         "risk_distribution": risk_distribution,
         "user_activity": user_activity,
-        "period_days": days
+        "period_days": days,
+        "current_threat_status": {
+            "phishing": current_phishing.scalar() or 0,
+            "suspicious": current_suspicious.scalar() or 0,
+            "safe": current_safe.scalar() or 0
+        },
+        "active_users_30d": active_users_30d.scalar() or 0
     }
 
 
@@ -627,8 +742,6 @@ async def get_audit_logs(
     days: int = Query(7, ge=1, le=90),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    resource_type: Optional[str] = None,
     user_email: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
@@ -645,13 +758,14 @@ async def get_audit_logs(
     # Build count query
     count_query = select(func.count(AuditLog.id)).where(date_filter)
     if action:
-        count_query = count_query.where(AuditLog.action == action)
+        # Support comma-separated actions (e.g., "login,logout,token_refresh")
+        actions = [a.strip().lower() for a in action.split(',')]
+        if len(actions) == 1:
+            count_query = count_query.where(AuditLog.action.ilike(actions[0]))
+        else:
+            count_query = count_query.where(AuditLog.action.in_(actions))
     if status:
         count_query = count_query.where(AuditLog.status == status)
-    if ip_address:
-        count_query = count_query.where(AuditLog.ip_address == ip_address)
-    if resource_type:
-        count_query = count_query.where(AuditLog.resource_type == resource_type)
     if user_email:
         count_query = count_query.where(AuditLog.user_email.ilike(f"%{user_email}%"))
 
@@ -661,13 +775,13 @@ async def get_audit_logs(
     # Build paginated query
     paginated_query = select(AuditLog).where(date_filter)
     if action:
-        paginated_query = paginated_query.where(AuditLog.action == action)
+        actions = [a.strip().lower() for a in action.split(',')]
+        if len(actions) == 1:
+            paginated_query = paginated_query.where(AuditLog.action.ilike(actions[0]))
+        else:
+            paginated_query = paginated_query.where(AuditLog.action.in_(actions))
     if status:
         paginated_query = paginated_query.where(AuditLog.status == status)
-    if ip_address:
-        paginated_query = paginated_query.where(AuditLog.ip_address == ip_address)
-    if resource_type:
-        paginated_query = paginated_query.where(AuditLog.resource_type == resource_type)
     if user_email:
         paginated_query = paginated_query.where(AuditLog.user_email.ilike(f"%{user_email}%"))
 

@@ -3,10 +3,9 @@ Threat Intelligence Service
 
 This module provides threat intelligence API integration with:
 - AbuseIPDB (IP/Domain reputation)
-- WhoisJSON (Domain age)
-- PhishTank (URL phishing check)
+- RDAP (Domain age - free)
+- PhishTank/URLScan (URL phishing check)
 - VirusTotal (URL/File hash analysis)
-- URLScan (Backup URL analysis)
 
 Includes Redis caching to reduce API calls.
 """
@@ -33,6 +32,25 @@ class ThreatIntelService:
     HIGH_RISK_AGE_DAYS = 30
     MEDIUM_RISK_AGE_DAYS = 90
     HIGH_CONFIDENCE_SCORE = 70
+    
+    # URL Expansion Safety
+    BLOCKED_IP_RANGES = [
+        '127.0.0.0/8',
+        '10.0.0.0/8',
+        '172.16.0.0/12',
+        '192.168.0.0/16',
+        '169.254.0.0/16',
+        '0.0.0.0/8',
+        '100.64.0.0/10',
+    ]
+    
+    BLOCKED_HOSTNAMES = {
+        'localhost', 'localhost.localdomain', 'metadata.google.internal',
+        '169.254.169.254',
+    }
+    
+    MAX_REDIRECTS = 3
+    EXPANSION_TIMEOUT = 5.0
     
     def __init__(self):
         self.settings = get_settings()
@@ -85,10 +103,26 @@ class ThreatIntelService:
     
     @staticmethod
     def _extract_domain_from_url(url: str) -> Optional[str]:
-        """Extract domain from URL."""
+        """Extract domain from URL including subdomain, excluding path.
+        
+        Handles:
+        - URLs with or without http://https://
+        - Subdomains (gift.bank.com)
+        - Falls back to None if extraction fails (caller should use original URL)
+        """
         try:
+            # Add scheme if missing - important for proper parsing
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            
             parsed = urlparse(url)
-            return parsed.netloc.lower() if parsed.netloc else None
+            host = parsed.netloc.lower() if parsed.netloc else None
+            
+            if host:
+                # Remove port if present (e.g., gift.bank.com:8080)
+                host = host.split(':')[0]
+                return host  # Includes subdomain like "gift.bank.com"
+            return None
         except Exception:
             return None
     
@@ -99,14 +133,17 @@ class ThreatIntelService:
     
     @staticmethod
     def _get_risk_level_from_score(score: float) -> str:
-        """Convert 0-100 score to risk level."""
+        """Convert 0-100 score to risk level.
+        
+        Any positive detection is flagged as at least 'low' risk.
+        """
         if score >= 80:
             return "critical"
         elif score >= 60:
             return "high"
         elif score >= 40:
             return "medium"
-        elif score >= 20:
+        elif score > 0:
             return "low"
         return "none"
     
@@ -192,9 +229,22 @@ class ThreatIntelService:
                 'cached': False
             }
     
+    def _calculate_age_score(self, age_days: Optional[int]) -> Tuple[float, str]:
+        """Calculate risk score based on domain age."""
+        if age_days is None:
+            return (0.5, 'medium')
+        elif age_days < self.HIGH_RISK_AGE_DAYS:
+            return (1.0, 'critical')
+        elif age_days < self.MEDIUM_RISK_AGE_DAYS:
+            return (0.7, 'high')
+        elif age_days < 365:
+            return (0.4, 'medium')
+        else:
+            return (0.0, 'none')
+    
     async def check_domain_age(self, domain: str) -> Dict[str, Any]:
         """
-        Check domain age using WhoisJSON.
+        Check domain age using RDAP (free).
         
         Weight: 10% of TI score
         """
@@ -204,59 +254,40 @@ class ThreatIntelService:
             cached['cached'] = True
             return cached
         
-        if not self.settings.WHOISJSON_API_KEY:
-            return {
-                'api_name': 'whoisjson',
-                'success': False,
-                'score': 0.0,
-                'risk_level': 'none',
-                'error': 'API key not configured',
-                'cached': False
-            }
-        
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                 response = await client.get(
-                    'https://www.whoisjsonapi.com/v1/whois',
-                    params={
-                        'domain': domain,
-                        'apikey': self.settings.WHOISJSON_API_KEY
-                    }
+                    f'https://rdap.org/domain/{domain}',
+                    headers={'Accept': 'application/rdap+json'}
                 )
                 
                 if response.status_code == 200:
                     data = response.json()
-                    age_days = data.get('age_in_days')
+                    created = None
+                    for event in data.get('events', []):
+                        if event.get('eventAction') == 'registration':
+                            created = event.get('eventDate')
+                            break
                     
-                    # Calculate risk score based on age
-                    if age_days is None:
-                        score = 0.5
-                        risk = 'medium'
-                    elif age_days < self.HIGH_RISK_AGE_DAYS:
-                        score = 1.0
-                        risk = 'critical'
-                    elif age_days < self.MEDIUM_RISK_AGE_DAYS:
-                        score = 0.7
-                        risk = 'high'
-                    elif age_days < 365:
-                        score = 0.4
-                        risk = 'medium'
-                    else:
-                        score = 0.0
-                        risk = 'none'
+                    age_days = None
+                    if created:
+                        try:
+                            created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                            age_days = (datetime.utcnow() - created_dt.replace(tzinfo=None)).days
+                        except Exception:
+                            pass
+                    
+                    score, risk = self._calculate_age_score(age_days)
                     
                     result = {
-                        'api_name': 'whoisjson',
+                        'api_name': 'rdap',
                         'success': True,
                         'score': score,
                         'risk_level': risk,
                         'data': {
                             'domain': domain,
-                            'created_date': data.get('created_date_normalized'),
-                            'age_in_days': age_days,
-                            'age_in_years': data.get('age_in_years'),
-                            'registrar': data.get('registrar'),
-                            'name_servers': data.get('nameServers', [])
+                            'created': created,
+                            'age_in_days': age_days
                         },
                         'cached': False
                     }
@@ -265,17 +296,17 @@ class ThreatIntelService:
                     return result
                 else:
                     return {
-                        'api_name': 'whoisjson',
+                        'api_name': 'rdap',
                         'success': False,
                         'score': 0.0,
                         'risk_level': 'none',
-                        'error': f'API error: {response.status_code}',
+                        'error': f'RDAP error: {response.status_code}',
                         'cached': False
                     }
         except Exception as e:
-            logger.error(f"WhoisJSON error: {e}")
+            logger.error(f"RDAP domain age check error: {e}")
             return {
-                'api_name': 'whoisjson',
+                'api_name': 'rdap',
                 'success': False,
                 'score': 0.0,
                 'risk_level': 'none',
@@ -285,9 +316,11 @@ class ThreatIntelService:
     
     async def check_domain_reputation(self, domain: str) -> Dict[str, Any]:
         """
-        Check domain reputation using AbuseIPDB.
+        Check domain reputation by resolving to IPs and checking AbuseIPDB.
         
         Weight: 10% of TI score
+        Note: AbuseIPDB does not have a direct domain check endpoint.
+        This method resolves the domain and checks associated IPs.
         """
         cache_key = f"ti:domain_rep:{domain}"
         cached = await self._get_from_cache(cache_key)
@@ -306,45 +339,60 @@ class ThreatIntelService:
             }
         
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    'https://api.abuseipdb.com/api/v2/check-domain',
-                    headers={
-                        'Accept': 'application/json',
-                        'Key': self.settings.ABUSEIPDB_API_KEY
+            import socket
+            ip_addresses = []
+            
+            try:
+                result = socket.getaddrinfo(domain, None, socket.AF_INET)
+                for res in result:
+                    ip_addresses.append(res[4][0])
+            except socket.gaierror:
+                pass
+            
+            try:
+                result = socket.getaddrinfo(domain, None, socket.AF_INET6)
+                for res in result:
+                    ip_addresses.append(res[4][0])
+            except socket.gaierror:
+                pass
+            
+            if not ip_addresses:
+                return {
+                    'api_name': 'abuseipdb_domain',
+                    'success': True,
+                    'score': 0.0,
+                    'risk_level': 'none',
+                    'data': {
+                        'domain': domain,
+                        'resolved_ips': [],
+                        'skipped': 'No IPs resolved for domain'
                     },
-                    params={'domain': domain}
-                )
-                
-                if response.status_code == 200:
-                    data = response.json().get('data', {})
-                    score = data.get('abuseConfidenceScore', 0) / 100.0
-                    
-                    result = {
-                        'api_name': 'abuseipdb_domain',
-                        'success': True,
-                        'score': score,
-                        'risk_level': self._get_risk_level_from_score(score * 100),
-                        'data': {
-                            'domain': domain,
-                            'abuse_confidence_score': data.get('abuseConfidenceScore', 0),
-                            'num_reported_ips': data.get('numReportedIp', 0),
-                            'num_distinct_ips': data.get('numDistinctIp', 0)
-                        },
-                        'cached': False
-                    }
-                    
-                    await self._set_in_cache(cache_key, result)
-                    return result
-                else:
-                    return {
-                        'api_name': 'abuseipdb_domain',
-                        'success': False,
-                        'score': 0.0,
-                        'risk_level': 'none',
-                        'error': f'API error: {response.status_code}',
-                        'cached': False
-                    }
+                    'cached': False
+                }
+            
+            unique_ips = list(set(ip_addresses))
+            max_score = 0.0
+            
+            for ip in unique_ips[:3]:
+                ip_result = await self.check_ip_reputation(ip)
+                if ip_result.get('success'):
+                    max_score = max(max_score, ip_result.get('score', 0.0) * 100)
+            
+            result = {
+                'api_name': 'abuseipdb_domain',
+                'success': True,
+                'score': max_score / 100.0,
+                'risk_level': self._get_risk_level_from_score(max_score),
+                'data': {
+                    'domain': domain,
+                    'resolved_ips': unique_ips[:5],
+                    'max_abuse_score': max_score
+                },
+                'cached': False
+            }
+            
+            await self._set_in_cache(cache_key, result)
+            return result
         except Exception as e:
             logger.error(f"AbuseIPDB domain check error: {e}")
             return {
@@ -358,96 +406,143 @@ class ThreatIntelService:
     
     async def check_url_phishtank(self, url: str) -> Dict[str, Any]:
         """
-        Check URL using PhishTank.
+        Check URL using PhishTank (or URLScan as fallback).
         
         Weight: 15% of TI score
+        
+        Note: PhishTank registration is closed, so we use URLScan as primary
+        phishing detection source when PhishTank is unavailable.
         """
-        cache_key = f"ti:phishtank:{self._hash_url(url)}"
+        domain = self._extract_domain_from_url(url)
+        check_target = domain if domain else url
+        
+        cache_key = f"ti:phishtank:{self._hash_url(check_target)}"
         cached = await self._get_from_cache(cache_key)
         if cached:
             cached['cached'] = True
             return cached
         
-        if not self.settings.PHISHTANK_API_KEY:
+        if self.settings.PHISHTANK_API_KEY and self.settings.PHISHTANK_API_KEY != 'your-phishtank-api-key':
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        'https://checkurl.phishtank.com/checkurl/',
+                        data={'url': check_target},
+                        headers={
+                            'App-Key': self.settings.PHISHTANK_API_KEY,
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        }
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json().get('results', {})
+                        in_db = data.get('in_database', False)
+                        verified = data.get('verified', False)
+                        
+                        if in_db and verified:
+                            score = 1.0
+                            risk = 'critical'
+                        elif in_db:
+                            score = 0.6
+                            risk = 'high'
+                        else:
+                            score = 0.0
+                            risk = 'none'
+                        
+                        result = {
+                            'api_name': 'phishtank',
+                            'success': True,
+                            'score': score,
+                            'risk_level': risk,
+                            'data': {
+                                'url': check_target,
+                                'original_url': url,
+                                'in_database': in_db,
+                                'verified': verified,
+                                'phish_detail_url': data.get('phish_detail_url')
+                            },
+                            'cached': False
+                        }
+                        
+                        await self._set_in_cache(cache_key, result, 43200)
+                        return result
+                    elif response.status_code == 403:
+                        urlscan_result = await self.check_url_urlscan(url)
+                        if urlscan_result.get('success'):
+                            return {
+                                'api_name': 'phishtank',
+                                'success': True,
+                                'score': urlscan_result.get('score', 0.0),
+                                'risk_level': urlscan_result.get('risk_level', 'none'),
+                                'data': {
+                                    'url': check_target,
+                                    'original_url': url,
+                                    'fallback_to_urlscan': True,
+                                    'urlscan_data': urlscan_result.get('data')
+                                },
+                                'cached': urlscan_result.get('cached', False)
+                            }
+                        return {
+                            'api_name': 'phishtank',
+                            'success': True,
+                            'score': 0.0,
+                            'risk_level': 'none',
+                            'data': {'skipped': 'PhishTank blocked (403), URLScan unavailable'},
+                            'cached': False
+                        }
+                    else:
+                        return {
+                            'api_name': 'phishtank',
+                            'success': False,
+                            'score': 0.0,
+                            'risk_level': 'none',
+                            'error': f'API error: {response.status_code}',
+                            'cached': False
+                        }
+            except Exception as e:
+                logger.warning(f"PhishTank error, trying URLScan: {e}")
+        
+        urlscan_result = await self.check_url_urlscan(url)
+        if urlscan_result.get('success'):
             return {
                 'api_name': 'phishtank',
-                'success': False,
-                'score': 0.0,
-                'risk_level': 'none',
-                'error': 'API key not configured',
-                'cached': False
+                'success': True,
+                'score': urlscan_result.get('score', 0.0),
+                'risk_level': urlscan_result.get('risk_level', 'none'),
+                'data': {
+                    'url': check_target,
+                    'original_url': url,
+                    'fallback_to_urlscan': True,
+                    'urlscan_data': urlscan_result.get('data')
+                },
+                'cached': urlscan_result.get('cached', False)
             }
         
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    'https://checkurl.phishtank.com/checkurl/',
-                    data={'url': url},
-                    headers={
-                        'App-Key': self.settings.PHISHTANK_API_KEY,
-                        'Content-Type': 'application/x-www-form-urlencoded'
-                    }
-                )
-                
-                if response.status_code == 200:
-                    data = response.json().get('results', {})
-                    in_db = data.get('in_database', False)
-                    verified = data.get('verified', False)
-                    
-                    if in_db and verified:
-                        score = 1.0
-                        risk = 'critical'
-                    elif in_db:
-                        score = 0.6
-                        risk = 'high'
-                    else:
-                        score = 0.0
-                        risk = 'none'
-                    
-                    result = {
-                        'api_name': 'phishtank',
-                        'success': True,
-                        'score': score,
-                        'risk_level': risk,
-                        'data': {
-                            'url': url,
-                            'in_database': in_db,
-                            'verified': verified,
-                            'phish_detail_url': data.get('phish_detail_url')
-                        },
-                        'cached': False
-                    }
-                    
-                    await self._set_in_cache(cache_key, result, 43200)
-                    return result
-                else:
-                    return {
-                        'api_name': 'phishtank',
-                        'success': False,
-                        'score': 0.0,
-                        'risk_level': 'none',
-                        'error': f'API error: {response.status_code}',
-                        'cached': False
-                    }
-        except Exception as e:
-            logger.error(f"PhishTank error: {e}")
-            return {
-                'api_name': 'phishtank',
-                'success': False,
-                'score': 0.0,
-                'risk_level': 'none',
-                'error': str(e),
-                'cached': False
-            }
+        return {
+            'api_name': 'phishtank',
+            'success': True,
+            'score': 0.0,
+            'risk_level': 'none',
+            'data': {'skipped': 'PhishTank unavailable (registration closed), URLScan failed'},
+            'cached': False
+        }
     
     async def check_url_virustotal(self, url: str) -> Dict[str, Any]:
         """
         Check URL using VirusTotal.
         
         Weight: 15% of TI score
+        
+        Privacy: Extract domain only to avoid sending sensitive URL data
         """
         import urllib.parse
-        cache_key = f"ti:vt_url:{self._hash_url(url)}"
+        import base64
+        
+        # Extract domain for privacy - don't send full URLs with tokens
+        domain = self._extract_domain_from_url(url)
+        check_target = domain if domain else url
+        
+        cache_key = f"ti:vt_url:{self._hash_url(check_target)}"
         cached = await self._get_from_cache(cache_key)
         if cached:
             cached['cached'] = True
@@ -464,7 +559,8 @@ class ThreatIntelService:
             }
         
         try:
-            encoded_url = urllib.parse.quote(url, safe='')
+            # Use base64 encoding (without padding) as required by VT v3 API
+            encoded_url = base64.urlsafe_b64encode(check_target.encode()).decode().rstrip('=')
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(
                     f'https://www.virustotal.com/api/v3/urls/{encoded_url}',
@@ -490,7 +586,8 @@ class ThreatIntelService:
                         'score': score,
                         'risk_level': self._get_risk_level_from_score(score * 100),
                         'data': {
-                            'url': url,
+                            'url': check_target,  # Domain only for privacy
+                            'original_url': url,  # Keep original for reference
                             'last_analysis_stats': stats,
                             'threat_names': data.get('threat_labels', []),
                             'permalink': f"https://www.virustotal.com/gui/url/{encoded_url}"
@@ -506,7 +603,7 @@ class ThreatIntelService:
                         'success': True,
                         'score': 0.0,
                         'risk_level': 'none',
-                        'data': {'url': url, 'not_found': True},
+                        'data': {'url': check_target, 'original_url': url, 'not_found': True},
                         'cached': False
                     }
                     await self._set_in_cache(cache_key, result, 3600)
@@ -616,7 +713,13 @@ class ThreatIntelService:
         Check URL using URLScan as backup.
         
         Weight: 10% of TI score (backup)
+        
+        Privacy: Extract domain only to avoid sending sensitive URL data
         """
+        # Extract domain for privacy
+        domain = self._extract_domain_from_url(url)
+        check_target = domain if domain else url
+        
         if not self.settings.ENABLE_URLSCAN_BACKUP:
             return {
                 'api_name': 'urlscan',
@@ -627,7 +730,7 @@ class ThreatIntelService:
                 'cached': False
             }
         
-        cache_key = f"ti:urlscan:{self._hash_url(url)}"
+        cache_key = f"ti:urlscan:{self._hash_url(check_target)}"
         cached = await self._get_from_cache(cache_key)
         if cached:
             cached['cached'] = True
@@ -647,7 +750,7 @@ class ThreatIntelService:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     'https://urlscan.io/api/v1/scan/',
-                    data=json.dumps({'url': url, 'visibility': 'public'}),
+                    data=json.dumps({'url': check_target, 'visibility': 'public'}),
                     headers={
                         'Content-Type': 'application/json',
                         'API-Key': self.settings.URLSCAN_API_KEY
@@ -678,7 +781,8 @@ class ThreatIntelService:
                             'score': score,
                             'risk_level': self._get_risk_level_from_score(score * 100),
                             'data': {
-                                'url': url,
+                                'url': check_target,
+                                'original_url': url,
                                 'score': overall.get('score', 0),
                                 'categories': overall.get('categories', []),
                                 'permalink': f"https://urlscan.io/result/{result_uuid}/"
@@ -733,7 +837,7 @@ class ThreatIntelService:
         
         weights = {
             'abuseipdb': 0.20,
-            'whoisjson': 0.10,
+            'rdap': 0.10,
             'abuseipdb_domain': 0.10,
             'phishtank': 0.15,
             'virustotal_url': 0.15,
@@ -754,14 +858,23 @@ class ThreatIntelService:
             tasks.append(('ip_reputation', ip_task))
             
             domain_age_task = self.check_domain_age(sender_domain)
-            tasks.append(('domain_age', domain_age_task))
+            tasks.append(('rdap', domain_age_task))
             
             domain_rep_task = self.check_domain_reputation(sender_domain)
             tasks.append(('domain_reputation', domain_rep_task))
         
+        url_expansions = {}
         for url in urls[:5]:
-            tasks.append(('phishtank', self.check_url_phishtank(url)))
-            tasks.append(('virustotal_url', self.check_url_virustotal(url)))
+            expansion = await self.expand_url(url)
+            url_expansions[url] = {
+                'expanded': expansion['expanded'],
+                'final_domain': expansion['final_domain'],
+                'blocked': expansion['blocked_reason'] is not None
+            }
+            
+            ti_url = expansion['expanded'] if expansion['success'] else url
+            tasks.append(('phishtank', self.check_url_phishtank(ti_url)))
+            tasks.append(('virustotal_url', self.check_url_virustotal(ti_url)))
         
         for hash_val in attachment_hashes[:3]:
             tasks.append(('virustotal_hash', self.check_hash_virustotal(hash_val)))
@@ -816,6 +929,7 @@ class ThreatIntelService:
             'api_results': task_results,
             'indicators': indicators,
             'warnings': warnings,
+            'url_expansions': url_expansions,
             'analysis_timestamp': datetime.utcnow().isoformat()
         }
     
@@ -833,6 +947,250 @@ class ThreatIntelService:
                 'risk_level': 'none',
                 'error': f'Could not resolve domain: {domain}'
             }
+    
+    async def expand_url(self, url: str) -> Dict[str, Any]:
+        """
+        Expand shortened URLs by following redirects safely.
+        
+        Returns:
+            {
+                'original': str,
+                'expanded': str or None,
+                'success': bool,
+                'blocked_reason': str or None,
+                'final_domain': str or None
+            }
+        """
+        import ipaddress
+        
+        cache_key = f"ti:url_expand:{self._hash_url(url)}"
+        cached = await self._get_from_cache(cache_key)
+        if cached:
+            return cached
+        
+        result = {
+            'original': url,
+            'expanded': None,
+            'success': False,
+            'blocked_reason': None,
+            'final_domain': None
+        }
+        
+        try:
+            parsed = urlparse(url if url.startswith(('http://', 'https://')) else f'https://{url}')
+            initial_host = parsed.netloc.split(':')[0].lower()
+            
+            if initial_host in self.BLOCKED_HOSTNAMES or initial_host.endswith('.local'):
+                result['blocked_reason'] = 'internal_hostname'
+                await self._set_in_cache(cache_key, result, 86400)
+                return result
+            
+            try:
+                ip = ipaddress.ip_address(initial_host)
+                for blocked in self.BLOCKED_IP_RANGES:
+                    if ip in ipaddress.ip_network(blocked):
+                        result['blocked_reason'] = 'blocked_ip_range'
+                        await self._set_in_cache(cache_key, result, 86400)
+                        return result
+            except ValueError:
+                pass
+            
+            async with httpx.AsyncClient(
+                timeout=self.EXPANSION_TIMEOUT,
+                follow_redirects=True,
+                max_redirects=self.MAX_REDIRECTS,
+                headers={'User-Agent': 'PhishCatcher/1.0'}
+            ) as client:
+                response = await client.head(url)
+                
+                final_url = str(response.url)
+                result['expanded'] = final_url
+                result['success'] = True
+                
+                final_parsed = urlparse(final_url)
+                final_host = final_parsed.netloc.split(':')[0].lower()
+                
+                if final_host in self.BLOCKED_HOSTNAMES or final_host.endswith('.local'):
+                    result['blocked_reason'] = 'final_destination_internal'
+                    result['final_domain'] = None
+                else:
+                    result['final_domain'] = final_host
+                
+                await self._set_in_cache(cache_key, result, 3600)
+                return result
+                
+        except httpx.TimeoutException:
+            result['blocked_reason'] = 'timeout'
+            await self._set_in_cache(cache_key, result, 300)
+            return result
+        except Exception as e:
+            logger.warning(f"URL expansion failed for {url}: {e}")
+            result['blocked_reason'] = f'error: {str(e)}'
+            await self._set_in_cache(cache_key, result, 300)
+            return result
+
+
+def transform_ti_for_storage(ti_result: dict) -> dict:
+    """
+    Transform threat intel results into frontend-compatible format for storage.
+    
+    Converts raw API results with nested 'data' and 'api_results' into a flat
+    structure with 'indicators' containing api_name, details, score, and risk_level.
+    
+    Preserves original URLs from url_expansions for proper domain matching.
+    """
+    indicators = []
+    api_results = ti_result.get('api_results', {})
+    url_expansions = ti_result.get('url_expansions', {})
+    
+    if api_results.get('abuseipdb', {}).get('success'):
+        data = api_results['abuseipdb'].get('data', {})
+        indicators.append({
+            'api_name': 'abuseipdb',
+            'indicator_type': 'ip_reputation',
+            'indicator_value': data.get('ip_address', ''),
+            'details': {
+                'abuse_confidence_score': data.get('abuse_confidence_score', 0),
+                'num_reports': data.get('num_reports', 0),
+                'num_distinct_users': data.get('num_distinct_users', 0),
+                'country_code': data.get('country_code'),
+                'isp': data.get('isp'),
+                'domain': data.get('domain'),
+                'is_whitelisted': data.get('is_whitelisted', False),
+            },
+            'score': api_results['abuseipdb'].get('score', 0),
+            'risk_level': api_results['abuseipdb'].get('risk_level', 'none')
+        })
+    
+    if api_results.get('rdap', {}).get('success'):
+        data = api_results['rdap'].get('data', {})
+        indicators.append({
+            'api_name': 'rdap',
+            'indicator_type': 'domain_age',
+            'indicator_value': data.get('domain', ''),
+            'details': {
+                'age_in_days': data.get('age_in_days'),
+                'created': data.get('created'),
+            },
+            'score': api_results['rdap'].get('score', 0),
+            'risk_level': api_results['rdap'].get('risk_level', 'none')
+        })
+    
+    if api_results.get('abuseipdb_domain', {}).get('success'):
+        data = api_results['abuseipdb_domain'].get('data', {})
+        indicators.append({
+            'api_name': 'abuseipdb_domain',
+            'indicator_type': 'domain_reputation',
+            'indicator_value': data.get('domain', ''),
+            'details': {
+                'resolved_ips': data.get('resolved_ips', []),
+                'max_abuse_score': data.get('max_abuse_score', 0),
+            },
+            'score': api_results['abuseipdb_domain'].get('score', 0),
+            'risk_level': api_results['abuseipdb_domain'].get('risk_level', 'none')
+        })
+    
+    phishtank_result = api_results.get('phishtank', {})
+    if phishtank_result.get('success'):
+        data = phishtank_result.get('data', {})
+        fallback = data.get('fallback_to_urlscan', False)
+        indicator_url = data.get('url', '')
+        original_url = data.get('original_url', '')
+        
+        # Find the ORIGINAL email URL that led to this indicator
+        if not original_url or original_url == indicator_url:
+            for orig, exp in url_expansions.items():
+                if exp.get('final_domain') == indicator_url or indicator_url in (exp.get('expanded') or ''):
+                    original_url = orig
+                    break
+        
+        indicators.append({
+            'api_name': 'phishtank',
+            'indicator_type': 'phishing_check',
+            'indicator_value': indicator_url,
+            'original_url': original_url,
+            'details': {
+                'in_database': data.get('in_database', False),
+                'verified': data.get('verified', False),
+                'fallback_to_urlscan': fallback,
+                'urlscan_data': data.get('urlscan_data') if fallback else None,
+            },
+            'score': phishtank_result.get('score', 0),
+            'risk_level': phishtank_result.get('risk_level', 'none')
+        })
+    
+    if api_results.get('virustotal_url', {}).get('success'):
+        data = api_results['virustotal_url'].get('data', {})
+        stats = data.get('last_analysis_stats', {})
+        indicator_url = data.get('url', '')  # This is the domain that was checked
+        original_url = data.get('original_url', '')  # This is the expanded URL
+        
+        # Find the ORIGINAL email URL that led to this indicator
+        final_domain = data.get('url', '')  # Domain that was checked
+        if final_domain:
+            for orig, exp in url_expansions.items():
+                # Match by final domain
+                if exp.get('final_domain') == final_domain or final_domain in (exp.get('expanded') or ''):
+                    original_url = orig
+                    break
+        
+        indicators.append({
+            'api_name': 'virustotal_url',
+            'indicator_type': 'url_reputation',
+            'indicator_value': indicator_url,
+            'original_url': original_url,
+            'details': {
+                'malicious': stats.get('malicious', 0),
+                'suspicious': stats.get('suspicious', 0),
+                'harmless': stats.get('harmless', 0),
+                'undetected': stats.get('undetected', 0),
+                'threat_names': data.get('threat_names', []),
+            },
+            'score': api_results['virustotal_url'].get('score', 0),
+            'risk_level': api_results['virustotal_url'].get('risk_level', 'none')
+        })
+    
+    if api_results.get('virustotal_hash', {}).get('success'):
+        data = api_results['virustotal_hash'].get('data', {})
+        stats = data.get('last_analysis_stats', {})
+        indicators.append({
+            'api_name': 'virustotal_hash',
+            'indicator_type': 'file_reputation',
+            'indicator_value': data.get('hash', ''),
+            'details': {
+                'malicious': stats.get('malicious', 0),
+                'suspicious': stats.get('suspicious', 0),
+                'file_type': data.get('file_type'),
+                'file_size': data.get('file_size'),
+            },
+            'score': api_results['virustotal_hash'].get('score', 0),
+            'risk_level': api_results['virustotal_hash'].get('risk_level', 'none')
+        })
+    
+    if api_results.get('urlscan', {}).get('success'):
+        data = api_results['urlscan'].get('data', {})
+        indicators.append({
+            'api_name': 'urlscan',
+            'indicator_type': 'url_analysis',
+            'indicator_value': data.get('url', ''),
+            'details': {
+                'score': data.get('score', 0),
+                'categories': data.get('categories', []),
+                'permalink': data.get('permalink'),
+            },
+            'score': api_results['urlscan'].get('score', 0),
+            'risk_level': api_results['urlscan'].get('risk_level', 'none')
+        })
+    
+    return {
+        'overall_risk_score': ti_result.get('overall_risk_score', 0),
+        'risk_category': ti_result.get('risk_category', 'unknown'),
+        'confidence': ti_result.get('confidence', 0),
+        'indicators': indicators,
+        'warnings': ti_result.get('warnings', []),
+        'url_expansions': ti_result.get('url_expansions', {}),
+        'analysis_timestamp': ti_result.get('analysis_timestamp')
+    }
 
 
 _threat_intel_instance: Optional[ThreatIntelService] = None

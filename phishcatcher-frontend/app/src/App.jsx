@@ -13,6 +13,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-
 import { Toaster } from 'sonner';
 
 import { ThemeProvider }    from '@/context/ThemeContext';
+import { FontSizeProvider } from '@/context/FontSizeContext';
 import { AuthProvider }     from '@/context/AuthContext';
 import { useAuth }          from '@/context/AuthContext';
 
@@ -32,83 +33,49 @@ import DashboardPage         from '@/pages/DashboardPage';
 import EmailUploadPage       from '@/pages/EmailUploadPage';
 import AnalysisListPage      from '@/pages/AnalysisListPage';
 import AnalysisReportPage    from '@/pages/AnalysisReportPage';
-import WeeklyReportsPage     from '@/pages/WeeklyReportsPage';
+import ReportsPage            from '@/pages/ReportsPage';
 import AccountSettingsPage   from '@/pages/AccountSettingsPage';
 import MFASettingsPage       from '@/pages/MFASettingsPage';
+import GmailSettingsPage    from '@/pages/GmailSettingsPage';
 
 // ── Admin pages ───────────────────────────────────────────────────────────
 import AdminDashboardPage    from '@/pages/AdminDashboardPage';
 import UserManagement        from '@/pages/UserManagement';
 import AuditLogs             from '@/pages/AuditLogs';
-import ModelManagement       from '@/pages/ModelManagement';
 
 // ── Shell components ──────────────────────────────────────────────────────
 import Layout                from '@/components/Layout';
 import PrivateRoute          from '@/pages/PrivateRoute';
 import LoadingOrb            from '@/components/LoadingOrb';
+import { FontSizeToggle }    from '@/components/FontSizeToggle';
 
 export default function App() {
   return (
     <ThemeProvider>
-      <Router>
-        <AuthProvider>
-          <AppRoutes />
-
-          {/* Toast notifications — top-right, themed */}
-          <Toaster
-            position="top-right"
-            richColors
-            theme="system"
-            toastOptions={{
-              style: {
-                borderRadius: '14px',
-                boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
-                border: '1px solid var(--border)',
-                background: 'var(--bg-surface)',
-                color: 'var(--text-primary)',
-                fontSize: '14px',
-                fontFamily: "'DM Sans', system-ui, sans-serif",
-              },
-              success: {
+      <FontSizeProvider>
+        <Router>
+          <AuthProvider>
+            <AppRoutes />
+            <FontSizeToggle />
+            {/* Toast notifications — top-right, themed */}
+            <Toaster
+              position="top-right"
+              toastOptions={{
                 style: {
-                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                  color: '#ffffff',
-                  border: 'none',
-                  boxShadow: '0 4px 20px rgba(16, 185, 129, 0.4)',
+                  borderRadius: '12px',
+                  boxShadow: 'var(--shadow-lg)',
                 },
-                icon: null,
-              },
-              error: {
-                style: {
-                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
-                  color: '#ffffff',
-                  border: 'none',
-                  boxShadow: '0 4px 20px rgba(239, 68, 68, 0.4)',
+                classNames: {
+                  success: 'border-l-[4px] !border-l-green-500 [&_[data-icon]]:text-green-500',
+                  error: 'border-l-[4px] !border-l-red-500 [&_[data-icon]]:text-red-500',
+                  info: 'border-l-[4px] !border-l-blue-500 [&_[data-icon]]:text-blue-500',
+                  warning: 'border-l-[4px] !border-l-yellow-500 [&_[data-icon]]:text-yellow-500',
                 },
-                icon: null,
-              },
-              info: {
-                style: {
-                  background: 'linear-gradient(135deg, #0ea5c7 0%, #0284c7 100%)',
-                  color: '#ffffff',
-                  border: 'none',
-                  boxShadow: '0 4px 20px rgba(14, 165, 199, 0.4)',
-                },
-                icon: null,
-              },
-              warning: {
-                style: {
-                  background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-                  color: '#ffffff',
-                  border: 'none',
-                  boxShadow: '0 4px 20px rgba(245, 158, 11, 0.4)',
-                },
-                icon: null,
-              },
-            }}
-          />
-        </AuthProvider>
-      </Router>
+              }}
+            />
+          </AuthProvider>
+        </Router>
+      </FontSizeProvider>
     </ThemeProvider>
   );
 }
@@ -164,9 +131,10 @@ function AppRoutes() {
           <Route path="/upload"         element={<EmailUploadPage />} />
           <Route path="/analysis"       element={<AnalysisListPage />} />
           <Route path="/analysis/:id"   element={<AnalysisReportPage />} />
-          <Route path="/weekly-reports" element={<WeeklyReportsPage />} />
+          <Route path="/reports" element={<ReportsPage />} />
           <Route path="/settings"       element={<AccountSettingsPage />} />
           <Route path="/settings/mfa"   element={<MFASettingsPage />} />
+          <Route path="/settings/gmail" element={<GmailSettingsPage />} />
         </Route>
       </Route>
 
@@ -178,7 +146,6 @@ function AppRoutes() {
           <Route path="/admin"          element={<AdminDashboardPage />} />
           <Route path="/admin/users"    element={<UserManagement />} />
           <Route path="/admin/audit-logs" element={<AuditLogs />} />
-          <Route path="/admin/model"    element={<ModelManagement />} />
         </Route>
       </Route>
 

@@ -28,6 +28,7 @@ MONGODB_URL=mongodb://phishcatcher:your-mongo-password@localhost:27017/phishcatc
 MINIO_ENDPOINT=localhost:9000
 MINIO_PORT=9000
 MINIO_CONSOLE_PORT=9001
+MINIO_EXTERNAL_URL=http://localhost:9000
 
 # MinIO Configuration
 MINIO_ACCESS_KEY=minioadmin
@@ -39,18 +40,18 @@ JWT_SECRET_KEY=your-jwt-secret-key-here
 JWT_REFRESH_SECRET_KEY=your-jwt-refresh-secret-key-here
 
 # Celery Configuration
-CELERY_BROKER_URL=redis://:your-redis-password@redis:6379/0
-CELERY_RESULT_BACKEND=redis://:your-redis-password@redis:6379/0
+CELERY_BROKER_URL=redis://:your-redis-password@localhost:6379/0
+CELERY_RESULT_BACKEND=redis://:your-redis-password@localhost:6379/0
 
 # Gmail Integration
 GMAIL_CLIENT_ID=your-gmail-client-id
 GMAIL_CLIENT_SECRET=your-gmail-client-secret
+GMAIL_REDIRECT_URI=http://localhost:5173/gmail/callback
 
 # Google OAuth
 GOOGLE_CLIENT_ID=your-google-client-id
 GOOGLE_CLIENT_SECRET=your-google-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:5173/auth/google/callback
-GMAIL_REDIRECT_URI=http://localhost:5173/google/callback
 
 # SendGrid SMTP
 SMTP_HOST=smtp.sendgrid.net
@@ -69,24 +70,30 @@ VIRUSTOTAL_API_KEY=your-virustotal-api-key
 PHISHTANK_API_KEY=your-phishtank-api-key
 HIBP_API_KEY=your-hibp-api-key
 URLSCAN_API_KEY=your-urlscan-api-key
+ABUSEIPDB_API_KEY=your-abuseipdb-api-key
+WHOISJSON_API_KEY=your-whoisjson-api-key
 
 # CORS Configuration
 CORS_ORIGINS=http://localhost:5173
 CORS_ALLOW_CREDENTIALS=true
 CORS_ALLOW_METHODS=GET,POST,PUT,DELETE,OPTIONS
-CORS_ALLOW_HEADERS=*
+CORS_ALLOW_HEADERS=*,Content-Type,Authorization,Accept,Origin,X-Requested-With
+
+# Admin Account
+ADMIN_EMAIL=admin@phishcatcher.co.ke
+ADMIN_PASSWORD=your-admin-password
 
 # Application Settings
 LOG_LEVEL=INFO
 RATE_LIMIT_REQUESTS_PER_MINUTE=100
 RATE_LIMIT_AUTH_REQUESTS_PER_MINUTE=5
-
+ 
 # Session Management Settings
 ACCESS_TOKEN_EXPIRE_MINUTES=120        # Access token expiry in minutes (2 hours)
 REFRESH_TOKEN_EXPIRE_DAYS=7            # Refresh token expiry in days
-SESSION_INACTIVITY_MINUTES=60           # Session inactivity timeout in minutes
+SESSION_INACTIVITY_MINUTES=45           # Session inactivity timeout in minutes
 SESSION_MAX_DURATION_MINUTES=240        # Maximum session duration in minutes
-SESSION_CHECK_INTERVAL_MINUTES=15       # Session activity check interval in minutes
+SESSION_CHECK_INTERVAL_MINUTES=10       # Session activity check interval in minutes
 OTP_EXPIRE_MINUTES=10                  # OTP expiry in minutes
 
 # File Upload Settings

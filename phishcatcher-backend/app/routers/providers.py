@@ -39,7 +39,8 @@ async def get_gmail_auth_url(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get Gmail OAuth authorization URL."""
-    auth_url = gmail_service.get_auth_url(str(current_user.id), current_user.email)
+    # force_new=True to allow adding any account
+    auth_url = gmail_service.get_auth_url(str(current_user.id), current_user.email, force_new=True)
     
     return {"auth_url": auth_url}
 

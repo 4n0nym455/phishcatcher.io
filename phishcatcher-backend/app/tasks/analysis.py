@@ -16,7 +16,7 @@ from celery.signals import task_success, task_failure, task_retry
 from app.tasks.celery_app import celery_app
 from app.ml.email_parser import EmailParser
 from app.ml.phishing_detector import get_phishing_detector
-from app.services.threat_intel import get_threat_intel_service
+from app.services.threat_intel import get_threat_intel_service, transform_ti_for_storage
 from app.database import get_mongodb_database
 from app.config import get_settings
 from app.models.analysis_job import AnalysisJob
@@ -159,11 +159,7 @@ def analyze_email_task(self: Task, job_id: str, raw_email_bytes: bytes,
                 "confidence": ml_result.get('confidence', 0.5),
                 "model_used": ml_result.get('model_used', 'xgboost')
             },
-            "threat_intelligence": {
-                "overall_risk_score": ti_result.get('overall_risk_score', 0),
-                "indicators": ti_result.get('indicators', []),
-                "warnings": ti_result.get('warnings', [])
-            },
+            "threat_intelligence": transform_ti_for_storage(ti_result),
             "findings": findings,
             "links_analyzed": links,
             "attachments_analyzed": attachments,
@@ -276,16 +272,17 @@ def analyze_gmail_task(self: Task, user_id: str, message_id: str):
                 "category": category
             },
             "ml_analysis": {"phishing_probability": ml_score},
-            "threat_intelligence": {"overall_risk_score": ti_result.get('overall_risk_score', 0)},
+            "threat_intelligence": transform_ti_for_storage(ti_result),
             "findings": findings,
             "created_at": datetime.utcnow()
         }
         
-        await mongodb.analysis_results.insert_one(detailed_result)
+        result = await mongodb.analysis_results.insert_one(detailed_result)
+        analysis_id = str(result.inserted_id)
         
         await mongodb.gmail_analysis_queue.update_one(
             {"user_id": user_id, "message_id": message_id},
-            {"$set": {"status": "completed", "completed_at": datetime.utcnow()}}
+            {"$set": {"status": "completed", "completed_at": datetime.utcnow(), "analysis_id": analysis_id}}
         )
         
         logger.info(f"Gmail analysis done for {message_id}")
