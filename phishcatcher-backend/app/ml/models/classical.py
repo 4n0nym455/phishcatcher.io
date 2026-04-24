@@ -6,16 +6,25 @@ This module implements classical machine learning models for phishing detection:
 - Logistic Regression
 - Linear SVM
 - XGBoost
+- Stacked Ensemble (with handcrafted features)
+- Hybrid Model
 
 With cross-validation and class weight handling.
 """
 
 import os
+import re
 import pickle
 import json
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
+
+try:
+    import joblib
+    JOBLIB_AVAILABLE = True
+except ImportError:
+    JOBLIB_AVAILABLE = False
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -68,7 +77,91 @@ class ClassicalMLTrainer:
         self.results: Dict[str, Dict] = {}
         self.is_trained = False
         
+        # New ensemble models
+        self.stacked_model: Optional[Any] = None
+        self.is_stacked_loaded = False
+        self.hybrid_model: Optional[Any] = None
+        self.hybrid_scaler: Optional[Any] = None
+        self.is_hybrid_loaded = False
+        
         self.feature_names: List[str] = []
+        
+        self.urgency_keywords = [
+            'urgent', 'immediate', 'action required', 'verify now', 'account suspended',
+            'limited time', 'expires soon', 'confirm now', 'update required',
+            'security alert', 'unusual activity', 'suspicious activity', 'verify account',
+            'click here', 'act now', "don't delay", 'final notice', 'warning',
+            'deadline', 'last chance', 'expiring', 'terminate', 'suspend'
+        ]
+        
+        self.financial_keywords = [
+            'bank', 'credit card', 'payment', 'invoice', 'transaction', 'refund',
+            'billing', 'subscription', 'paypal', 'money', 'transfer', 'account',
+            'balance', 'withdraw', 'deposit', 'ssn', 'social security', 'routing',
+            'wire transfer', 'western union', 'gift card', 'bitcoin', 'cryptocurrency'
+        ]
+        
+        self.suspicious_tlds = [
+            'tk', 'ml', 'ga', 'cf', 'gq', 'xyz', 'top', 'click', 'link', 'work',
+            'loan', 'online', 'site', 'club', 'win', 'download', 'bid', 'review'
+        ]
+    
+    def extract_handcrafted_features(self, text: str) -> np.ndarray:
+        """Extract 14 handcrafted features matching training setup."""
+        text_lower = text.lower()
+        
+        urls = re.findall(r'https?://[^\s]+', text)
+        url_count = len(urls)
+        
+        email_count = len(re.findall(r'[\w.-]+@[\w.-]+\.\w+', text))
+        
+        urgent_keyword_count = sum(1 for kw in self.urgency_keywords if kw in text_lower)
+        
+        financial_keyword_count = sum(1 for kw in self.financial_keywords if kw in text_lower)
+        
+        reward_keywords = ['won', 'prize', 'winner', 'congratulations', 'free', 'gift', 'reward', 'bonus']
+        reward_keyword_count = sum(1 for kw in reward_keywords if kw in text_lower)
+        
+        exclamation_count = text.count('!')
+        
+        dollar_count = text.count('$')
+        
+        digits = sum(c.isdigit() for c in text)
+        digit_ratio = digits / max(len(text), 1)
+        
+        words = text.split()
+        uppercase_words = sum(1 for w in words if w.isupper() and len(w) > 1)
+        uppercase_ratio = uppercase_words / max(len(words), 1)
+        
+        suspicious_tld_count = 0
+        for url in urls:
+            match = re.search(r'\.([a-z]{2,4})(?:/|$)', url.lower())
+            if match and match.group(1) in self.suspicious_tlds:
+                suspicious_tld_count += 1
+        
+        ip_count = len(re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', text))
+        
+        has_re = 1 if text_lower.startswith('re:') else 0
+        has_fwd = 1 if 'forward' in text_lower else 0
+        
+        features = [
+            float(url_count),
+            1.0 if url_count > 0 else 0.0,
+            float(email_count),
+            float(urgent_keyword_count),
+            float(financial_keyword_count),
+            float(reward_keyword_count),
+            float(exclamation_count),
+            float(dollar_count),
+            float(digit_ratio),
+            float(uppercase_ratio),
+            float(suspicious_tld_count),
+            float(ip_count),
+            float(has_re),
+            float(has_fwd)
+        ]
+        
+        return np.array(features)
         
     def prepare_data(
         self,
@@ -261,6 +354,64 @@ class ClassicalMLTrainer:
         
         return y_pred, y_prob
     
+    def predict_ensemble(self, texts: List[str]) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Predict using stacked ensemble model (primary).
+        
+        Returns predictions and probabilities.
+        Falls back to hybrid if ensemble not available.
+        """
+        if not self.is_stacked_loaded:
+            logger.warning("Stacked ensemble not loaded, falling back to hybrid model")
+            return self.predict_hybrid(texts)
+        
+        try:
+            # Combine TF-IDF + handcrafted features (5014 total)
+            X_tfidf = self.transform_texts(texts)
+            combined_features = []
+            for text in texts:
+                handcrafted = self.extract_handcrafted_features(text)
+                combined_features.append(handcrafted)
+            handcrafted_arr = np.array(combined_features)
+            X = np.hstack([X_tfidf.toarray() if hasattr(X_tfidf, 'toarray') else X_tfidf, handcrafted_arr])
+            
+            y_pred = self.stacked_model.predict(X)
+            y_prob = self.stacked_model.predict_proba(X)[:, 1]
+            return y_pred, y_prob
+        except Exception as e:
+            logger.error(f"Stacked ensemble prediction failed: {e}, falling back to hybrid")
+            return self.predict_hybrid(texts)
+    
+    def predict_hybrid(self, texts: List[str]) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Predict using hybrid model (fallback).
+        
+        Returns predictions and probabilities.
+        Uses only handcrafted features (46 trained features).
+        """
+        if not self.is_hybrid_loaded:
+            raise ValueError("Hybrid model not available")
+        
+        try:
+            # Use only handcrafted features (first 14 + additional 32 = 46)
+            combined_features = []
+            for text in texts:
+                handcrafted = self.extract_handcrafted_features(text)
+                # Pad to 46 features (placeholder for rest if needed)
+                padding = np.zeros(32)
+                combined = np.concatenate([handcrafted, padding])
+                combined_features.append(combined)
+            X = np.array(combined_features)
+            
+            X_scaled = self.hybrid_scaler.transform(X)
+            y_pred = self.hybrid_model.predict(X_scaled)
+            y_prob = self.hybrid_model.predict_proba(X_scaled)[:, 1]
+            return y_pred, y_prob
+        except Exception as e:
+            logger.error(f"Hybrid model prediction failed: {e}")
+            # Fall back to classical
+            return self.predict(texts)
+    
     def save_models(self, model_dir: str = "models"):
         """Save all models to disk."""
         os.makedirs(model_dir, exist_ok=True)
@@ -284,6 +435,7 @@ class ClassicalMLTrainer:
     
     def load_models(self, model_dir: str = "models"):
         """Load all models from disk."""
+        # Load TF-IDF vectorizer
         vectorizer_path = os.path.join(model_dir, "tfidf_vectorizer.pkl")
         if os.path.exists(vectorizer_path):
             with open(vectorizer_path, 'rb') as f:
@@ -291,6 +443,7 @@ class ClassicalMLTrainer:
             self.feature_names = self.vectorizer.get_feature_names_out().tolist()
             logger.info(f"Loaded TF-IDF vectorizer from {vectorizer_path}")
         
+        # Load classical ML models (pickle)
         model_files = {
             'logistic_regression': 'logistic_regression.pkl',
             'svm': 'svm.pkl',
@@ -304,6 +457,26 @@ class ClassicalMLTrainer:
                     self.models[name] = pickle.load(f)
                 logger.info(f"Loaded {name} from {model_path}")
         
+        # Load stacked ensemble model (joblib)
+        if JOBLIB_AVAILABLE:
+            stacked_path = os.path.join(model_dir, "stacked_ensemble_model.joblib")
+            if os.path.exists(stacked_path):
+                self.stacked_model = joblib.load(stacked_path)
+                self.is_stacked_loaded = True
+                logger.info(f"Loaded stacked ensemble model from {stacked_path}")
+        
+        # Load hybrid model (pickle)
+        hybrid_path = os.path.join(model_dir, "hybrid_model.pkl")
+        hybrid_scaler_path = os.path.join(model_dir, "hybrid_scaler.pkl")
+        if os.path.exists(hybrid_path) and os.path.exists(hybrid_scaler_path):
+            with open(hybrid_path, 'rb') as f:
+                self.hybrid_model = pickle.load(f)
+            with open(hybrid_scaler_path, 'rb') as f:
+                self.hybrid_scaler = pickle.load(f)
+            self.is_hybrid_loaded = True
+            logger.info(f"Loaded hybrid model from {hybrid_path}")
+        
+        # Load results
         results_path = os.path.join(model_dir, "classical_ml_results.json")
         if os.path.exists(results_path):
             with open(results_path, 'r') as f:

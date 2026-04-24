@@ -521,8 +521,12 @@ class GmailService:
             msg = service.users().messages().get(userId='me', id=message_id, format=format).execute()
             return msg
         except HttpError as e:
+            error_msg = str(e)
+            if e.resp.status == 404:
+                logger.warning(f"Gmail API 404 for message {message_id}: {error_msg}")
+                raise Exception(f"HttpError 404: Requested entity was not found")
             logger.error(f"Gmail API error: {e}")
-            return None
+            raise Exception(f"Gmail API error: {error_msg}")
     
     async def get_email_headers(self, user_id: str, message_id: str, provider_id: str = None) -> Optional[Dict]:
         """Get email with full headers for subject/sender extraction."""

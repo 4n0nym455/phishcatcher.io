@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, UserCheck, UserX, Edit2, Trash2, CheckCircle,
-  X, Loader2, Users, AlertTriangle, ArrowUpDown,
+  X, Loader2, Users, AlertTriangle, ArrowUpDown, Download,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { adminApi } from '@/lib/api';
@@ -154,16 +154,25 @@ export default function UserManagement() {
   const [toggling, setToggling]= useState(null);
   const [deleting, setDeleting]= useState(null);
   const [deleteModal, setDeleteModal] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState('');
 
   const load = useCallback(async (pg = 1, reset = true) => {
     setLoading(true);
     try {
+      let sortOrderVal = 'desc';
+      let sortByVal = sortBy;
+      if (sortBy === 'created_at_asc') {
+        sortByVal = 'created_at';
+        sortOrderVal = 'asc';
+      }
       const params = {
         page: pg,
         pageSize: PAGE_SIZE,
         search: search || undefined,
-        sortBy: sortBy,
-        sortOrder: 'desc',
+        sortBy: sortByVal,
+        sortOrder: sortOrderVal,
       };
 
       if (roleFilter) params.role = roleFilter;
@@ -235,6 +244,31 @@ export default function UserManagement() {
     setUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
   };
 
+  const handleExportUsers = async () => {
+    setExporting(true);
+    try {
+      const blob = await adminApi.exportUsersReport({
+        startDate: exportStartDate || undefined,
+        endDate: exportEndDate || undefined,
+        isActive: statusFilter === 'active' ? true : statusFilter === 'inactive' ? false : undefined,
+        role: roleFilter || undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `user_management_report_${new Date().toISOString().split('T')[0]}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success('Report downloaded successfully');
+    } catch (err) {
+      toast.error(err.message ?? 'Failed to export report');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const clearFilters = () => {
     setSearch('');
     setRoleFilter('');
@@ -270,6 +304,41 @@ export default function UserManagement() {
         <div>
           <h1 className="page-title">User Management</h1>
           <p className="page-subtitle">{users.length} users loaded</p>
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="form-label">Start Date</label>
+            <input
+              type="date"
+              value={exportStartDate}
+              max={new Date().toISOString().split('T')[0]}
+              onChange={e => {
+                const val = e.target.value;
+                setExportStartDate(val);
+                if (exportEndDate && val > exportEndDate) setExportEndDate(val);
+              }}
+              className="input-base w-auto"
+            />
+          </div>
+          <div>
+            <label className="form-label">End Date</label>
+            <input
+              type="date"
+              value={exportEndDate}
+              min={exportStartDate}
+              max={new Date().toISOString().split('T')[0]}
+              onChange={e => setExportEndDate(e.target.value)}
+              className="input-base w-auto"
+            />
+          </div>
+          <button
+            onClick={handleExportUsers}
+            disabled={exporting}
+            className="btn-secondary h-9 px-3 flex items-center gap-1.5"
+          >
+            {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            <span>Export PDF</span>
+          </button>
         </div>
       </div>
 

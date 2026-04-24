@@ -343,6 +343,10 @@ class ProfessionalReportService:
         self.styles.add(ParagraphStyle(name='BadgeWarning', fontSize=10, textColor=WARNING_AMBER, fontName='Helvetica-Bold', alignment=TA_CENTER))
         self.styles.add(ParagraphStyle(name='BadgeSuccess', fontSize=10, textColor=SUCCESS_GREEN, fontName='Helvetica-Bold', alignment=TA_CENTER))
         self.styles.add(ParagraphStyle(name='BadgeInfo', fontSize=10, textColor=INFO_BLUE, fontName='Helvetica-Bold', alignment=TA_CENTER))
+        self.styles.add(ParagraphStyle(name='StatValue', fontSize=8, textColor=TEXT_MUTED, alignment=TA_CENTER, fontName='Helvetica-Bold'))
+        self.styles.add(ParagraphStyle(name='StatNumber', fontSize=18, textColor=TEXT_DARK, alignment=TA_CENTER, fontName='Helvetica-Bold'))
+        self.styles.add(ParagraphStyle(name='Subtitle', fontSize=10, textColor=TEXT_MUTED, fontName='Helvetica'))
+        self.styles.add(ParagraphStyle(name='BrandName', fontSize=20, textColor=BRAND_PURPLE, fontName='Helvetica-Bold'))
     
     def _draw_footer(self, canvas, doc):
         """Draw page footer with page number."""
@@ -1733,6 +1737,7 @@ class ProfessionalReportService:
             elements.append(Spacer(1, 0.1*inch))
             
             # API Results Grid
+            ind_table_data = []  # Initialize as fallback
             if ti_indicators:
                 ind_table_data = [
                     [Paragraph("API", self.styles['TableHeader']),
@@ -1785,21 +1790,23 @@ class ProfessionalReportService:
                     Paragraph(_escape_xml(detail_str[:50]), self.styles['TableCell'])
                 ])
             
-            ind_table = Table(ind_table_data, colWidths=[1.0*inch, 1.0*inch, 0.6*inch, 0.8*inch, 2.7*inch])
-            ind_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), BRAND_PURPLE),
-                ('TEXTCOLOR', (0, 0), (-1, 0), white),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 8),
-                ('ALIGN', (2, 0), (3, -1), 'CENTER'),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('TOPPADDING', (0, 0), (-1, -1), 4),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                ('LEFTPADDING', (0, 0), (-1, -1), 5),
-                ('GRID', (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [BG_CARD, BG_PAGE]),
-            ]))
-            elements.append(ind_table)
+            # Only create table if there's data (more than just header row)
+            if len(ind_table_data) > 1:
+                ind_table = Table(ind_table_data, colWidths=[1.0*inch, 1.0*inch, 0.6*inch, 0.8*inch, 2.7*inch])
+                ind_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), BRAND_PURPLE),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 8),
+                    ('ALIGN', (2, 0), (3, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 5),
+                    ('GRID', (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [BG_CARD, BG_PAGE]),
+                ]))
+                elements.append(ind_table)
             
             # Show API failure warnings
             if actual_warnings:
@@ -1991,3 +1998,348 @@ class ProfessionalReportService:
 
 
 report_service = ProfessionalReportService()
+
+
+def _get_styles() -> Dict[str, ParagraphStyle]:
+    """Get paragraph styles for standalone report generators."""
+    styles = {}
+    styles['BrandName'] = ParagraphStyle(name='BrandName', fontSize=20, textColor=BRAND_PURPLE, fontName='Helvetica-Bold')
+    styles['SectionTitle'] = ParagraphStyle(name='SectionTitle', fontSize=14, textColor=BRAND_PURPLE, fontName='Helvetica-Bold', spaceBefore=16, spaceAfter=10)
+    styles['Subtitle'] = ParagraphStyle(name='Subtitle', fontSize=10, textColor=TEXT_MUTED, fontName='Helvetica')
+    styles['FooterText'] = ParagraphStyle(name='FooterText', fontSize=7, textColor=TEXT_MUTED, alignment=TA_CENTER, fontName='Helvetica')
+    styles['StatValue'] = ParagraphStyle(name='StatValue', fontSize=8, textColor=TEXT_MUTED, alignment=TA_CENTER, fontName='Helvetica-Bold')
+    styles['StatNumber'] = ParagraphStyle(name='StatNumber', fontSize=18, textColor=TEXT_DARK, alignment=TA_CENTER, fontName='Helvetica-Bold')
+    styles['TableHeader'] = ParagraphStyle(name='TableHeader', fontSize=9, textColor=white, fontName='Helvetica-Bold')
+    styles['TableCell'] = ParagraphStyle(name='TableCell', fontSize=8, textColor=TEXT_DARK, fontName='Helvetica')
+    return styles
+
+
+def generate_user_management_report(users: List[Dict[str, Any]], date_range: Dict[str, str], filters: Dict[str, Any]) -> bytes:
+    """Generate user management PDF report for admins."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=0.75*inch, rightMargin=0.75*inch, topMargin=0.75*inch, bottomMargin=0.75*inch)
+    
+    styles = _get_styles()
+    content_width = A4[0] - 1.5*inch
+    
+    elements = []
+    
+    elements.append(Paragraph("PhishCatcher", styles['BrandName']))
+    elements.append(Spacer(1, 0.1*inch))
+    elements.append(Paragraph("User Management Report", styles['SectionTitle']))
+    elements.append(Spacer(1, 0.05*inch))
+    
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M UTC')
+    elements.append(Paragraph(f"Generated: {ts}", styles['Subtitle']))
+    if date_range.get('start_date') or date_range.get('end_date'):
+        dr = f"{date_range.get('start_date', 'Beginning')} to {date_range.get('end_date', 'Now')}"
+        elements.append(Paragraph(f"Date Range: {dr}", styles['Subtitle']))
+    elements.append(Spacer(1, 0.2*inch))
+    elements.append(HRFlowable(width="100%", thickness=1, color=BRAND_DIM, spaceAfter=12))
+    
+    total = len(users)
+    active = sum(1 for u in users if u.get('is_active'))
+    admins = sum(1 for u in users if u.get('role') == 'admin')
+    pending = sum(1 for u in users if u.get('account_status') == 'pending')
+    
+    stat_data = [
+        [Paragraph("<b>Total Users</b>", styles['StatValue']), Paragraph("<b>Active</b>", styles['StatValue']),
+         Paragraph("<b>Admins</b>", styles['StatValue']), Paragraph("<b>Pending</b>", styles['StatValue'])],
+        [Paragraph(str(total), styles['StatNumber']), Paragraph(str(active), styles['StatNumber']),
+         Paragraph(str(admins), styles['StatNumber']), Paragraph(str(pending), styles['StatNumber'])]
+    ]
+    stat_table = Table(stat_data, colWidths=[content_width/4]*4)
+    stat_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), BG_CARD),
+        ('BOX', (0, 0), (-1, -1), 1, BORDER_LIGHT),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 8),
+        ('TEXTCOLOR', (0, 0), (-1, 0), TEXT_MUTED),
+        ('FONTSIZE', (0, 1), (-1, 1), 18),
+        ('TEXTCOLOR', (0, 1), (-1, 1), TEXT_DARK),
+    ]))
+    elements.append(stat_table)
+    elements.append(Spacer(1, 0.3*inch))
+    
+    monthly_data = {}
+    for u in users:
+        created = u.get('created_at')
+        if created:
+            month = created[:7] if isinstance(created, str) else created.strftime('%Y-%m')
+            monthly_data[month] = monthly_data.get(month, 0) + 1
+    
+    if monthly_data:
+        elements.append(Paragraph("User Registrations by Month", styles['SectionTitle']))
+        months = sorted(monthly_data.keys())
+        max_val = max(monthly_data.values())
+        
+        chart_data = [[], []]
+        chart_labels = []
+        for m in months[-6:]:
+            chart_data[0].append(int(monthly_data[m] / max_val * 100) if max_val > 0 else 0)
+            chart_data[1].append(monthly_data[m])
+            chart_labels.append(m)
+        
+        bar_drawing = Drawing(content_width, 100)
+        bc = VerticalBarChart()
+        bc.x = 0
+        bc.y = 10
+        bc.height = 70
+        bc.width = content_width - 60
+        bc.data = chart_data
+        bc.strokeColor = white
+        bc.fillColor = BRAND_PURPLE
+        bc.categoryAxis.categoryNames = chart_labels
+        bc.categoryAxis.labels.fontName = 'Helvetica'
+        bc.categoryAxis.labels.fontSize = 7
+        bc.valueAxis.valueStep = 25
+        bar_drawing.add(bc)
+        elements.append(bar_drawing)
+        elements.append(Spacer(1, 0.2*inch))
+    
+    elements.append(Paragraph("User Details", styles['SectionTitle']))
+    
+    table_data = [[
+        Paragraph("Email", styles['TableHeader']),
+        Paragraph("Name", styles['TableHeader']),
+        Paragraph("Company", styles['TableHeader']),
+        Paragraph("Role", styles['TableHeader']),
+        Paragraph("Status", styles['TableHeader']),
+        Paragraph("Last Login", styles['TableHeader']),
+        Paragraph("Created", styles['TableHeader']),
+    ]]
+    
+    for u in users[:200]:
+        email = redact_email(u.get('email', ''))
+        name = _escape_xml(u.get('full_name', 'N/A'))
+        company = _escape_xml(u.get('company', 'N/A'))
+        role = u.get('role', 'user')
+        status = u.get('account_status', 'unknown')
+        last_login = u.get('last_login', 'N/A')
+        if isinstance(last_login, str) and last_login != 'N/A':
+            last_login = last_login[:10]
+        created = u.get('created_at', 'N/A')
+        if isinstance(created, str) and created != 'N/A':
+            created = created[:10]
+        
+        status_color = SUCCESS_GREEN if status == 'active' else WARNING_AMBER if status == 'pending' else TEXT_MUTED
+        
+        table_data.append([
+            Paragraph(_escape_xml(email), styles['TableCell']),
+            Paragraph(name, styles['TableCell']),
+            Paragraph(_escape_xml(company) if company else '-', styles['TableCell']),
+            Paragraph(role, styles['TableCell']),
+            Paragraph(status, styles['TableCell']),
+            Paragraph(str(last_login), styles['TableCell']),
+            Paragraph(str(created), styles['TableCell']),
+        ])
+    
+    col_widths = [content_width*0.22, content_width*0.15, content_width*0.15, content_width*0.10, content_width*0.12, content_width*0.13, content_width*0.13]
+    user_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    user_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), BRAND_PURPLE),
+        ('TEXTCOLOR', (0, 0), (-1, 0), white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 7),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('GRID', (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [BG_CARD, BG_PAGE]),
+    ]))
+    elements.append(user_table)
+    
+    if total > 200:
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(Paragraph(f"Showing 200 of {total} users. Export all data for complete list.", styles['Subtitle']))
+    
+    elements.append(Spacer(1, 0.3*inch))
+    elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_LIGHT, spaceAfter=8))
+    elements.append(Paragraph(f"PhishCatcher User Management Report | Generated {ts}", styles['FooterText']))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def generate_audit_log_report(logs: List[Dict[str, Any]], date_range: Dict[str, str], filters: Dict[str, Any]) -> bytes:
+    """Generate audit log PDF report for admins."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=0.75*inch, rightMargin=0.75*inch, topMargin=0.75*inch, bottomMargin=0.75*inch)
+    
+    styles = _get_styles()
+    content_width = A4[0] - 1.5*inch
+    
+    elements = []
+    
+    elements.append(Paragraph("PhishCatcher", styles['BrandName']))
+    elements.append(Spacer(1, 0.1*inch))
+    elements.append(Paragraph("Audit Log Report", styles['SectionTitle']))
+    elements.append(Spacer(1, 0.05*inch))
+    
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M UTC')
+    elements.append(Paragraph(f"Generated: {ts}", styles['Subtitle']))
+    if date_range.get('start_date') or date_range.get('end_date'):
+        dr = f"{date_range.get('start_date', 'Beginning')} to {date_range.get('end_date', 'Now')}"
+        elements.append(Paragraph(f"Date Range: {dr}", styles['Subtitle']))
+    elements.append(Spacer(1, 0.2*inch))
+    elements.append(HRFlowable(width="100%", thickness=1, color=BRAND_DIM, spaceAfter=12))
+    
+    total = len(logs)
+    successes = sum(1 for l in logs if l.get('status') == 'success')
+    failures = sum(1 for l in logs if l.get('status') == 'failure')
+    success_rate = (successes / total * 100) if total > 0 else 0
+    
+    action_counts = {}
+    for l in logs:
+        action = l.get('action', 'unknown')
+        action_counts[action] = action_counts.get(action, 0) + 1
+    
+    top_action = max(action_counts.items(), key=lambda x: x[1])[0] if action_counts else 'N/A'
+    
+    stat_data = [
+        [Paragraph("<b>Total Events</b>", styles['StatValue']), Paragraph("<b>Success</b>", styles['StatValue']),
+         Paragraph("<b>Failures</b>", styles['StatValue']), Paragraph("<b>Success Rate</b>", styles['StatValue'])],
+        [Paragraph(str(total), styles['StatNumber']), Paragraph(str(successes), styles['StatNumber']),
+         Paragraph(str(failures), styles['StatNumber']), Paragraph(f"{success_rate:.1f}%", styles['StatNumber'])]
+    ]
+    stat_table = Table(stat_data, colWidths=[content_width/4]*4)
+    stat_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), BG_CARD),
+        ('BOX', (0, 0), (-1, -1), 1, BORDER_LIGHT),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 8),
+        ('TEXTCOLOR', (0, 0), (-1, 0), TEXT_MUTED),
+        ('FONTSIZE', (0, 1), (-1, 1), 18),
+        ('TEXTCOLOR', (0, 1), (-1, 1), TEXT_DARK),
+    ]))
+    elements.append(stat_table)
+    elements.append(Spacer(1, 0.3*inch))
+    
+    if action_counts:
+        elements.append(Paragraph("Activity by Action Type", styles['SectionTitle']))
+        top_actions = sorted(action_counts.items(), key=lambda x: x[1], reverse=True)[:6]
+        max_val = max(a[1] for a in top_actions)
+        
+        chart_data = [[], []]
+        chart_labels = []
+        for action, count in top_actions:
+            chart_data[0].append(int(count / max_val * 100) if max_val > 0 else 0)
+            chart_data[1].append(count)
+            chart_labels.append(action.replace('_', ' '))
+        
+        bar_drawing = Drawing(content_width, 100)
+        bc = VerticalBarChart()
+        bc.x = 0
+        bc.y = 10
+        bc.height = 70
+        bc.width = content_width - 60
+        bc.data = chart_data
+        bc.strokeColor = white
+        bc.fillColor = INFO_BLUE
+        bc.categoryAxis.categoryNames = chart_labels
+        bc.categoryAxis.labels.fontName = 'Helvetica'
+        bc.categoryAxis.labels.fontSize = 7
+        bc.valueAxis.valueStep = 25
+        bar_drawing.add(bc)
+        elements.append(bar_drawing)
+        elements.append(Spacer(1, 0.2*inch))
+    
+    daily_data = {}
+    for l in logs:
+        created = l.get('created_at')
+        if created:
+            day = created[:10] if isinstance(created, str) else created.strftime('%Y-%m-%d')
+            daily_data[day] = daily_data.get(day, 0) + 1
+    
+    if daily_data:
+        elements.append(Paragraph("Activity Over Time", styles['SectionTitle']))
+        days = sorted(daily_data.keys())
+        max_val = max(daily_data.values())
+        
+        line_drawing = Drawing(content_width, 80)
+        from reportlab.graphics.charts.linecharts import HorizontalLineChart
+        lc = HorizontalLineChart()
+        lc.x = 0
+        lc.y = 5
+        lc.height = 50
+        lc.width = content_width - 60
+        lc.data = [[int(daily_data[d] / max_val * 100) if max_val > 0 else 0 for d in days[-14:]]]
+        lc.categoryAxis.categoryNames = [d[-5:] for d in days[-14:]]
+        lc.categoryAxis.labels.fontName = 'Helvetica'
+        lc.categoryAxis.labels.fontSize = 6
+        lc.lineLabelArray = [[daily_data[d] for d in days[-14:]]]
+        lc.strokeColor = BRAND_PURPLE
+        lc.fillColor = BRAND_PURPLE
+        line_drawing.add(lc)
+        elements.append(line_drawing)
+        elements.append(Spacer(1, 0.2*inch))
+    
+    elements.append(Paragraph("Audit Log Details", styles['SectionTitle']))
+    
+    table_data = [[
+        Paragraph("Timestamp", styles['TableHeader']),
+        Paragraph("User", styles['TableHeader']),
+        Paragraph("Action", styles['TableHeader']),
+        Paragraph("Resource", styles['TableHeader']),
+        Paragraph("Status", styles['TableHeader']),
+        Paragraph("IP Address", styles['TableHeader']),
+    ]]
+    
+    for l in logs[:200]:
+        timestamp = l.get('created_at', 'N/A')
+        if isinstance(timestamp, str) and timestamp != 'N/A':
+            timestamp = timestamp[:19].replace('T', ' ')
+        user = redact_email(l.get('user_email', 'system'))
+        action = _escape_xml(l.get('action', 'unknown'))
+        resource = _escape_xml(l.get('resource_type', '-'))
+        status = l.get('status', 'unknown')
+        ip = l.get('ip_address') or '-'
+        
+        table_data.append([
+            Paragraph(str(timestamp), styles['TableCell']),
+            Paragraph(_escape_xml(user), styles['TableCell']),
+            Paragraph(action, styles['TableCell']),
+            Paragraph(_escape_xml(resource) if resource else '-', styles['TableCell']),
+            Paragraph(status, styles['TableCell']),
+            Paragraph(str(ip), styles['TableCell']),
+        ])
+    
+    col_widths = [content_width*0.20, content_width*0.22, content_width*0.18, content_width*0.14, content_width*0.12, content_width*0.14]
+    log_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    log_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), BRAND_PURPLE),
+        ('TEXTCOLOR', (0, 0), (-1, 0), white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 7),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('GRID', (0, 0), (-1, -1), 0.5, BORDER_LIGHT),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [BG_CARD, BG_PAGE]),
+    ]))
+    elements.append(log_table)
+    
+    if total > 200:
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(Paragraph(f"Showing 200 of {total} events. Export all data for complete list.", styles['Subtitle']))
+    
+    elements.append(Spacer(1, 0.3*inch))
+    elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_LIGHT, spaceAfter=8))
+    elements.append(Paragraph(f"PhishCatcher Audit Log Report | Generated {ts}", styles['FooterText']))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()

@@ -926,6 +926,13 @@ async def get_analysis(
                 "is_script": att.get("is_script", False)
             })
     
+    # Map invalid threat_category to valid enum values
+    valid_categories = {"phishing", "malware", "spoofing", "spam", "safe", "suspicious"}
+    category_map = {"caution": "suspicious", "unknown": "suspicious"}
+    mapped_category = job.threat_category
+    if job.threat_category and job.threat_category.lower() not in valid_categories:
+        mapped_category = category_map.get(job.threat_category.lower(), "suspicious")
+    
     return AnalysisResponse(
         id=str(job.id),
         source_type=job.source_type,
@@ -934,7 +941,7 @@ async def get_analysis(
         current_step=job.current_step,
         email_metadata=email_meta_from_mongo or ({"subject": job.file_name} if job.source_type == "upload" else None),
         risk_score=job.risk_score,
-        threat_category=job.threat_category,
+        threat_category=mapped_category,
         confidence=job.confidence,
         findings=findings,
         findings_count=job.findings_count,

@@ -833,12 +833,29 @@ export default function AnalysisReportPage() {
                         )}
                         <span className="font-600 text-sm" style={{ color: 'var(--text-primary)' }}>URLScan</span>
                       </div>
-                      <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      <div className="text-xs space-y-1" style={{ color: 'var(--text-muted)' }}>
                         {(() => {
                           const ind = analysis.threat_intelligence.indicators?.find(i => i.api_name === 'urlscan');
-                          return ind?.details?.categories?.length > 0
-                            ? `Categories: ${ind.details.categories.join(', ')}`
-                            : 'Scan results clean';
+                          return (
+                            <>
+                              {ind?.details?.categories?.length > 0
+                                ? `Categories: ${ind.details.categories.join(', ')}`
+                                : 'Scan results clean'}
+                              {ind?.details?.permalink && (
+                                <div className="mt-1">
+                                  <a 
+                                    href={ind.details.permalink} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="underline hover:opacity-80"
+                                    style={{ color: 'var(--accent)' }}
+                                  >
+                                    View full report →
+                                  </a>
+                                </div>
+                              )}
+                            </>
+                          );
                         })()}
                       </div>
                     </div>
@@ -965,15 +982,17 @@ export default function AnalysisReportPage() {
               const url = typeof link === 'string' ? link : link.url ?? link.href ?? JSON.stringify(link);
               const displayText = typeof link === 'string' ? null : link.display_text ?? link.displayText ?? null;
               const rawStatus = typeof link === 'string' ? null : link.status ?? link.risk_category ?? null;
-              const status = rawStatus || (s >= 70 ? 'suspicious' : s >= 40 ? 'suspicious' : 'safe');
+              const status = rawStatus || (s >= 70 ? 'suspicious' : s >= 40 ? 'caution' : 'safe');
               return (
                 <div key={i} className="flex items-start gap-3 p-3 rounded-xl"
                   style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    status === 'malicious' || status === 'suspicious' ? 'bg-pink-500/15' : 'bg-teal-500/15'
+                    status === 'malicious' || status === 'suspicious' ? 'bg-pink-500/15' : status === 'caution' ? 'bg-amber-500/15' : 'bg-teal-500/15'
                   }`}>
                     {(status === 'malicious' || status === 'suspicious') ? (
                       <AlertTriangle className="w-4 h-4" style={{ color: 'var(--danger)' }} />
+                    ) : status === 'caution' ? (
+                      <AlertTriangle className="w-4 h-4" style={{ color: 'var(--warning)' }} />
                     ) : (
                       <CheckCircle className="w-4 h-4" style={{ color: 'var(--success)' }} />
                     )}
@@ -985,10 +1004,16 @@ export default function AnalysisReportPage() {
                       </div>
                     )}
                     <span className="text-xs font-mono break-all" style={{ color: 'var(--text-secondary)' }}>{url}</span>
+                    {link.domain && (
+                      <span className="text-xs block mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        Domain: {link.domain}
+                      </span>
+                    )}
                     <div className="flex items-center gap-2 mt-1">
                       <span className={`text-[10px] px-2 py-0.5 rounded ${
                         status === 'malicious' ? 'bg-pink-500/15 text-pink-400' 
                         : status === 'suspicious' ? 'bg-amber-500/15 text-amber-400'
+                        : status === 'caution' ? 'bg-amber-500/15 text-amber-400'
                         : 'bg-teal-500/15 text-teal-400'
                       }`}>
                         {status}
@@ -1012,16 +1037,18 @@ export default function AnalysisReportPage() {
             {attachments.map((attachment, i) => {
               const name = attachment.filename ?? attachment.name ?? 'Unknown';
               const size = attachment.size ?? 0;
-              const status = attachment.status ?? 'unknown';
+              const status = attachment.status ?? 'safe';
               const contentType = attachment.content_type ?? attachment.contentType ?? '';
               return (
                 <div key={i} className="flex items-center gap-3 p-3 rounded-xl"
                   style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    status === 'malicious' || status === 'suspicious' ? 'bg-pink-500/15' : 'bg-teal-500/15'
+                    status === 'malicious' || status === 'suspicious' ? 'bg-pink-500/15' : status === 'caution' ? 'bg-amber-500/15' : 'bg-teal-500/15'
                   }`}>
                     {(status === 'malicious' || status === 'suspicious') ? (
                       <AlertTriangle className="w-4 h-4" style={{ color: 'var(--danger)' }} />
+                    ) : status === 'caution' ? (
+                      <AlertTriangle className="w-4 h-4" style={{ color: 'var(--warning)' }} />
                     ) : (
                       <CheckCircle className="w-4 h-4" style={{ color: 'var(--success)' }} />
                     )}
@@ -1039,6 +1066,7 @@ export default function AnalysisReportPage() {
                   <span className={`text-[10px] px-2 py-0.5 rounded ${
                     status === 'malicious' ? 'bg-pink-500/15 text-pink-400' 
                     : status === 'suspicious' ? 'bg-amber-500/15 text-amber-400'
+                    : status === 'caution' ? 'bg-amber-500/15 text-amber-400'
                     : 'bg-teal-500/15 text-teal-400'
                   }`}>
                     {status}

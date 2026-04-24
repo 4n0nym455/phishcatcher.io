@@ -125,6 +125,29 @@ class ThreatIntelService:
             return None
         except Exception:
             return None
+
+    def _extract_domain_with_path(self, url: str) -> Optional[str]:
+        """Extract domain + path from URL, excluding query params and fragment.
+        
+        Used for TI APIs to detect path-based phishing while protecting privacy.
+        
+        Example:
+            https://example.com/login?utm_src=email&token=abc -> https://example.com/login
+        """
+        try:
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            
+            parsed = urlparse(url)
+            host = parsed.netloc.lower() if parsed.netloc else None
+            
+            if host:
+                host = host.split(':')[0]
+                path = parsed.path or '/'
+                return f"https://{host}{path}"
+            return None
+        except Exception:
+            return None
     
     @staticmethod
     def _hash_url(url: str) -> str:
@@ -183,6 +206,8 @@ class ThreatIntelService:
                         'verbose': ''
                     }
                 )
+                
+                logger.debug(f"AbuseIPDB request for {ip_address}: status={response.status_code}")
                 
                 if response.status_code == 200:
                     data = response.json().get('data', {})
@@ -413,8 +438,8 @@ class ThreatIntelService:
         Note: PhishTank registration is closed, so we use URLScan as primary
         phishing detection source when PhishTank is unavailable.
         """
-        domain = self._extract_domain_from_url(url)
-        check_target = domain if domain else url
+        domain_with_path = self._extract_domain_with_path(url)
+        check_target = domain_with_path if domain_with_path else url
         
         cache_key = f"ti:phishtank:{self._hash_url(check_target)}"
         cached = await self._get_from_cache(cache_key)
@@ -533,14 +558,14 @@ class ThreatIntelService:
         
         Weight: 15% of TI score
         
-        Privacy: Extract domain only to avoid sending sensitive URL data
+        Privacy: Extract domain + path to detect path-based phishing, exclude query params
         """
         import urllib.parse
         import base64
         
         # Extract domain for privacy - don't send full URLs with tokens
-        domain = self._extract_domain_from_url(url)
-        check_target = domain if domain else url
+        domain_with_path = self._extract_domain_with_path(url)
+        check_target = domain_with_path if domain_with_path else url
         
         cache_key = f"ti:vt_url:{self._hash_url(check_target)}"
         cached = await self._get_from_cache(cache_key)
@@ -714,11 +739,11 @@ class ThreatIntelService:
         
         Weight: 10% of TI score (backup)
         
-        Privacy: Extract domain only to avoid sending sensitive URL data
+        Privacy: Extract domain + path to detect path-based phishing, exclude query params
         """
         # Extract domain for privacy
-        domain = self._extract_domain_from_url(url)
-        check_target = domain if domain else url
+        domain_with_path = self._extract_domain_with_path(url)
+        check_target = domain_with_path if domain_with_path else url
         
         if not self.settings.ENABLE_URLSCAN_BACKUP:
             return {
@@ -761,37 +786,62 @@ class ThreatIntelService:
                     data = response.json()
                     result_uuid = data.get('uuid')
                     
-                    await asyncio.sleep(2)
+                    max_retries = 5
+                    retry_delay = 2.0
                     
-                    result_response = await client.get(
-                        f'https://urlscan.io/api/v1/result/{result_uuid}/',
-                        headers={'API-Key': self.settings.URLSCAN_API_KEY}
-                    )
+                    for attempt in range(max_retries):
+                        await asyncio.sleep(retry_delay)
+                        
+                        result_response = await client.get(
+                            f'https://urlscan.io/api/v1/result/{result_uuid}/',
+                            headers={'API-Key': self.settings.URLSCAN_API_KEY}
+                        )
+                        
+                        if result_response.status_code == 200:
+                            result_data = result_response.json()
+                            verdicts = result_data.get('verdicts', {})
+                            overall = verdicts.get('overall', {})
+                            
+                            score = overall.get('score', 0) / 100.0
+                            
+                            result = {
+                                'api_name': 'urlscan',
+                                'success': True,
+                                'score': score,
+                                'risk_level': self._get_risk_level_from_score(score * 100),
+                                'data': {
+                                    'url': check_target,
+                                    'original_url': url,
+                                    'score': overall.get('score', 0),
+                                    'categories': overall.get('categories', []),
+                                    'permalink': f"https://urlscan.io/result/{result_uuid}/"
+                                },
+                                'cached': False
+                            }
+                            
+                            await self._set_in_cache(cache_key, result, 43200)
+                            return result
+                        
+                        if result_response.status_code == 404:
+                            logger.debug(f"URLScan result not ready (attempt {attempt + 1}/{max_retries}): {result_uuid}")
+                            retry_delay *= 1.5
+                            continue
+                        
+                        break
                     
-                    if result_response.status_code == 200:
-                        result_data = result_response.json()
-                        verdicts = result_data.get('verdicts', {})
-                        overall = verdicts.get('overall', {})
-                        
-                        score = overall.get('score', 0) / 100.0
-                        
-                        result = {
-                            'api_name': 'urlscan',
-                            'success': True,
-                            'score': score,
-                            'risk_level': self._get_risk_level_from_score(score * 100),
-                            'data': {
-                                'url': check_target,
-                                'original_url': url,
-                                'score': overall.get('score', 0),
-                                'categories': overall.get('categories', []),
-                                'permalink': f"https://urlscan.io/result/{result_uuid}/"
-                            },
-                            'cached': False
-                        }
-                        
-                        await self._set_in_cache(cache_key, result, 43200)
-                        return result
+                    logger.debug(f"URLScan result unavailable after {max_retries} attempts: {result_uuid}")
+                
+                if response.status_code == 400:
+                    logger.debug(f"URLScan rejected URL (400): {check_target}")
+                
+                return {
+                    'api_name': 'urlscan',
+                    'success': False,
+                    'score': 0.0,
+                    'risk_level': 'none',
+                    'error': f'API error: {response.status_code}',
+                    'cached': False
+                }
                 
                 return {
                     'api_name': 'urlscan',
@@ -851,17 +901,15 @@ class ThreatIntelService:
         
         sender_domain = self._extract_domain_from_email(sender_email)
         
-        tasks = []
+        tasks = []  # Reserved for additional async tasks
+        initial_tasks = []
         
         if sender_domain:
-            ip_task = self._resolve_and_check_ip(sender_domain)
-            tasks.append(('ip_reputation', ip_task))
-            
             domain_age_task = self.check_domain_age(sender_domain)
-            tasks.append(('rdap', domain_age_task))
+            initial_tasks.append(('rdap', domain_age_task))
             
             domain_rep_task = self.check_domain_reputation(sender_domain)
-            tasks.append(('domain_reputation', domain_rep_task))
+            initial_tasks.append(('domain_reputation', domain_rep_task))
         
         url_expansions = {}
         for url in urls[:5]:
@@ -873,20 +921,41 @@ class ThreatIntelService:
             }
             
             ti_url = expansion['expanded'] if expansion['success'] else url
-            tasks.append(('phishtank', self.check_url_phishtank(ti_url)))
-            tasks.append(('virustotal_url', self.check_url_virustotal(ti_url)))
+            initial_tasks.append(('phishtank', self.check_url_phishtank(ti_url)))
+            initial_tasks.append(('virustotal_url', self.check_url_virustotal(ti_url)))
         
         for hash_val in attachment_hashes[:3]:
-            tasks.append(('virustotal_hash', self.check_hash_virustotal(hash_val)))
+            initial_tasks.append(('virustotal_hash', self.check_hash_virustotal(hash_val)))
         
         task_results = {}
-        for key, task in tasks:
+        for key, task in initial_tasks:
             try:
                 result = await task
                 task_results[key] = result
             except Exception as e:
                 logger.error(f"Task {key} failed: {e}")
                 task_results[key] = {'success': False, 'error': str(e)}
+        
+        preliminary_score = 0.0
+        preliminary_weight = 0.0
+        for api_name, weight in [('rdap', 0.10), ('domain_reputation', 0.10), ('phishtank', 0.15), ('virustotal_url', 0.15), ('virustotal_hash', 0.10), ('urlscan', 0.10)]:
+            result = task_results.get(api_name, {})
+            if result.get('success'):
+                score = result.get('score', 0.0)
+                preliminary_score += score * weight
+                preliminary_weight += weight
+        
+        if preliminary_weight > 0:
+            preliminary_score = preliminary_score / preliminary_weight
+        
+        if sender_domain and preliminary_score > 0.3:
+            logger.debug(f"Domain {sender_domain} preliminary TI score {preliminary_score:.2f} - checking AbuseIPDB")
+            try:
+                ip_result = await self._resolve_and_check_ip(sender_domain)
+                task_results['abuseipdb'] = ip_result
+            except Exception as e:
+                logger.error(f"AbuseIPDB check failed: {e}")
+                task_results['abuseipdb'] = {'success': False, 'error': str(e)}
         
         weighted_score = 0.0
         total_weight = 0.0
@@ -937,7 +1006,9 @@ class ThreatIntelService:
         """Resolve domain to IP and check reputation."""
         import socket
         try:
+            logger.debug(f"Resolving domain: {domain}")
             ip_address = socket.gethostbyname(domain)
+            logger.debug(f"Resolved {domain} -> {ip_address}, checking AbuseIPDB...")
             return await self.check_ip_reputation(ip_address)
         except socket.gaierror:
             return {

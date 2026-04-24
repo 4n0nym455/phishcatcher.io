@@ -180,3 +180,5 @@ CHAPTER*
 not.ipynb
 PROGRESS.md
 phishcatcher.dpdns*
+stacked_ensemble*joblib
+feature_info.json

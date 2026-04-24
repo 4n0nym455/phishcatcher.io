@@ -307,6 +307,9 @@ async def login(
     if not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Your account has been deactivated. Please contact an administrator for assistance.")
 
+    if user.account_status == "pending":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your account is pending admin approval. You cannot log in until your account has been approved.")
+
     # Reset failed attempts on successful credential check
     user.failed_login_attempts = 0
     user.locked_until = None
@@ -374,6 +377,9 @@ async def verify_otp(
 
     if not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Your account has been deactivated. Please contact an administrator for assistance.")
+
+    if user.account_status == "pending":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your account is pending admin approval. You cannot log in until your account has been approved.")
 
     if user.is_locked:
         raise HTTPException(status.HTTP_423_LOCKED,
@@ -494,7 +500,10 @@ async def refresh_token(body: TokenRefresh, request: Request, db: AsyncSession =
     
     if not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your account has been deactivated. Please contact an administrator for assistance.")
-    
+
+    if user.account_status == "pending":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your account is pending admin approval. You cannot refresh your session until your account has been approved.")
+
     if user.is_locked:
         raise HTTPException(status.HTTP_423_LOCKED,
                             f"Account locked until {user.locked_until.strftime('%H:%M:%S')} UTC.")
@@ -899,6 +908,14 @@ async def delete_account(
     # Clear all sessions for this user (Redis session manager has one session per user)
     session_mgr = get_session_manager(redis)
     await session_mgr.destroy_session(str(current_user.id))
+    
+    from app.database import get_mongodb_database
+    mongodb = get_mongodb_database()
+    user_id_str = str(current_user.id)
+    
+    await mongodb.analysis_results.delete_many({"user_id": user_id_str})
+    await mongodb.gmail_analysis_queue.delete_many({"user_id": user_id_str})
+    await mongodb.notifications.delete_many({"user_id": user_id_str})
     
     await db.commit()
     return {"message": "Account deleted successfully."}

@@ -15,10 +15,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Body
+from fastapi.responses import StreamingResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
+import io
 
 from app.database import get_db, get_mongodb_database
 from app.models.user import User
@@ -174,6 +176,152 @@ async def list_users(
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size
     }
+
+
+@router.get("/users/export")
+@limiter.limit("30/minute")
+async def export_users_report(
+    request: Request,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    role: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """Export user management report as PDF (admin only)."""
+    from app.services.report_service import generate_user_management_report
+    
+    if start_date or end_date:
+        start_dt = datetime.fromisoformat(start_date) if start_date else datetime(2020, 1, 1)
+        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.utcnow()
+        date_filter = (User.created_at >= start_dt) & (User.created_at <= end_dt)
+    else:
+        start_dt = None
+        end_dt = None
+        date_filter = True
+    
+    query = select(User)
+    if start_dt or end_dt:
+        query = query.where(date_filter)
+    if is_active is not None:
+        query = query.where(User.is_active == is_active)
+    if role:
+        query = query.where(User.role == role)
+    
+    query = query.order_by(User.created_at.desc()).limit(500)
+    result = await db.execute(query)
+    users = result.scalars().all()
+    
+    user_data = [
+        {
+            "id": str(u.id),
+            "email": u.email,
+            "full_name": u.full_name,
+            "company": getattr(u, 'company', None),
+            "role": u.role,
+            "is_active": u.is_active,
+            "account_status": u.account_status,
+            "last_login": u.last_login.isoformat() if u.last_login else None,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users
+    ]
+    
+    date_range = {
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    filters = {
+        "is_active": is_active,
+        "role": role,
+    }
+    
+    pdf_bytes = generate_user_management_report(user_data, date_range, filters)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    filename = f"user_management_report_{timestamp}.pdf"
+    
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@router.get("/audit-logs/export")
+@limiter.limit("30/minute")
+async def export_audit_logs_report(
+    request: Request,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    action: Optional[str] = None,
+    status: Optional[str] = None,
+    user_email: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """Export audit log report as PDF (admin only)."""
+    from app.services.report_service import generate_audit_log_report
+    
+    if start_date or end_date:
+        start_dt = datetime.fromisoformat(start_date) if start_date else datetime.utcnow() - timedelta(days=30)
+        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.utcnow()
+        date_filter = (AuditLog.created_at >= start_dt) & (AuditLog.created_at <= end_dt)
+    else:
+        start_dt = datetime.utcnow() - timedelta(days=30)
+        end_dt = datetime.utcnow()
+        date_filter = AuditLog.created_at >= start_dt
+    
+    query = select(AuditLog).where(date_filter)
+    if action:
+        actions = [a.strip().lower() for a in action.split(',')]
+        if len(actions) == 1:
+            query = query.where(AuditLog.action.ilike(actions[0]))
+        else:
+            query = query.where(AuditLog.action.in_(actions))
+    if status:
+        query = query.where(AuditLog.status == status)
+    if user_email:
+        query = query.where(AuditLog.user_email.ilike(f"%{user_email}%"))
+    
+    query = query.order_by(desc(AuditLog.created_at)).limit(500)
+    result = await db.execute(query)
+    logs = result.scalars().all()
+    
+    log_data = [
+        {
+            "id": str(log.id),
+            "user_email": log.user_email,
+            "action": log.action,
+            "resource_type": log.resource_type,
+            "status": log.status,
+            "ip_address": log.ip_address,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        }
+        for log in logs
+    ]
+    
+    date_range = {
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    filters = {
+        "action": action,
+        "status": status,
+        "user_email": user_email,
+    }
+    
+    pdf_bytes = generate_audit_log_report(log_data, date_range, filters)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    filename = f"audit_log_report_{timestamp}.pdf"
+    
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @router.get("/users/{user_id}")
@@ -399,6 +547,13 @@ async def delete_user(
     
     await db.delete(user)
     await db.commit()
+    
+    from app.database import get_mongodb_database
+    mongodb = get_mongodb_database()
+    
+    await mongodb.analysis_results.delete_many({"user_id": str(user.id)})
+    await mongodb.gmail_analysis_queue.delete_many({"user_id": str(user.id)})
+    await mongodb.notifications.delete_many({"user_id": str(user.id)})
     
     logger.warning(f"SECURITY: User {user.email} ({user_id}) deleted by admin {admin.email}")
     
@@ -743,6 +898,7 @@ async def get_audit_logs(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     user_email: Optional[str] = None,
+    resource_type: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
@@ -768,6 +924,8 @@ async def get_audit_logs(
         count_query = count_query.where(AuditLog.status == status)
     if user_email:
         count_query = count_query.where(AuditLog.user_email.ilike(f"%{user_email}%"))
+    if resource_type:
+        count_query = count_query.where(AuditLog.resource_type.ilike(f"%{resource_type}%"))
 
     total_result = await db.execute(count_query)
     total = total_result.scalar()
@@ -784,6 +942,8 @@ async def get_audit_logs(
         paginated_query = paginated_query.where(AuditLog.status == status)
     if user_email:
         paginated_query = paginated_query.where(AuditLog.user_email.ilike(f"%{user_email}%"))
+    if resource_type:
+        paginated_query = paginated_query.where(AuditLog.resource_type.ilike(f"%{resource_type}%"))
 
     paginated_query = paginated_query.order_by(desc(AuditLog.created_at))
     paginated_query = paginated_query.offset((page - 1) * page_size).limit(page_size)

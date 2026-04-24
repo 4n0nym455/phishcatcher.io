@@ -333,10 +333,11 @@ async def get_gmail_queue(
 @router.post("/queue/{message_id}/process")
 async def process_queue_item(
     message_id: str,
+    force: bool = False,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Process a specific queued email synchronously."""
+    """Process a specific queued email synchronously. Use ?force=true to bypass cache and re-analyze."""
     from app.database import get_mongodb_database
     from datetime import datetime
     
@@ -393,11 +394,18 @@ async def process_queue_item(
         "superseded": {"$ne": True}
     })
     
-    if mongo_existing:
+    if mongo_existing and not force:
         return {
             "message": "Email already analyzed",
             "analysis_id": str(mongo_existing.get("_id"))
         }
+    
+    if force and mongo_existing:
+        await mongodb.analysis_results.update_one(
+            {"_id": mongo_existing.get("_id")},
+            {"$set": {"superseded": True}}
+        )
+        logger.info(f"Superseding old analysis for message {message_id} (force=true)")
     
     if existing and existing.get("status") == "processing":
         raise HTTPException(
@@ -411,7 +419,7 @@ async def process_queue_item(
     )
     
     try:
-        result = await process_gmail_email_sync(str(current_user.id), message_id, provider_id=provider_id)
+        result = await process_gmail_email_sync(str(current_user.id), message_id, provider_id=provider_id, force=force)
         
         await mongodb.gmail_analysis_queue.update_one(
             {"user_id": str(current_user.id), "message_id": message_id},
@@ -443,7 +451,7 @@ async def process_queue_item(
         )
 
 
-async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: str = None) -> Dict[str, Any]:
+async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: str = None, force: bool = False) -> Dict[str, Any]:
     """Process a Gmail email synchronously (no Celery)."""
     from app.services.gmail_service import gmail_service
     from app.ml.email_parser import EmailParser
@@ -452,7 +460,9 @@ async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: s
     from app.database import get_mongodb_database
     from datetime import datetime
     import base64
+    import logging
     
+    logger = logging.getLogger(__name__)
     mongodb = get_mongodb_database()
     
     existing = await mongodb.analysis_results.find_one({
@@ -461,13 +471,38 @@ async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: s
         "superseded": {"$ne": True}
     })
     
-    if existing:
-        logger.info(f"Returning existing analysis for message {message_id}")
+    if existing and not force:
+        logger.info(f"Returning cached analysis for message {message_id}")
         return existing
     
-    email_raw = await gmail_service.get_email_by_id(user_id, message_id, provider_id=provider_id)
-    if not email_raw:
-        raise Exception("Failed to fetch email from Gmail")
+    if existing and force:
+        await mongodb.analysis_results.update_one(
+            {"_id": existing.get("_id")},
+            {"$set": {"superseded": True}}
+        )
+        logger.info(f"Superseded old analysis for {message_id} (force=true)")
+    
+    try:
+        email_raw = await gmail_service.get_email_by_id(user_id, message_id, provider_id=provider_id)
+        if not email_raw:
+            raise Exception("Failed to fetch email from Gmail")
+    except Exception as e:
+        error_msg = str(e)
+        if "404" in error_msg or "Not Found" in error_msg or "Requested entity was not found" in error_msg:
+            logger.warning(f"Message {message_id} not found in Gmail (possibly deleted), checking for any prior analysis...")
+            
+            any_prior = await mongodb.analysis_results.find_one({
+                "user_id": user_id,
+                "gmail_message_id": message_id
+            })
+            
+            if any_prior:
+                logger.info(f"Using prior analysis for deleted message {message_id}")
+                return any_prior
+            
+            raise Exception(f"Message not found and no prior analysis available: {message_id}")
+        
+        raise Exception(f"Failed to fetch email from Gmail: {error_msg}")
     
     raw_bytes = base64.urlsafe_b64decode(email_raw['raw'])
     
@@ -684,7 +719,7 @@ async def list_gmail_emails(
         page_token = None if page == 1 else str((page - 1) * max_results)
         
         # Fetch from primary provider
-        if gmail_provider or current_user.gmail_credentials:
+        if provider_ids or current_user.gmail_credentials:
             emails = await gmail_service.fetch_emails_paginated(
                 str(current_user.id), 
                 max_results=max_results,

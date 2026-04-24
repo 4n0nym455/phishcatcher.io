@@ -420,15 +420,52 @@ export const adminApi = {
   updateUser: (id, data)   => apiFetch(`/admin/users/${id}`, { method: 'PUT',    body: JSON.stringify(data) }),
   deleteUser: (id, payload)=> apiFetch(`/admin/users/${id}`, { method: 'DELETE', body: JSON.stringify(payload) }),
 
-  getAuditLogs: ({ page = 1, pageSize = 50, action, result, status, days = 7, startDate, endDate, userEmail } = {}) => {
+  getAuditLogs: ({ page = 1, pageSize = 50, action, status, days = 7, startDate, endDate, userEmail, resourceType } = {}) => {
     const q = new URLSearchParams({ page, page_size: pageSize, days });
-    if (action)       q.set('action', action);
-    if (result)       q.set('result', result);
-    if (status)       q.set('status', status);
-    if (startDate)    q.set('start_date', startDate);
-    if (endDate)     q.set('end_date', endDate);
-    if (userEmail)    q.set('user_email', userEmail);
+    if (action)        q.set('action', action);
+    if (status)        q.set('status', status);
+    if (startDate)     q.set('start_date', startDate);
+    if (endDate)       q.set('end_date', endDate);
+    if (userEmail)     q.set('user_email', userEmail);
+    if (resourceType)  q.set('resource_type', resourceType);
     return apiFetch(`/admin/audit-logs?${q}`);
+  },
+
+  exportUsersReport: async ({ startDate, endDate, isActive, role } = {}) => {
+    const { accessToken } = getTokens();
+    const q = new URLSearchParams();
+    if (startDate)    q.set('start_date', startDate);
+    if (endDate)      q.set('end_date', endDate);
+    if (isActive !== undefined) q.set('is_active', isActive);
+    if (role)         q.set('role', role);
+    const params = q.toString();
+    const res = await fetch(`${API_BASE}/admin/users/export${params ? '?' + params : ''}`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Export failed' }));
+      throw new Error(err.detail);
+    }
+    return res.blob();
+  },
+
+  exportAuditLogsReport: async ({ startDate, endDate, action, status, userEmail } = {}) => {
+    const { accessToken } = getTokens();
+    const q = new URLSearchParams();
+    if (startDate)    q.set('start_date', startDate);
+    if (endDate)      q.set('end_date', endDate);
+    if (action)       q.set('action', action);
+    if (status)      q.set('status', status);
+    if (userEmail)    q.set('user_email', userEmail);
+    const params = q.toString();
+    const res = await fetch(`${API_BASE}/admin/audit-logs/export${params ? '?' + params : ''}`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Export failed' }));
+      throw new Error(err.detail);
+    }
+    return res.blob();
   },
 };
 
