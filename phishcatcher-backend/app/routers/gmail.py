@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Dict, Any, List
 import uuid
+import asyncio
 import logging
 
 from app.database import get_db, get_db_session
@@ -988,6 +989,7 @@ async def queue_gmail_emails(
     mongodb = get_mongodb_database()
     gmail_svc = gmail_service
     queued = []
+    skipped_deleted = 0
     effective_provider_id = str(gmail_provider.id) if gmail_provider else None
     
     for msg_id in message_ids:
@@ -1017,7 +1019,16 @@ async def queue_gmail_emails(
                 queued.append({"message_id": msg_id, "status": "requeued"})
                 continue
         
-        email_data = await gmail_svc.get_email_headers(str(current_user.id), msg_id, effective_provider_id)
+        try:
+            email_data = await gmail_svc.get_email_headers(str(current_user.id), msg_id, effective_provider_id)
+        except Exception as e:
+            if "404" in str(e) or "Not Found" in str(e):
+                logger.warning(f"Skipping deleted message {msg_id} in queue scan")
+                skipped_deleted += 1
+                await asyncio.sleep(0.1)
+                continue
+            raise
+        
         subject = ""
         sender = ""
         recipient = ""
@@ -1055,8 +1066,9 @@ async def queue_gmail_emails(
     
     queued_count = sum(1 for r in queued if r.get("status") in ["queued", "requeued"])
     return {
-        "message": f"{queued_count} emails added to queue",
-        "queued": queued
+        "message": f"{queued_count} emails added to queue, {skipped_deleted} skipped (deleted from Gmail)",
+        "queued": queued,
+        "skipped_deleted": skipped_deleted
     }
 
 
@@ -1141,7 +1153,22 @@ async def analyze_gmail_emails(
                         }}
                     )
             
-            email_data = await gmail_svc.get_email_headers(str(current_user.id), msg_id, effective_provider_id)
+            try:
+                email_data = await gmail_svc.get_email_headers(str(current_user.id), msg_id, effective_provider_id)
+            except Exception as e:
+                if "404" in str(e) or "Not Found" in str(e):
+                    await mongodb.gmail_analysis_queue.update_one(
+                        {"user_id": str(current_user.id), "message_id": msg_id},
+                        {"$set": {
+                            "status": "failed",
+                            "error": "Message deleted from Gmail",
+                            "completed_at": datetime.utcnow()
+                        }}
+                    )
+                    results.append({"message_id": msg_id, "status": "skipped", "reason": "deleted from Gmail"})
+                    continue
+                raise
+            
             subject = ""
             sender = ""
             if email_data and 'payload' in email_data:
