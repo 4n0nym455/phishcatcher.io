@@ -70,7 +70,7 @@ class TokenService:
         """
         key = f"user_revoked_tokens:{user_id}"
         timestamp = int(time.time())
-        await redis_client.setex(key, 86400, str(timestamp))
+        await redis_client.setex(key, 604800, str(timestamp))  # 7 days = refresh token lifetime
     
     async def check_user_tokens_revoked(self, user_id: str, redis_client, token_iat: int) -> bool:
         """
