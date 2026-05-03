@@ -11,14 +11,14 @@ Implements comprehensive security controls:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Body
 from fastapi.responses import StreamingResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, case
 from sqlalchemy.ext.asyncio import AsyncSession
 import io
 
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
 
 # Create router
-router = APIRouter()
+router = APIRouter(tags=["Admin"])
 
 # Security settings
 MAX_ADMIN_SESSION_AGE = timedelta(minutes=15)
@@ -100,7 +100,11 @@ async def log_admin_action(
     )
 
 
-@router.get("/users")
+@router.get(
+    "/users",
+    summary="List all users",
+    description="Returns paginated user list with search, filtering, and sorting. Admin only.",
+)
 @limiter.limit("60/minute")
 async def list_users(
     request: Request,
@@ -178,7 +182,11 @@ async def list_users(
     }
 
 
-@router.get("/users/export")
+@router.get(
+    "/users/export",
+    summary="Export user report",
+    description="Generates and downloads a PDF report of all users with optional date and status filters. Admin only.",
+)
 @limiter.limit("30/minute")
 async def export_users_report(
     request: Request,
@@ -194,7 +202,7 @@ async def export_users_report(
     
     if start_date or end_date:
         start_dt = datetime.fromisoformat(start_date) if start_date else datetime(2020, 1, 1)
-        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.utcnow()
+        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.now(timezone.utc)
         date_filter = (User.created_at >= start_dt) & (User.created_at <= end_dt)
     else:
         start_dt = None
@@ -249,7 +257,11 @@ async def export_users_report(
     )
 
 
-@router.get("/audit-logs/export")
+@router.get(
+    "/audit-logs/export",
+    summary="Export audit log report",
+    description="Generates and downloads a PDF report of audit logs with optional filters. Admin only.",
+)
 @limiter.limit("30/minute")
 async def export_audit_logs_report(
     request: Request,
@@ -265,12 +277,12 @@ async def export_audit_logs_report(
     from app.services.report_service import generate_audit_log_report
     
     if start_date or end_date:
-        start_dt = datetime.fromisoformat(start_date) if start_date else datetime.utcnow() - timedelta(days=30)
-        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.utcnow()
+        start_dt = datetime.fromisoformat(start_date) if start_date else datetime.now(timezone.utc) - timedelta(days=30)
+        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.now(timezone.utc)
         date_filter = (AuditLog.created_at >= start_dt) & (AuditLog.created_at <= end_dt)
     else:
-        start_dt = datetime.utcnow() - timedelta(days=30)
-        end_dt = datetime.utcnow()
+        start_dt = datetime.now(timezone.utc) - timedelta(days=30)
+        end_dt = datetime.now(timezone.utc)
         date_filter = AuditLog.created_at >= start_dt
     
     query = select(AuditLog).where(date_filter)
@@ -324,7 +336,11 @@ async def export_audit_logs_report(
     )
 
 
-@router.get("/users/{user_id}")
+@router.get(
+    "/users/{user_id}",
+    summary="Get user details",
+    description="Returns detailed information about a specific user including analysis count. Admin only.",
+)
 @limiter.limit("60/minute")
 async def get_user(
     request: Request,
@@ -333,20 +349,25 @@ async def get_user(
     admin: User = Depends(get_current_admin)
 ):
     """Get user details (admin only)."""
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    analysis_count_subq = (
+        select(func.count(AnalysisJob.id))
+        .where(AnalysisJob.user_id == user_id)
+        .scalar_subquery()
+    )
     
-    if not user:
+    result = await db.execute(
+        select(User, analysis_count_subq.label("analysis_count"))
+        .where(User.id == user_id)
+    )
+    row = result.first()
+    
+    if not row or not row.User:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
     
-    # Get user's analysis count
-    analysis_count = await db.execute(
-        select(func.count()).where(AnalysisJob.user_id == user_id)
-    )
-    
+    user = row.User
     return {
         "id": str(user.id),
         "email": user.email,
@@ -360,11 +381,15 @@ async def get_user(
         "last_login": user.last_login,
         "last_login_ip": user.last_login_ip,
         "created_at": user.created_at,
-        "analysis_count": analysis_count.scalar()
+        "analysis_count": row.analysis_count or 0
     }
 
 
-@router.put("/users/{user_id}")
+@router.put(
+    "/users/{user_id}",
+    summary="Update user",
+    description="Updates user fields (is_active, full_name, company, account_status). Prevents self-modification and role changes. Admin only.",
+)
 @limiter.limit("30/minute")
 async def update_user(
     request: Request,
@@ -466,7 +491,11 @@ async def update_user(
     return {"message": "User updated successfully"}
 
 
-@router.delete("/users/{user_id}")
+@router.delete(
+    "/users/{user_id}",
+    summary="Delete user",
+    description="Permanently deletes a user and all associated data. Requires MFA and password confirmation. Prevents self-deletion. Admin only.",
+)
 @limiter.limit("10/hour")
 async def delete_user(
     request: Request,
@@ -539,7 +568,7 @@ async def delete_user(
         details={
             "deleted_user_email": user.email,
             "deleted_user_role": user.role,
-            "deleted_at": datetime.utcnow().isoformat()
+            "deleted_at": datetime.now(timezone.utc).isoformat()
         },
         ip_address=get_remote_address(request),
         user_agent=request.headers.get("user-agent")
@@ -560,7 +589,11 @@ async def delete_user(
     return {"message": "User deleted successfully"}
 
 
-@router.get("/stats")
+@router.get(
+    "/stats",
+    summary="Get system statistics",
+    description="Returns aggregated statistics for users, analyses, threats, and system health. Admin only.",
+)
 @limiter.limit("60/minute")
 async def get_system_stats(
     request: Request,
@@ -568,81 +601,57 @@ async def get_system_stats(
     admin: User = Depends(get_current_admin)
 ):
     """Get system statistics (admin only)."""
-    # User statistics
-    total_users = await db.execute(select(func.count()).select_from(User))
-    active_users = await db.execute(select(func.count()).where(User.is_active == True))
-    new_users_today = await db.execute(
-        select(func.count()).where(
-            User.created_at >= datetime.utcnow() - timedelta(days=1)
-        )
-    )
-    
-    # Pending activations
-    pending_activations = await db.execute(
-        select(func.count()).where(User.account_status == "pending")
-    )
-    
-    # MFA enabled users
-    mfa_enabled_users = await db.execute(
-        select(func.count()).where(User.mfa_enabled == True)
-    )
-    
-    # Gmail integrations - count from email_providers table
     from app.models.email_provider import EmailProvider
-    gmail_connections = await db.execute(
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    today = datetime.now(timezone.utc) - timedelta(days=1)
+    
+    # Single query for all user stats
+    user_stats_query = select(
+        func.count().label('total'),
+        func.sum(case((User.is_active == True, 1), else_=0)).label('active'),
+        func.sum(case((User.created_at >= today, 1), else_=0)).label('new_today'),
+        func.sum(case((User.account_status == "pending", 1), else_=0)).label('pending'),
+        func.sum(case((User.mfa_enabled == True, 1), else_=0)).label('mfa'),
+        func.sum(case((User.last_login >= thirty_days_ago, 1), else_=0)).label('active_30d'),
+    ).select_from(User)
+    user_stats = await db.execute(user_stats_query)
+    u = user_stats.one()
+    
+    # Single query for all analysis stats (only completed rows for avg)
+    analysis_stats_query = select(
+        func.count().label('total'),
+        func.sum(case((AnalysisJob.status == "completed", 1), else_=0)).label('completed'),
+        func.sum(case((AnalysisJob.created_at >= today, 1), else_=0)).label('today'),
+        func.sum(case((AnalysisJob.status.in_(["processing", "pending"]), 1), else_=0)).label('active'),
+        func.sum(case((AnalysisJob.threat_category == "phishing", 1), else_=0)).label('phishing'),
+        func.sum(case((AnalysisJob.threat_category == "malware", 1), else_=0)).label('malware'),
+        func.avg(AnalysisJob.risk_score).label('avg_risk'),
+    ).select_from(AnalysisJob)
+    analysis_stats = await db.execute(analysis_stats_query)
+    a = analysis_stats.one()
+    
+    # Gmail connections (separate table)
+    gmail_result = await db.execute(
         select(func.count(EmailProvider.id))
-        .where(EmailProvider.provider_type == "gmail")
-        .where(EmailProvider.is_connected == True)
+        .where(EmailProvider.provider_type == "gmail", EmailProvider.is_connected == True)
     )
     
-    # Analysis statistics
-    total_analyses = await db.execute(select(func.count()).select_from(AnalysisJob))
-    completed_analyses = await db.execute(
-        select(func.count()).where(AnalysisJob.status == "completed")
-    )
-    analyses_today = await db.execute(
-        select(func.count()).where(
-            AnalysisJob.created_at >= datetime.utcnow() - timedelta(days=1)
-        )
-    )
+    total_users_val = u.total
+    active_users_val = u.active or 0
+    new_today_val = u.new_today or 0
+    pending_activations_val = u.pending or 0
+    mfa_enabled_users_val = u.mfa or 0
+    active_users_30d_val = u.active_30d or 0
     
-    # Email analysed active status (currently processing/pending)
-    email_analysed_active_result = await db.execute(
-        select(func.count()).where(
-            AnalysisJob.status.in_(["processing", "pending"])
-        )
-    )
-    email_analysed_active_count = email_analysed_active_result.scalar()
-    
-    # Threat statistics
-    phishing_result = await db.execute(
-        select(func.count()).where(AnalysisJob.threat_category == "phishing")
-    )
-    malware_result = await db.execute(
-        select(func.count()).where(AnalysisJob.threat_category == "malware")
-    )
-    phishing_count_val = phishing_result.scalar()
-    malware_count_val = malware_result.scalar()
+    total_analyses_val = a.total
+    completed_analyses_val = a.completed or 0
+    analyses_today_val = a.today or 0
+    email_analysed_active_count = a.active or 0
+    phishing_count_val = a.phishing or 0
+    malware_count_val = a.malware or 0
     threats_detected = phishing_count_val + malware_count_val
-    
-    # Average risk score
-    avg_risk_result = await db.execute(
-        select(func.avg(AnalysisJob.risk_score)).where(
-            AnalysisJob.status == "completed"
-        )
-    )
-    avg_risk_val = avg_risk_result.scalar()
-    
-    # Get all scalar values first
-    total_users_val = total_users.scalar()
-    active_users_val = active_users.scalar()
-    new_today_val = new_users_today.scalar()
-    pending_activations_val = pending_activations.scalar()
-    mfa_enabled_users_val = mfa_enabled_users.scalar()
-    gmail_connections_val = gmail_connections.scalar()
-    total_analyses_val = total_analyses.scalar()
-    completed_analyses_val = completed_analyses.scalar()
-    analyses_today_val = analyses_today.scalar()
+    avg_risk_val = a.avg_risk or 0
+    gmail_connections_val = gmail_result.scalar() or 0
     
     return {
         "users": {
@@ -660,21 +669,26 @@ async def get_system_stats(
             "phishing_detected": phishing_count_val,
             "malware_detected": malware_count_val,
             "detected": threats_detected,
-            "average_risk_score": round(avg_risk_val or 0, 2)
+            "average_risk_score": round(avg_risk_val, 2)
         },
         "pending_activations": pending_activations_val,
         "gmail_connections": gmail_connections_val,
         "mfa_enabled_users": mfa_enabled_users_val,
+        "active_users_30d": active_users_30d_val,
         "total_users": total_users_val,
         "active_users": active_users_val,
         "total_emails": completed_analyses_val,
         "threats_detected": threats_detected,
-        "avg_threat_score": round(avg_risk_val or 0, 2),
-        "timestamp": datetime.utcnow().isoformat()
+        "avg_threat_score": round(avg_risk_val, 2),
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
-@router.get("/model-info")
+@router.get(
+    "/model-info",
+    summary="Get ML model information",
+    description="Returns the current ML model's version, accuracy, and training metadata. Admin only.",
+)
 @limiter.limit("60/minute")
 async def get_model_info(
     request: Request,
@@ -686,7 +700,11 @@ async def get_model_info(
     return detector.get_model_info()
 
 
-@router.post("/model/retrain")
+@router.post(
+    "/model/retrain",
+    summary="Trigger model retraining",
+    description="Queues an ML model retraining job. Requires MFA. Admin only.",
+)
 @limiter.limit("3/hour")
 async def retrain_model(
     request: Request,
@@ -700,7 +718,7 @@ async def retrain_model(
     await log_admin_action(
         db, admin, "model-retrain-queued", "model", "ml-model",
         status="pending", 
-        details={"triggered_at": datetime.utcnow().isoformat()},
+        details={"triggered_at": datetime.now(timezone.utc).isoformat()},
         ip_address=get_remote_address(request),
         user_agent=request.headers.get("user-agent")
     )
@@ -711,7 +729,11 @@ async def retrain_model(
     }
 
 
-@router.get("/analytics")
+@router.get(
+    "/analytics",
+    summary="Get analytics data",
+    description="Returns time-series data for daily analyses, threat categories, risk distribution, and user activity charts. Admin only.",
+)
 @limiter.limit("30/minute")
 async def get_analytics(
     request: Request,
@@ -720,55 +742,40 @@ async def get_analytics(
     admin: User = Depends(get_current_admin)
 ):
     """Get analytics data for charts (admin only)."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     start_date = now - timedelta(days=days)
     
-    # Daily analyses for the period
+    # Daily analyses: single GROUP BY query instead of 4*days queries
+    daily_stats_query = select(
+        func.date_trunc('day', AnalysisJob.created_at).label('day'),
+        func.count().label('total'),
+        func.sum(case((AnalysisJob.threat_category == "phishing", 1), else_=0)).label('phishing'),
+        func.sum(case((AnalysisJob.risk_score.between(40, 69), 1), else_=0)).label('suspicious'),
+        func.sum(case(
+            ((AnalysisJob.risk_score < 40) & (AnalysisJob.status == "completed"), 1),
+            else_=0
+        )).label('safe'),
+    ).where(
+        AnalysisJob.created_at >= start_date
+    ).group_by(
+        'day'
+    ).order_by(
+        'day'
+    )
+    daily_result = await db.execute(daily_stats_query)
+    daily_rows = {row.day.strftime('%Y-%m-%d'): row for row in daily_result.all()}
+    
     daily_data = []
     for i in range(days):
         day = start_date + timedelta(days=i)
-        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        
-        total_count = await db.execute(
-            select(func.count(AnalysisJob.id)).where(
-                AnalysisJob.created_at >= day_start,
-                AnalysisJob.created_at < day_end
-            )
-        )
-        
-        phishing_count = await db.execute(
-            select(func.count(AnalysisJob.id)).where(
-                AnalysisJob.created_at >= day_start,
-                AnalysisJob.created_at < day_end,
-                AnalysisJob.threat_category == "phishing"
-            )
-        )
-        
-        suspicious_count = await db.execute(
-            select(func.count(AnalysisJob.id)).where(
-                AnalysisJob.created_at >= day_start,
-                AnalysisJob.created_at < day_end,
-                AnalysisJob.risk_score >= 40,
-                AnalysisJob.risk_score < 70
-            )
-        )
-        
-        safe_count = await db.execute(
-            select(func.count(AnalysisJob.id)).where(
-                AnalysisJob.created_at >= day_start,
-                AnalysisJob.created_at < day_end,
-                AnalysisJob.risk_score < 40,
-                AnalysisJob.status == "completed"
-            )
-        )
-        
+        day_str = day.strftime('%Y-%m-%d')
+        row = daily_rows.get(day_str)
         daily_data.append({
-            "date": day_start.strftime("%Y-%m-%d"),
-            "total": total_count.scalar() or 0,
-            "phishing": phishing_count.scalar() or 0,
-            "suspicious": suspicious_count.scalar() or 0,
-            "safe": safe_count.scalar() or 0
+            "date": day_str,
+            "total": row.total if row else 0,
+            "phishing": row.phishing if row else 0,
+            "suspicious": row.suspicious if row else 0,
+            "safe": row.safe if row else 0,
         })
     
     # Threat category breakdown (all time)
@@ -786,55 +793,54 @@ async def get_analytics(
         for row in category_result.all()
     ]
     
-    # Risk score distribution
-    risk_ranges = [
-        ("0-20", 0, 20),
-        ("21-40", 21, 40),
-        ("41-60", 41, 60),
-        ("61-80", 61, 80),
-        ("81-100", 81, 100)
+    # Risk score distribution: single query with conditional aggregation
+    risk_distribution_query = select(
+        func.sum(case((AnalysisJob.risk_score.between(0, 20), 1), else_=0)).label('range_0_20'),
+        func.sum(case((AnalysisJob.risk_score.between(21, 40), 1), else_=0)).label('range_21_40'),
+        func.sum(case((AnalysisJob.risk_score.between(41, 60), 1), else_=0)).label('range_41_60'),
+        func.sum(case((AnalysisJob.risk_score.between(61, 80), 1), else_=0)).label('range_61_80'),
+        func.sum(case((AnalysisJob.risk_score.between(81, 100), 1), else_=0)).label('range_81_100'),
+    ).where(
+        AnalysisJob.status == "completed"
+    )
+    risk_result = await db.execute(risk_distribution_query)
+    risk_row = risk_result.one()
+    risk_distribution = [
+        {"range": "0-20", "count": risk_row.range_0_20 or 0},
+        {"range": "21-40", "count": risk_row.range_21_40 or 0},
+        {"range": "41-60", "count": risk_row.range_41_60 or 0},
+        {"range": "61-80", "count": risk_row.range_61_80 or 0},
+        {"range": "81-100", "count": risk_row.range_81_100 or 0},
     ]
     
-    risk_distribution = []
-    for label, min_score, max_score in risk_ranges:
-        count = await db.execute(
-            select(func.count(AnalysisJob.id)).where(
-                AnalysisJob.risk_score >= min_score,
-                AnalysisJob.risk_score <= max_score,
-                AnalysisJob.status == "completed"
-            )
-        )
-        risk_distribution.append({
-            "range": label,
-            "count": count.scalar() or 0
-        })
+    # User activity: 2 GROUP BY queries instead of 2*days queries
+    new_users_query = select(
+        func.date_trunc('day', User.created_at).label('day'),
+        func.count(User.id).label('count')
+    ).where(
+        User.created_at >= start_date
+    ).group_by('day')
+    new_users_result = await db.execute(new_users_query)
+    new_users_by_day = {row.day.strftime('%Y-%m-%d'): row.count for row in new_users_result.all()}
     
-    # User activity (daily new users and users active in period)
+    active_users_query = select(
+        func.date_trunc('day', User.last_login).label('day'),
+        func.count(User.id).label('count')
+    ).where(
+        User.last_login >= start_date,
+        User.last_login.isnot(None)
+    ).group_by('day')
+    active_result = await db.execute(active_users_query)
+    active_users_by_day = {row.day.strftime('%Y-%m-%d'): row.count for row in active_result.all()}
+    
     user_activity = []
     for i in range(days):
         day = start_date + timedelta(days=i)
-        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        
-        new_users = await db.execute(
-            select(func.count(User.id)).where(
-                User.created_at >= day_start,
-                User.created_at < day_end
-            )
-        )
-        
-        # Users who logged in on this specific day
-        active_users_day = await db.execute(
-            select(func.count(User.id)).where(
-                User.last_login >= day_start,
-                User.last_login < day_end
-            )
-        )
-        
+        day_str = day.strftime('%Y-%m-%d')
         user_activity.append({
-            "date": day_start.strftime("%Y-%m-%d"),
-            "new_users": new_users.scalar() or 0,
-            "active_users": active_users_day.scalar() or 0
+            "date": day_str,
+            "new_users": new_users_by_day.get(day_str, 0),
+            "active_users": active_users_by_day.get(day_str, 0),
         })
     
     # Get current period stats (last 7 days or current period)
@@ -886,7 +892,11 @@ async def get_analytics(
     }
 
 
-@router.get("/audit-logs")
+@router.get(
+    "/audit-logs",
+    summary="Get audit logs",
+    description="Returns paginated audit logs with filtering by action, status, user email, resource type, and date range. Admin only.",
+)
 @limiter.limit("60/minute")
 async def get_audit_logs(
     request: Request,
@@ -905,11 +915,11 @@ async def get_audit_logs(
     """Get audit logs (admin only)."""
     # Determine date filter: use start/end if provided, otherwise fall back to days
     if start_date or end_date:
-        start_dt = datetime.fromisoformat(start_date) if start_date else datetime.utcnow() - timedelta(days=90)
-        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.utcnow()
+        start_dt = datetime.fromisoformat(start_date) if start_date else datetime.now(timezone.utc) - timedelta(days=90)
+        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.now(timezone.utc)
         date_filter = (AuditLog.created_at >= start_dt) & (AuditLog.created_at <= end_dt)
     else:
-        date_filter = AuditLog.created_at >= datetime.utcnow() - timedelta(days=days)
+        date_filter = AuditLog.created_at >= datetime.now(timezone.utc) - timedelta(days=days)
 
     # Build count query
     count_query = select(func.count(AuditLog.id)).where(date_filter)
