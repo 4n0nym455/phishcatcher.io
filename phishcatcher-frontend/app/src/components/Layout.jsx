@@ -12,9 +12,10 @@ import {
   LogOut, User, ChevronDown, Bell, Search, Filter,
   Shield, AlertTriangle, CheckCircle, Clock, TrendingUp,
   Users, BarChart3, Lock, Eye, EyeOff, Loader2,
-  Database, Mail, Smartphone, Globe, Cpu, HardDrive, FileBarChart, ShieldAlert
+  Database, Mail, Smartphone, Globe, Cpu, HardDrive, FileBarChart, ShieldAlert,
+  Bell as BellIcon,
 } from 'lucide-react';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 import { ThemeToggle }   from './ThemeToggle';
 import { toast }         from 'sonner';
 
@@ -39,9 +40,11 @@ const USER_NAV = [
   { path: '/analysis',       label: 'Analysis', icon: FileText },
   { path: '/reports',        label: 'Reports',          icon: FileBarChart },
   { path: '/settings',       label: 'Settings',         icon: Settings },
+  { path: '/settings/notifications', label: 'Notifications', icon: BellIcon },
 ];
 const ADMIN_NAV = [
   { path: '/admin', label: 'Admin Panel', icon: ShieldAlert },
+  { path: '/admin/sessions', label: 'Sessions', icon: Shield },
 ];
 
 export default function Layout() {

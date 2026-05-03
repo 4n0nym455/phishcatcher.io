@@ -8,10 +8,11 @@ import { Link } from 'react-router-dom';
 import {
   User, Lock, Shield, Mail, Trash2,
   Eye, EyeOff, Loader2, ChevronRight, AlertTriangle, CheckCircle2, XCircle, Plus, Settings,
+  Bell, Monitor, Phone, Smartphone,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi, clearTokens } from '@/lib/api';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 
 const MAX_AVATAR_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -22,6 +23,14 @@ function getAvatarUrlWithTimestamp(avatarUrl, timestamp) {
     ? Math.floor(new Date(timestamp).getTime() / 1000)
     : timestamp;
   return `${avatarUrl}?t=${ts}`;
+}
+
+function tokenizePhone(phone) {
+  if (!phone) return null;
+  const clean = phone.replace(/\s+/g, '');
+  if (clean.length < 8) return '+***';
+  const last4 = clean.slice(-4);
+  return `+***-***-${last4}`;
 }
 
 /* ─── Password strength ─────────────────────────────────────────────────── */
@@ -92,7 +101,7 @@ function Section({ title, subtitle, icon: Icon, iconColor, iconBg, children }) {
 }
 
 export default function AccountSettingsPage() {
-  const { user, refreshUser, logout } = useAuth();
+  const { user, refreshUser, logout, isAdmin } = useAuth();
 
   /* ── Profile state ── */
   const [name,       setName]      = useState(user?.full_name ?? '');
@@ -101,6 +110,15 @@ export default function AccountSettingsPage() {
   const [avatarUrl, setAvatarUrl]  = useState(null);
   const [avatarTimestamp, setAvatarTimestamp] = useState(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+
+  /* ── Phone state ── */
+  const [phone, setPhoneState] = useState(user?.phone ?? '');
+  const [phoneVerified, setPhoneVerified] = useState(user?.phone_verified ?? false);
+  const [phoneInput, setPhoneInput] = useState('');
+  const [phoneOtp, setPhoneOtp] = useState('');
+  const [phoneSaving, setPhoneSaving] = useState(false);
+  const [phoneError, setPhoneError] = useState('');
+  const [phoneStep, setPhoneStep] = useState('none');
 
   /* ── Password change state ── */
   const [currentPwd, setCurrentPwd] = useState('');
@@ -219,6 +237,59 @@ export default function AccountSettingsPage() {
       setAvatarUploading(false);
       e.target.value = '';
     }
+  };
+
+  /* ── Phone ── */
+  const phoneDigits = phoneInput.replace(/[^+\d]/g, '');
+  const phoneInputValid = /^\+\d{7,15}$/.test(phoneDigits);
+
+  const handleUpdatePhone = async e => {
+    e.preventDefault();
+    setPhoneError('');
+    if (!phoneInputValid) return setPhoneError('Enter a valid phone in E.164 format (e.g., +254876543210)');
+    setPhoneSaving(true);
+    try {
+      await authApi.updatePhone(phoneDigits);
+      setPhoneStep('otp');
+      setPhoneOtp('');
+      toast.success('Verification code sent to your phone');
+    } catch (err) { setPhoneError(err.message ?? 'Failed to update phone'); }
+    finally { setPhoneSaving(false); }
+  };
+
+  const handleVerifyPhone = async e => {
+    e.preventDefault();
+    setPhoneError('');
+    if (phoneOtp.length !== 6) return setPhoneError('Enter the 6-digit code');
+    setPhoneSaving(true);
+    try {
+      await authApi.verifyPhone(phoneOtp);
+      setPhoneState(phoneDigits);
+      setPhoneVerified(true);
+      setPhoneStep('none');
+      setPhoneInput('');
+      setPhoneOtp('');
+      await refreshUser();
+      toast.success('Phone number verified!');
+    } catch (err) { setPhoneError(err.message ?? 'Invalid verification code'); }
+    finally { setPhoneSaving(false); }
+  };
+
+  const handleRemovePhone = async () => {
+    try {
+      await authApi.updatePhone('');
+      setPhoneState('');
+      setPhoneVerified(false);
+      await refreshUser();
+      toast.success('Phone number removed');
+    } catch (err) { toast.error(err.message ?? 'Failed to remove phone'); }
+  };
+
+  const cancelPhoneUpdate = () => {
+    setPhoneStep('none');
+    setPhoneInput('');
+    setPhoneOtp('');
+    setPhoneError('');
   };
 
   /* ── Password change ── */
@@ -348,6 +419,126 @@ export default function AccountSettingsPage() {
         </form>
       </Section>
 
+      {/* ── Phone ── */}
+      <Section title="Phone Number" subtitle="SMS OTP for login verification" icon={Phone}>
+        {phoneStep === 'none' && phone && phoneVerified ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-500" style={{ color: 'var(--text-primary)' }}>
+                  {tokenizePhone(phone)}
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Verified — you will receive SMS codes during login.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="badge badge-success">Verified</span>
+                <button onClick={handleRemovePhone}
+                  className="btn-ghost h-8 px-2 text-xs"
+                  style={{ color: 'var(--danger)' }}>
+                  Remove
+                </button>
+              </div>
+            </div>
+            <button onClick={() => { setPhoneStep('phone'); setPhoneInput(phone); }}
+              className="btn-ghost h-9 px-3 text-sm w-full justify-center">
+              Change phone number
+            </button>
+          </div>
+        ) : phoneStep === 'none' && phone ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm" style={{ color: 'var(--text-primary)' }}>{tokenizePhone(phone)}</span>
+              <span className="badge badge-warning">Unverified</span>
+            </div>
+            <button onClick={() => setPhoneStep('phone')}
+              className="btn-ghost h-9 px-3 text-sm w-full justify-center">
+              Verify phone
+            </button>
+          </div>
+        ) : phoneStep === 'none' ? (
+          <div className="space-y-3">
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No phone number set.</p>
+            <button onClick={() => setPhoneStep('phone')}
+              className="btn-ghost h-9 px-3 text-sm w-full justify-center">
+              <Plus className="w-3.5 h-3.5" /> Add phone number
+            </button>
+          </div>
+        ) : null}
+
+        {phoneStep !== 'none' && (
+          <form className={phoneStep === 'none' ? '' : 'mt-4 space-y-3 animate-fade-in'}>
+            {phoneStep === 'phone' && (
+              <div>
+                <label className="form-label">Phone number</label>
+                <input
+                  type="tel"
+                  value={phoneInput}
+                  onChange={e => {
+                    const digits = e.target.value.replace(/[^+\d]/g, '');
+                    setPhoneInput(digits);
+                  }}
+                  placeholder="+254876543210"
+                  className="input-base"
+                  style={!phoneInputValid && phoneInput ? {
+                    borderColor: 'var(--danger)',
+                    boxShadow: '0 0 0 3px rgba(239,68,68,0.12)',
+                  } : {}}
+                />
+                {phoneInput && !phoneInputValid && (
+                  <p className="text-xs mt-1" style={{ color: 'var(--danger)' }}>
+                    E.164 format required
+                  </p>
+                )}
+              </div>
+            )}
+
+            {phoneStep === 'otp' && (
+              <div>
+                <label className="form-label">Verification code</label>
+                <input
+                  type="text"
+                  value={phoneOtp}
+                  onChange={e => setPhoneOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="123456"
+                  maxLength={6}
+                  className="input-base"
+                  style={{ letterSpacing: '0.5em', textAlign: 'center', fontSize: '1.25rem' }}
+                />
+                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Enter the 6-digit code sent to {tokenizePhone(phoneInput) || phoneInput}.
+                </p>
+              </div>
+            )}
+
+            {phoneError && (
+              <div className="alert-error">{phoneError}</div>
+            )}
+
+            <div className="flex gap-3">
+              <button type="button" onClick={cancelPhoneUpdate}
+                className="btn-ghost flex-1 h-10 text-sm">
+                Cancel
+              </button>
+              {phoneStep === 'phone' ? (
+                <button type="submit" onClick={handleUpdatePhone}
+                  disabled={!phoneInputValid || phoneSaving}
+                  className="btn-primary flex-1 h-10 text-sm">
+                  {phoneSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Send code'}
+                </button>
+              ) : (
+                <button type="submit" onClick={handleVerifyPhone}
+                  disabled={phoneOtp.length !== 6 || phoneSaving}
+                  className="btn-primary flex-1 h-10 text-sm">
+                  {phoneSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify'}
+                </button>
+              )}
+            </div>
+          </form>
+        )}
+      </Section>
+
       {/* ── Password ── */}
       <Section title="Change Password" subtitle="Use a strong, unique password" icon={Lock}>
         <form onSubmit={handlePasswordChange} className="space-y-4">
@@ -432,7 +623,34 @@ export default function AccountSettingsPage() {
         </div>
       </Section>
 
-{/* ── Gmail ── */}
+      {/* ── Quick Settings Links ── */}
+      <Section title="More Settings" subtitle="Additional configuration options" icon={Settings}>
+        <div className="space-y-2">
+          {[
+            ...(isAdmin ? [{ to: '/admin/sessions', icon: Shield, label: 'Active Sessions', desc: 'View and manage sessions' }] : []),
+            { to: '/settings/notifications', icon: Bell, label: 'Notifications', desc: 'Configure alerts and preferences' },
+            { to: '/settings/gmail', icon: Mail, label: 'Gmail Integration', desc: 'Manage connected email accounts' },
+          ].map(({ to, icon: Icon, label, desc }) => (
+            <Link key={to} to={to}
+              className="flex items-center gap-3 p-3 rounded-xl transition-colors"
+              style={{ color: 'var(--text-primary)' }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-elevated)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                style={{ background: 'var(--bg-elevated)', color: 'var(--brand)' }}>
+                <Icon className="w-4 h-4" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-600">{label}</p>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{desc}</p>
+              </div>
+              <ChevronRight className="w-4 h-4 shrink-0" style={{ color: 'var(--text-muted)' }} />
+            </Link>
+          ))}
+        </div>
+      </Section>
+
+      {/* ── Gmail ── */}
       <Section title="Gmail Integration" subtitle="Connect your Gmail, no more second guessing — the email you received is safe" icon={Mail}>
         <div className="space-y-3">
           {/* Connected accounts count */}
