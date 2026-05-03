@@ -6,16 +6,20 @@
  * - Auth flow: /login → /verify-otp → /mfa-verification
  * - Authenticated pages wrapped in <PrivateRoute> + <Layout>
  * - Admin pages require requireAdmin={true}
- * - ThemeProvider + AuthProvider wrap everything
+ * - ThemeProvider + Zustand auth store wrap everything
+ * - TanStack Query for server state caching
  */
 
+import { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 
 import { ThemeProvider }    from '@/context/ThemeContext';
 import { FontSizeProvider } from '@/context/FontSizeContext';
-import { AuthProvider }     from '@/context/AuthContext';
-import { useAuth }          from '@/context/AuthContext';
+import { useAuthStore }     from '@/stores/authStore';
+import { useAuth }          from '@/stores/authStore';
+import { queryClient }      from '@/lib/queryClient';
 
 // ── Public pages ──────────────────────────────────────────────────────────
 import LandingPage           from '@/pages/LandingPage';
@@ -37,6 +41,9 @@ import ReportsPage            from '@/pages/ReportsPage';
 import AccountSettingsPage   from '@/pages/AccountSettingsPage';
 import MFASettingsPage       from '@/pages/MFASettingsPage';
 import GmailSettingsPage    from '@/pages/GmailSettingsPage';
+import SessionManagementPage from '@/pages/SessionManagementPage';
+import NotificationSettingsPage from '@/pages/NotificationSettingsPage';
+import ProviderManagementPage from '@/pages/ProviderManagementPage';
 
 // ── Admin pages ───────────────────────────────────────────────────────────
 import AdminDashboardPage    from '@/pages/AdminDashboardPage';
@@ -53,9 +60,9 @@ export default function App() {
   return (
     <ThemeProvider>
       <FontSizeProvider>
-        <Router>
-          <AuthProvider>
-            <AppRoutes />
+        <QueryClientProvider client={queryClient}>
+          <Router>
+            <AppInner />
             <FontSizeToggle />
             {/* Toast notifications — top-right, themed */}
             <Toaster
@@ -73,15 +80,21 @@ export default function App() {
                 },
               }}
             />
-          </AuthProvider>
-        </Router>
+          </Router>
+        </QueryClientProvider>
       </FontSizeProvider>
     </ThemeProvider>
   );
 }
 
-function AppRoutes() {
+function AppInner() {
+  const hydrate = useAuthStore((s) => s.hydrate);
   const { loading } = useAuth();
+
+  // Hydrate auth state on mount (replaces old AuthProvider effect)
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
 
   // Show a full-screen loader while auth state is being hydrated
   if (loading) {
@@ -135,6 +148,8 @@ function AppRoutes() {
           <Route path="/settings"       element={<AccountSettingsPage />} />
           <Route path="/settings/mfa"   element={<MFASettingsPage />} />
           <Route path="/settings/gmail" element={<GmailSettingsPage />} />
+          <Route path="/settings/notifications" element={<NotificationSettingsPage />} />
+          <Route path="/settings/providers" element={<ProviderManagementPage />} />
         </Route>
       </Route>
 
@@ -146,6 +161,7 @@ function AppRoutes() {
           <Route path="/admin"          element={<AdminDashboardPage />} />
           <Route path="/admin/users"    element={<UserManagement />} />
           <Route path="/admin/audit-logs" element={<AuditLogs />} />
+          <Route path="/admin/sessions" element={<SessionManagementPage />} />
         </Route>
       </Route>
 

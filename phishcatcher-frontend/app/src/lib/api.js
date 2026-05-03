@@ -22,6 +22,7 @@ import {
   storeSigningKey,
   generateClientSigningKey,
 } from './crypto.js';
+import { useAuthStore } from '@/stores/authStore';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 
@@ -116,8 +117,16 @@ async function apiFetch(endpoint, options = {}, _retried = false) {
     }
     const refreshed = await _refreshing;
     if (refreshed) return apiFetch(endpoint, options, true);
-    clearTokens();
-    window.dispatchEvent(new CustomEvent('auth:logout', { detail: 'token_expired' }));
+    
+    // Refresh failed — session is truly dead
+    const errorBody = await response.clone().json().catch(() => null);
+    const detail = errorBody?.detail ?? '';
+    let reason = 'session_expired';
+    if (detail.toLowerCase().includes('revoked')) reason = 'session_revoked';
+    else if (detail.toLowerCase().includes('invalidat')) reason = 'session_invalidated';
+    else if (detail.toLowerCase().includes('ip mismatch')) reason = 'ip_mismatch';
+    
+    useAuthStore.getState().forceLogout(reason);
     throw new Error('Session expired. Please log in again.');
   }
 
@@ -211,7 +220,7 @@ export const authApi = {
     }),
 
   /** Register new user (returns UserResponse). Backend sends activation email. */
-  register: ({ email, password, fullName, company, acceptTermsAndPrivacy }) =>
+  register: ({ email, password, fullName, company, phone, acceptTermsAndPrivacy }) =>
     apiFetch('/auth/register', {
       method: 'POST',
       body:   JSON.stringify({
@@ -220,6 +229,7 @@ export const authApi = {
         confirm_password:         password,
         full_name:                fullName,
         company:                  company ?? undefined,
+        phone:                    phone ?? undefined,
         accept_terms_and_privacy: acceptTermsAndPrivacy,
       }),
     }),
@@ -276,6 +286,20 @@ export const authApi = {
     apiFetch('/auth/me/password', {
       method: 'PUT',
       body:   JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+
+  // ── Phone ──────────────────────────────────────────────────────────────
+
+  updatePhone: (phone) =>
+    apiFetch('/auth/me/phone', {
+      method: 'PUT',
+      body: JSON.stringify({ phone }),
+    }),
+
+  verifyPhone: (code) =>
+    apiFetch('/auth/me/phone/verify', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
     }),
 
   // ── MFA ──────────────────────────────────────────────────────────────────
@@ -402,7 +426,6 @@ export const authApi = {
 export const adminApi = {
   getStats:    () => apiFetch('/admin/stats'),
   getModelInfo:()  => apiFetch('/admin/model-info'),
-  retrainModel:()  => apiFetch('/admin/model/retrain', { method: 'POST' }),
   getAnalytics:(days = 30) => apiFetch(`/admin/analytics?days=${days}`),
 
   listUsers: ({ page = 1, pageSize = 20, search, isActive, role, sortBy, sortOrder, accountStatus } = {}) => {
@@ -617,6 +640,123 @@ export const mlApi = {
     }),
 
   getModelsStatus: () => apiFetch('/ml/models'),
+};
+
+// ─── Session API ────────────────────────────────────────────────────────────────
+
+export const sessionApi = {
+  getStatus: () => apiFetch('/session/status'),
+  extend: () => apiFetch('/session/extend', { method: 'POST' }),
+  logout: () => apiFetch('/session/logout', { method: 'POST' }),
+  validate: () => apiFetch('/session/validate'),
+  listAll: () => apiFetch('/session/list'),
+  revoke: (userId, sessionId) =>
+    apiFetch(`/session/revoke/${userId}/${sessionId}`, { method: 'POST' }),
+  cleanup: () => apiFetch('/session/cleanup', { method: 'POST' }),
+};
+
+// ─── Notification API ───────────────────────────────────────────────────────────
+
+export const notificationApi = {
+  subscribe: (data) =>
+    apiFetch('/notifications/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unsubscribe: () => apiFetch('/notifications/unsubscribe', { method: 'POST' }),
+  getPreferences: () => apiFetch('/notifications/preferences'),
+  updatePreferences: (data) =>
+    apiFetch('/notifications/preferences', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getNotifications: (params = {}) => {
+    const { limit = 20, offset = 0, unreadOnly = false } = params;
+    const q = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (unreadOnly) q.set('unread_only', 'true');
+    return apiFetch(`/notifications/notifications?${q}`);
+  },
+  markRead: (id) => apiFetch(`/notifications/${id}/read`, { method: 'POST' }),
+  markAllRead: () => apiFetch('/notifications/mark-all-read', { method: 'POST' }),
+};
+
+// ─── Task API ───────────────────────────────────────────────────────────────────
+
+export const taskApi = {
+  getTask: (id) => apiFetch(`/tasks/${id}`),
+  getUserTasks: (userId, limit = 50) =>
+    apiFetch(`/tasks/user/${userId}?limit=${limit}`),
+  getCurrentUserTasks: (statusFilter, limit = 50) => {
+    const q = new URLSearchParams();
+    if (statusFilter) q.set('status_filter', statusFilter);
+    q.set('limit', String(limit));
+    return apiFetch(`/tasks?${q}`);
+  },
+  revokeTask: (id) => apiFetch(`/tasks/${id}/revoke`, { method: 'POST' }),
+};
+
+// ─── Provider API ───────────────────────────────────────────────────────────────
+
+export const providerApi = {
+  getGmailAuthUrl: () => apiFetch('/providers/gmail/auth-url'),
+  connectGmail: (code, state) =>
+    apiFetch('/providers/gmail/connect', {
+      method: 'POST',
+      body: JSON.stringify({ code, state }),
+    }),
+  listProviders: () => apiFetch('/providers'),
+  getProvider: (id) => apiFetch(`/providers/${id}`),
+  updateProvider: (id, data) =>
+    apiFetch(`/providers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  syncProvider: (id, options = {}) =>
+    apiFetch(`/providers/${id}/sync`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
+  checkProviderHealth: (id) => apiFetch(`/providers/${id}/health`),
+  deleteProvider: (id) => apiFetch(`/providers/${id}`, { method: 'DELETE' }),
+};
+
+// ─── Email API ──────────────────────────────────────────────────────────────────
+
+export const emailApi = {
+  sendOtp: (email, action) =>
+    apiFetch('/email/send-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, action }),
+    }),
+  sendWelcome: (email, userName) =>
+    apiFetch('/email/send-welcome', {
+      method: 'POST',
+      body: JSON.stringify({ email, user_name: userName }),
+    }),
+  requestPasswordReset: (email) =>
+    apiFetch('/email/request-password-reset', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  confirmPasswordReset: (email, code, newPassword) =>
+    apiFetch('/email/confirm-password-reset', {
+      method: 'POST',
+      body: JSON.stringify({ email, code, new_password: newPassword }),
+    }),
+  verifyOtp: (email, code) =>
+    apiFetch(`/email/verify-otp/${encodeURIComponent(email)}/${encodeURIComponent(code)}`),
+};
+
+// ─── Security API ───────────────────────────────────────────────────────────────
+
+export const securityApi = {
+  getSecurityRequirements: (action) =>
+    apiFetch(`/me/security/requirements?action=${encodeURIComponent(action)}`),
+  sendEmailVerification: (action) =>
+    apiFetch(`/me/security/verify/email?action=${encodeURIComponent(action)}`, {
+      method: 'POST',
+    }),
+  reauthGoogle: () => apiFetch('/auth/reauth/google', { method: 'POST' }),
 };
 
 export default authApi;
