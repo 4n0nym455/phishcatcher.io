@@ -7,8 +7,16 @@ Pydantic models for authentication-related requests and responses.
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, validator, AliasChoices
-import re
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator, AliasChoices
+
+
+def validate_password_strength(v: str) -> str:
+    """Shared password validator — delegates to security service for policy compliance."""
+    from app.services.security import validate_password_strength as _svc_validate
+    is_valid, error = _svc_validate(v)
+    if not is_valid:
+        raise ValueError(error)
+    return v
 
 
 class UserBase(BaseModel):
@@ -16,6 +24,7 @@ class UserBase(BaseModel):
     email: str = Field(..., min_length=5, max_length=254)
     full_name: Optional[str] = None
     company: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class UserCreate(UserBase):
@@ -24,32 +33,23 @@ class UserCreate(UserBase):
     confirm_password: str
     accept_terms_and_privacy: bool = Field(..., description="Must accept Terms & Conditions and Privacy Policy")
     
-    @validator("password")
+    @field_validator("password")
+    @classmethod
     def validate_password(cls, v):
         """Validate password strength."""
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
+        return validate_password_strength(v)
     
-    @validator("confirm_password")
-    def passwords_match(cls, v, values):
-        """Ensure passwords match."""
-        if "password" in values and v != values["password"]:
-            raise ValueError("Passwords do not match")
-        return v
-    
-    @validator("accept_terms_and_privacy")
-    def terms_and_privacy_accepted(cls, v):
-        """Ensure terms and privacy are accepted."""
-        if not v:
-            raise ValueError("Must accept Terms & Conditions and Privacy Policy")
-        return v
+    @model_validator(mode="before")
+    @classmethod
+    def validate_cross_fields(cls, data):
+        """Ensure passwords match and terms are accepted."""
+        if isinstance(data, dict):
+            if data.get("password") and data.get("confirm_password"):
+                if data["confirm_password"] != data["password"]:
+                    raise ValueError("Passwords do not match")
+            if not data.get("accept_terms_and_privacy"):
+                raise ValueError("Must accept Terms & Conditions and Privacy Policy")
+        return data
 
 
 class UserLogin(BaseModel):
@@ -65,6 +65,7 @@ class UserResponse(UserBase):
     is_active: bool
     is_verified: bool
     email_verified: bool
+    phone_verified: bool = False
     mfa_enabled: bool
     last_login: Optional[datetime] = None
     created_at: datetime
@@ -80,8 +81,7 @@ class UserResponse(UserBase):
             return str(v)
         return v
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserUpdate(BaseModel):
@@ -133,15 +133,7 @@ class PasswordReset(BaseModel):
     @field_validator("new_password")
     @classmethod
     def validate_password_strength(cls, v):
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
+        return validate_password_strength(v)
 
 
 class PasswordResetVerify(BaseModel):
@@ -155,15 +147,7 @@ class PasswordResetVerify(BaseModel):
     @classmethod
     def validate_password(cls, v):
         """Validate password strength."""
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
+        return validate_password_strength(v)
 
 
 class PasswordChange(BaseModel):
@@ -172,25 +156,21 @@ class PasswordChange(BaseModel):
     new_password: str = Field(..., min_length=12, max_length=128)
     confirm_password: str
     
-    @validator("new_password")
+    @field_validator("new_password")
+    @classmethod
     def validate_password(cls, v):
         """Validate password strength."""
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
+        return validate_password_strength(v)
     
-    @validator("confirm_password")
-    def passwords_match(cls, v, values):
+    @model_validator(mode="before")
+    @classmethod
+    def validate_passwords_match(cls, data):
         """Ensure passwords match."""
-        if "new_password" in values and v != values["new_password"]:
-            raise ValueError("Passwords do not match")
-        return v
+        if isinstance(data, dict):
+            if data.get("new_password") and data.get("confirm_password"):
+                if data["confirm_password"] != data["new_password"]:
+                    raise ValueError("Passwords do not match")
+        return data
 
 
 class DeleteAccountRequest(BaseModel):
@@ -288,6 +268,16 @@ class MFADisableRequest(BaseModel):
     token: str = Field(..., min_length=6, max_length=6, description="6-digit TOTP token")
 
 
+class PhoneUpdateRequest(BaseModel):
+    """Phone number update request schema."""
+    phone: str = Field(..., description="Phone number in E.164 format (e.g., +1234567890)")
+
+
+class PhoneVerifyRequest(BaseModel):
+    """Phone number verification request schema."""
+    code: str = Field(..., min_length=6, max_length=6, description="6-digit verification code")
+
+
 class MFAStatusResponse(BaseModel):
     """MFA status response schema."""
     enabled: bool = Field(..., description="Whether MFA is enabled")
@@ -304,10 +294,12 @@ class MFAVerification(BaseModel):
 __all__ = [
     "UserCreate", "UserResponse", "PasswordChange",
     "PasswordReset", "PasswordResetRequest", "PasswordResetVerify",
-    "LoginRequest", "LoginResponse", "OTPRequest", "OTPVerify", "TokenRefresh", "ResendOTP",  # ✅ Added ResendOTP
+    "UserLogin", "LoginResponse", "OTPVerify", "TokenRefresh", "ResendOTP",
     "DeleteAccountRequest",
     "MFASetupRequest", "MFASetupResponse", "MFAVerifyRequest",
     "MFAEnableRequest", "MFADisableRequest", "MFAStatusResponse",
     "MFAVerification", "OTPVerificationResponse", "GoogleAuthUrl",
-    "GoogleCallback"
+    "GoogleCallback",
+    "PhoneUpdateRequest", "PhoneVerifyRequest",
+    "validate_password_strength",
 ]

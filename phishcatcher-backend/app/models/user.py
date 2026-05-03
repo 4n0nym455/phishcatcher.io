@@ -67,6 +67,10 @@ class User(Base):
     mfa_backup_codes = Column(Text, nullable=True)  # Encrypted JSON string of backup codes
     mfa_backup_codes_used = Column(ARRAY(String(8)), nullable=True)  # Track used backup codes (plaintext for easy lookup)
     
+    # Phone number for SMS notifications (E.164 format)
+    phone = Column(String(20), nullable=True, default=None)
+    phone_verified = Column(Boolean, default=False, nullable=False)
+    
     # Request signing key for HMAC-SHA256
     signing_key_hash = Column(String(64), nullable=True)  # SHA256 hash of client's signing key
     
@@ -93,8 +97,11 @@ class User(Base):
     # Indexes
     __table_args__ = (
         Index("idx_user_email_active", "email", "is_active"),
+        Index("idx_user_email_deleted", "email", "deleted_at"),
         Index("idx_user_role", "role"),
         Index("idx_user_created", "created_at"),
+        Index("idx_user_account_status", "account_status"),
+        Index("idx_user_created_active", "created_at", "is_active"),
     )
     
     def __repr__(self) -> str:
@@ -119,6 +126,8 @@ class User(Base):
             "email": self.email,
             "full_name": self.full_name,
             "company": self.company,
+            "phone": self.phone,
+            "phone_verified": self.phone_verified,
             "role": self.role,
             "is_active": self.is_active,
             "is_verified": self.is_verified,

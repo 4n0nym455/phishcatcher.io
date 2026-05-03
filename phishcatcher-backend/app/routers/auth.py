@@ -14,6 +14,8 @@ Endpoints:
   POST /auth/reset-password      – consume reset token, set new password
   GET  /auth/me                  – current user
   PUT  /auth/me/password         – change password (authenticated)
+  PUT  /auth/me/phone            – update phone number (sends SMS OTP)
+  POST /auth/me/phone/verify     – verify phone with SMS OTP code
   POST /auth/me/delete           – soft-delete account
   GET  /auth/google/url          – get Google OAuth URL
   POST /auth/google/callback     – exchange code for tokens
@@ -29,7 +31,8 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Request, status, Depends, Body, Form
@@ -60,6 +63,7 @@ from app.services.security import (
     create_access_token, create_refresh_token, create_password_reset_token, verify_token, get_token_expiry,
     should_lock_account, should_lock_otp_account, calculate_lock_time,
     check_mfa_rate_limit, clear_mfa_rate_limit,
+    check_mfa_rate_limit_async, clear_mfa_rate_limit_async,
     create_mfa_session_token,
     is_ip_locked_async as is_ip_locked,
     should_lock_ip_based_async as should_lock_ip_based,
@@ -80,12 +84,12 @@ from app.schemas.auth import (
     MFASetupRequest, MFASetupResponse, MFAVerifyRequest,
     MFAEnableRequest, MFADisableRequest, MFAStatusResponse,
     MFAVerification, GoogleAuthUrl, GoogleCallback,
-    DeleteAccountRequest,
+    DeleteAccountRequest, PhoneUpdateRequest, PhoneVerifyRequest,
 )
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["Auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
 
 
@@ -135,12 +139,33 @@ async def get_current_user(
     if not user_id:
         raise exc
     
+    iat = payload.get("iat")
+    if iat:
+        iat_ts = int(iat.timestamp()) if isinstance(iat, datetime) else int(iat)
+        if await token_service.check_user_tokens_revoked(user_id, redis, iat_ts):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session invalidated. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    
     if payload.get("ip"):
         client_ip = get_client_ip(request)
         if not verify_token_ip(payload, client_ip):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token IP mismatch. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    
+    # Check if the session still exists in Redis (may have been revoked by admin)
+    session_id = payload.get("sid")
+    if session_id and user_id:
+        session_exists = await redis.exists(f"session:{user_id}:{session_id}")
+        if not session_exists:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been revoked. Please log in again.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
     
@@ -185,15 +210,25 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 
 # ─── Register ─────────────────────────────────────────────────────────────────
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a new user",
+    description="Creates a new user account. An activation email will be sent. The account status is set to 'pending' until activated.",
+)
 async def register(user_data: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
-    from app.utils.validators import validate_email
+    from app.utils.validators import validate_email, validate_phone
     
     is_valid, err = validate_email(user_data.email)
     if not is_valid:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
     
     normalized = normalize_email(user_data.email)
+
+    is_valid, err = validate_phone(user_data.phone or "")
+    if not is_valid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
 
     # Duplicate check via indexed normalized_email column (exclude deleted accounts)
     dup = await db.execute(select(User).where(
@@ -214,6 +249,7 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
         password_hash=get_password_hash(user_data.password),
         full_name=user_data.full_name,
         company=user_data.company,
+        phone=user_data.phone or None,
         account_status="pending",
     )
     db.add(user)
@@ -234,7 +270,17 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
 
 # ─── Login (step 1) ───────────────────────────────────────────────────────────
 
-@router.post("/login", response_model=None)
+@router.post(
+    "/login",
+    response_model=None,
+    summary="Login (Step 1: Credentials)",
+    description="Validates email/password and sends an OTP code. Returns `mfa_required` flag. If MFA is enabled, an `mfa_session_token` is returned for step 2.",
+    responses={
+        200: {"description": "Credentials valid, OTP sent"},
+        401: {"description": "Invalid credentials"},
+        423: {"description": "Account or IP locked"},
+    },
+)
 async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -332,18 +378,36 @@ async def login(
     ))
     await db.commit()
 
-    # Send OTP email
+    # Send OTP via configured channels
     email_svc = EmailService()
-    try:
-        await email_svc.send_otp_verification(
-            to_email=user.email,
-            user_name=user.full_name or user.email,
-            code=otp,
-            action="verify your login",
-        )
-    except Exception as exc:
-        logger.error("Failed to send OTP to %s: %s", user.email, exc)
-        # We continue – OTP is in Redis, user can request resend
+    settings = get_settings()
+    otp_channel = settings.OTP_CHANNEL.lower()
+    send_email_otp = otp_channel in ("email", "both")
+    send_sms_otp = otp_channel in ("sms", "both")
+
+    otp_sent_to = []
+
+    if send_email_otp:
+        try:
+            await email_svc.send_otp_verification(
+                to_email=user.email,
+                user_name=user.full_name or user.email,
+                code=otp,
+                action="verify your login",
+            )
+            otp_sent_to.append("email")
+        except Exception as exc:
+            logger.error("Failed to send OTP email to %s: %s", user.email, exc)
+
+    if send_sms_otp and user.phone and user.phone_verified:
+        try:
+            from app.services.sms_service import sms_service
+            await sms_service.send_otp(user.phone, otp)
+            otp_sent_to.append("sms")
+        except Exception as exc:
+            logger.error("Failed to send OTP SMS to %s: %s", user.phone, exc)
+
+    channel_label = " and ".join(otp_sent_to) if otp_sent_to else "your email"
 
     # If MFA is enabled, issue a short-lived MFA session token instead of full tokens
     if user.mfa_enabled:
@@ -351,15 +415,20 @@ async def login(
             data={"sub": str(user.id), "type": "mfa_session"},
             expires_delta=timedelta(minutes=15),
         )
-        return LoginResponse(message="OTP sent. MFA required.", email=user.email,
+        return LoginResponse(message=f"OTP sent via {channel_label}. MFA required.", email=user.email,
                              mfa_required=True, mfa_session_token=mfa_token)
 
-    return LoginResponse(message="OTP sent to your email.", email=user.email, mfa_required=False)
+    return LoginResponse(message=f"OTP sent to {channel_label}.", email=user.email, mfa_required=False)
 
 
 # ─── Verify OTP (step 2) ──────────────────────────────────────────────────────
 
-@router.post("/verify-otp", response_model=OTPVerificationResponse)
+@router.post(
+    "/verify-otp",
+    response_model=OTPVerificationResponse,
+    summary="Verify OTP (Step 2)",
+    description="Validates the OTP code sent during login. Returns JWT tokens on success, or an MFA challenge if MFA is enabled.",
+)
 async def verify_otp(
     body:    OTPVerify,
     request: Request,
@@ -400,16 +469,17 @@ async def verify_otp(
     # OTP valid – clean up
     await redis.delete(f"otp:{body.email}")
     user.failed_otp_attempts  = 0
-    user.last_login           = datetime.utcnow()
+    user.last_login           = datetime.now(timezone.utc)
     user.last_login_ip        = request.client.host if request.client else None
 
     # If MFA enabled → MFA challenge
     if user.mfa_enabled:
+        session_id = str(uuid.uuid4())
         mfa_token = create_mfa_session_token(
-            data={"sub": str(user.id), "type": "mfa_session"},
+            data={"sub": str(user.id), "type": "mfa_session", "sid": session_id},
             expires_delta=timedelta(minutes=10),
         )
-        user.mfa_session_created = datetime.utcnow()
+        user.mfa_session_created = datetime.now(timezone.utc)
         db.add(AuditLog(user_id=user.id, user_email=user.email,
                         action=AuditAction.MFA_REQUIRED, status="success"))
         await db.commit()
@@ -419,13 +489,15 @@ async def verify_otp(
 
     # Issue tokens with IP binding
     client_ip = get_client_ip(request)
-    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
-    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
+    session_id = str(uuid.uuid4())
+    access_token, _ = create_access_token({"sub": str(user.id), "sid": session_id}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(user.id), "sid": session_id}, ip_address=client_ip)
 
     session_mgr = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
                                      ip_address=client_ip,
-                                     user_agent=request.headers.get("user-agent", ""))
+                                     user_agent=request.headers.get("user-agent", ""),
+                                     session_id=session_id)
 
     db.add(AuditLog(user_id=user.id, user_email=user.email, action=AuditAction.LOGIN,
                     ip_address=request.client.host if request.client else None,
@@ -444,7 +516,11 @@ async def verify_otp(
 
 # ─── Resend OTP ────────────────────────────────────────────────────────────────
 
-@router.post("/resend-otp")
+@router.post(
+    "/resend-otp",
+    summary="Resend OTP",
+    description="Resends the OTP code if there is an active login window.",
+)
 async def resend_otp(
     body:    ResendOTP,
     request: Request,
@@ -487,8 +563,13 @@ async def resend_otp(
 
 # ─── Token refresh ────────────────────────────────────────────────────────────
 
-@router.post("/refresh", response_model=Token)
-async def refresh_token(body: TokenRefresh, request: Request, db: AsyncSession = Depends(get_db)):
+@router.post(
+    "/refresh",
+    response_model=Token,
+    summary="Refresh access token",
+    description="Rotates access and refresh tokens using a valid refresh token.",
+)
+async def refresh_token(body: TokenRefresh, request: Request, db: AsyncSession = Depends(get_db), redis = Depends(get_redis)):
     payload = verify_token(body.refresh_token, token_type="refresh")
     if not payload:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token.")
@@ -498,6 +579,16 @@ async def refresh_token(body: TokenRefresh, request: Request, db: AsyncSession =
     if not user:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token.")
     
+    iat = payload.get("iat")
+    if iat:
+        iat_ts = int(iat.timestamp()) if isinstance(iat, datetime) else int(iat)
+        if await token_service.check_user_tokens_revoked(str(user.id), redis, iat_ts):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session invalidated. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     if not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your account has been deactivated. Please contact an administrator for assistance.")
 
@@ -510,8 +601,23 @@ async def refresh_token(body: TokenRefresh, request: Request, db: AsyncSession =
 
     settings = get_settings()
     client_ip = get_client_ip(request)
-    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
-    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
+    session_id = payload.get("sid")
+    
+    # Check if the session still exists (may have been revoked by admin)
+    if session_id:
+        session_exists = await redis.exists(f"session:{payload.get('sub')}:{session_id}")
+        if not session_exists:
+            await token_service.revoke_token(payload.get("jti"), redis, ttl_seconds=86400)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been revoked. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    token_payload = {"sub": str(user.id)}
+    if session_id:
+        token_payload["sid"] = session_id
+    access_token, _ = create_access_token(token_payload, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token(token_payload, ip_address=client_ip)
     
     import hashlib
     response_data = {
@@ -531,7 +637,11 @@ async def refresh_token(body: TokenRefresh, request: Request, db: AsyncSession =
 
 # ─── Logout ───────────────────────────────────────────────────────────────────
 
-@router.post("/logout")
+@router.post(
+    "/logout",
+    summary="Logout",
+    description="Destroys the current session and revokes the access token.",
+)
 async def logout(
     request: Request,
     token: str = Depends(oauth2_scheme),
@@ -540,11 +650,15 @@ async def logout(
 ):
     payload = verify_token(token)
     jti = payload.get("jti") if payload else None
+    session_id = payload.get("sid") if payload else None
     
     if jti:
         await token_service.revoke_token(jti, redis, ttl_seconds=3600)
     
-    await redis.delete(f"session:{current_user.id}")
+    if session_id:
+        session_mgr = get_session_manager(redis)
+        await session_mgr.destroy_session(str(current_user.id), session_id)
+    
     async with get_db_session() as db:
         db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
                         action=AuditAction.LOGOUT,
@@ -556,7 +670,11 @@ async def logout(
 
 # ─── Forgot / reset password ──────────────────────────────────────────────────
 
-@router.post("/forgot-password")
+@router.post(
+    "/forgot-password",
+    summary="Request password reset",
+    description="Sends a password reset email if the address is registered. Always returns 200 to prevent email enumeration.",
+)
 async def forgot_password(
     body:  PasswordResetRequest,
     db:    AsyncSession = Depends(get_db),
@@ -582,7 +700,11 @@ async def forgot_password(
     return {"message": "If that email is registered, a reset link has been sent."}
 
 
-@router.post("/reset-password")
+@router.post(
+    "/reset-password",
+    summary="Reset password",
+    description="Consumes a reset token and sets a new password. The old password is saved to history to prevent reuse.",
+)
 async def reset_password(
     body:  PasswordReset,
     db:    AsyncSession = Depends(get_db),
@@ -625,16 +747,22 @@ async def reset_password(
 
     await save_password_to_history(db, user, user.password_hash)
     user.password_hash      = new_hash
-    user.password_changed_at = datetime.utcnow()
+    user.password_changed_at = datetime.now(timezone.utc)
     await redis.delete(f"password_reset:{user_id}")
     await db.commit()
+    await token_service.revoke_all_user_tokens(str(user.id), redis)
     await send_password_change_notification(user.email)
     return {"message": "Password reset successfully."}
 
 
 # ─── Profile ──────────────────────────────────────────────────────────────────
 
-@router.get("/me", response_model=UserResponse)
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    summary="Get current user profile",
+    description="Returns the authenticated user's profile information, including avatar URL if set.",
+)
 async def get_me(current_user: User = Depends(get_current_active_user), request: Request = None):
     settings = get_settings()
     # Add avatar URL to user response if available
@@ -643,6 +771,8 @@ async def get_me(current_user: User = Depends(get_current_active_user), request:
         "email": current_user.email,
         "full_name": current_user.full_name,
         "company": current_user.company,
+        "phone": current_user.phone,
+        "phone_verified": current_user.phone_verified,
         "role": current_user.role,
         "is_active": current_user.is_active,
         "is_verified": current_user.is_verified,
@@ -684,7 +814,11 @@ class ProfileUpdateRequest(BaseModel):
     company: Optional[str] = None
 
 
-@router.put("/me")
+@router.put(
+    "/me",
+    summary="Update profile",
+    description="Updates the current user's display name and/or company.",
+)
 async def update_me(
     body: ProfileUpdateRequest,
     current_user: User = Depends(get_current_active_user),
@@ -698,7 +832,11 @@ async def update_me(
     return {"message": "Profile updated successfully"}
 
 
-@router.post("/me/avatar")
+@router.post(
+    "/me/avatar",
+    summary="Upload avatar",
+    description="Uploads a profile picture (PNG, JPEG, or WEBP, max 10MB). Replaces any existing avatar.",
+)
 async def upload_avatar(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_active_user),
@@ -748,13 +886,17 @@ async def upload_avatar(
     current_user.avatar_object_name = upload["object_name"]
     current_user.avatar_bucket = upload["bucket"]
     current_user.avatar_content_type = safe_content_type
-    current_user.updated_at = datetime.utcnow()
+    current_user.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
     return {"message": "Avatar uploaded", "avatar_url": upload["url"]}
 
 
-@router.get("/me/avatar")
+@router.get(
+    "/me/avatar",
+    summary="Get avatar URL",
+    description="Returns a proxied URL to the user's avatar image.",
+)
 async def get_avatar_url(
     current_user: User = Depends(get_current_active_user),
     request: Request = None,
@@ -779,7 +921,15 @@ async def get_avatar_url(
     return {"avatar_url": url}
 
 
-@router.get("/avatars/{user_id}")
+@router.get(
+    "/avatars/{user_id}",
+    summary="Get avatar image",
+    description="Proxy endpoint that serves the avatar image bytes directly. Used as `<img src>` to avoid CORS issues with MinIO.",
+    responses={
+        200: {"description": "Avatar image"},
+        404: {"description": "Avatar not found"},
+    },
+)
 async def get_avatar_proxy(
     user_id: str,
     request: Request,
@@ -823,11 +973,16 @@ async def get_avatar_proxy(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to load avatar")
 
 
-@router.put("/me/password")
+@router.put(
+    "/me/password",
+    summary="Change password",
+    description="Changes the current user's password. Requires current password, and new password must not be a recent previous password.",
+)
 async def change_password(
     request:      Request,
     current_user: User = Depends(get_current_active_user),
     db:           AsyncSession = Depends(get_db),
+    redis         = Depends(get_redis),
 ):
     import json
     try:
@@ -855,18 +1010,92 @@ async def change_password(
 
     await save_password_to_history(db, current_user, current_user.password_hash)
     current_user.password_hash       = new_hash
-    current_user.password_changed_at  = datetime.utcnow()
+    current_user.password_changed_at  = datetime.now(timezone.utc)
 
     db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
                     action=AuditAction.PASSWORD_CHANGED,
                     ip_address=request.client.host if request.client else None, status="success"))
     await db.commit()
+    await token_service.revoke_all_user_tokens(str(current_user.id), redis)
     await send_password_change_notification(current_user.email,
                                             request.client.host if request.client else None)
     return {"message": "Password changed successfully."}
 
 
-@router.post("/me/delete")
+# ─── Phone Management ─────────────────────────────────────────────────────────
+
+@router.put(
+    "/me/phone",
+    summary="Update phone number",
+    description="Updates the user's phone number and sends a verification code via SMS.",
+)
+async def update_phone(
+    body: PhoneUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    redis = Depends(get_redis),
+):
+    from app.utils.validators import validate_phone
+    from app.services.sms_service import sms_service
+
+    is_valid, err = validate_phone(body.phone)
+    if not is_valid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
+
+    # Handle phone removal (empty string)
+    if not body.phone:
+        current_user.phone = None
+        current_user.phone_verified = False
+        async with get_db_session() as db:
+            await db.commit()
+        return {"message": "Phone number removed"}
+
+    current_user.phone = body.phone
+    current_user.phone_verified = False
+    async with get_db_session() as db:
+        await db.commit()
+
+    code = generate_otp()
+    await redis.setex(f"phone_otp:{current_user.id}", 600, code)
+
+    try:
+        await sms_service.send_otp(current_user.phone, code)
+    except Exception as exc:
+        logger.error("Failed to send phone verification SMS to %s: %s", current_user.phone, exc)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to send verification SMS")
+
+    return {"message": "Phone verification code sent via SMS"}
+
+
+@router.post(
+    "/me/phone/verify",
+    summary="Verify phone number",
+    description="Verifies the phone number using the OTP code sent via SMS.",
+)
+async def verify_phone(
+    body: PhoneVerifyRequest,
+    current_user: User = Depends(get_current_active_user),
+    redis = Depends(get_redis),
+):
+    stored_code = await redis.get(f"phone_otp:{current_user.id}")
+    if not stored_code or not secrets.compare_digest(
+        stored_code.decode() if isinstance(stored_code, bytes) else stored_code,
+        body.code,
+    ):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid verification code")
+
+    await redis.delete(f"phone_otp:{current_user.id}")
+    current_user.phone_verified = True
+    async with get_db_session() as db:
+        await db.commit()
+
+    return {"message": "Phone verified successfully"}
+
+
+@router.post(
+    "/me/delete",
+    summary="Delete account",
+    description="Soft-deletes the current user's account. Requires password confirmation. Removes all associated data (sessions, analysis results, notifications, avatar).",
+)
 async def delete_account(
     delete_request: DeleteAccountRequest,
     request: Request,
@@ -894,13 +1123,15 @@ async def delete_account(
                     resource_id=str(current_user.id), status="success",
                     details={"reason": "self-requested"},
                     ip_address=request.client.host if request.client else None))
-    current_user.deleted_at   = datetime.utcnow()
+    current_user.deleted_at   = datetime.now(timezone.utc)
     current_user.is_active    = False
     current_user.email        = f"deleted_{current_user.id}@deleted.phishcatcher"
     current_user.password_hash = "deleted"
     current_user.gmail_credentials = None
     current_user.mfa_secret   = None
     current_user.mfa_backup_codes = None
+    current_user.phone = None
+    current_user.phone_verified = False
     current_user.avatar_object_name = None
     current_user.avatar_bucket = None
     current_user.avatar_content_type = None
@@ -908,6 +1139,7 @@ async def delete_account(
     # Clear all sessions for this user (Redis session manager has one session per user)
     session_mgr = get_session_manager(redis)
     await session_mgr.destroy_session(str(current_user.id))
+    await token_service.revoke_all_user_tokens(str(current_user.id), redis)
     
     from app.database import get_mongodb_database
     mongodb = get_mongodb_database()
@@ -923,7 +1155,12 @@ async def delete_account(
 
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
 
-@router.get("/google/url", response_model=GoogleAuthUrl)
+@router.get(
+    "/google/url",
+    response_model=GoogleAuthUrl,
+    summary="Get Google OAuth URL",
+    description="Returns the Google OAuth authorization URL for sign-in. Returns 503 if Google OAuth is not configured.",
+)
 async def google_auth_url():
     try:
         result = google_oauth_service.get_auth_url()
@@ -932,7 +1169,11 @@ async def google_auth_url():
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
 
 
-@router.post("/google/callback")
+@router.post(
+    "/google/callback",
+    summary="Google OAuth callback",
+    description="Exchanges an OAuth authorization code for tokens. Creates a pending account for new users (requires activation).",
+)
 async def google_callback(
     body:  GoogleCallback,
     request: Request,
@@ -1009,11 +1250,13 @@ async def google_callback(
 
     # Active user without MFA → issue tokens
     client_ip = get_client_ip(request)
-    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
-    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
+    session_id = str(uuid.uuid4())
+    access_token, _ = create_access_token({"sub": str(user.id), "sid": session_id}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(user.id), "sid": session_id}, ip_address=client_ip)
     session_mgr   = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
-                                     ip_address=client_ip or "oauth", user_agent=request.headers.get("user-agent", "Google OAuth"))
+                                     ip_address=client_ip or "oauth", user_agent=request.headers.get("user-agent", "Google OAuth"),
+                                     session_id=session_id)
     return {
         "access_token":  access_token,
         "refresh_token": refresh_token,
@@ -1025,7 +1268,12 @@ async def google_callback(
 
 # ─── MFA ─────────────────────────────────────────────────────────────────────
 
-@router.get("/mfa/status", response_model=MFAStatusResponse)
+@router.get(
+    "/mfa/status",
+    response_model=MFAStatusResponse,
+    summary="Get MFA status",
+    description="Returns whether MFA is enabled, setup is completed, and backup codes exist.",
+)
 async def mfa_status(current_user: User = Depends(get_current_active_user)):
     return MFAStatusResponse(
         enabled=current_user.mfa_enabled,
@@ -1034,14 +1282,20 @@ async def mfa_status(current_user: User = Depends(get_current_active_user)):
     )
 
 
-@router.post("/mfa/setup", response_model=MFASetupResponse)
+@router.post(
+    "/mfa/setup",
+    response_model=MFASetupResponse,
+    summary="Setup MFA",
+    description="Generates a TOTP secret, QR code, and backup codes. Returns an MFA session token for verification.",
+)
 async def mfa_setup(
     request:      Request,
     _:            MFASetupRequest,
     current_user: User = Depends(get_current_active_user),
     db:           AsyncSession = Depends(get_db),
+    redis         = Depends(get_redis),
 ):
-    allowed, msg = check_mfa_rate_limit(str(current_user.id), "setup", max_attempts=3, window_minutes=30)
+    allowed, msg = await check_mfa_rate_limit_async(redis, str(current_user.id), "setup", max_attempts=3, window_minutes=30)
     if not allowed:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, msg)
 
@@ -1072,7 +1326,11 @@ async def mfa_setup(
     )
 
 
-@router.post("/mfa/verify")
+@router.post(
+    "/mfa/verify",
+    summary="Verify MFA code",
+    description="Dual-purpose: verifies TOTP during login flow (returns JWT tokens) or during setup flow (enables MFA). Requires an MFA session token.",
+)
 async def mfa_verify(
     request: Request,
     body:    MFAVerification,
@@ -1107,7 +1365,7 @@ async def mfa_verify(
     secret   = decrypt_mfa_secret(user.mfa_secret)
     is_valid = verify_totp_token(secret, body.code)
     if not is_valid:
-        allowed, msg = check_mfa_rate_limit(user_id, "verify", max_attempts=5, window_minutes=15)
+        allowed, msg = await check_mfa_rate_limit_async(redis, user_id, "verify", max_attempts=5, window_minutes=15)
         db.add(AuditLog(user_id=user.id, user_email=user.email,
                         action=AuditAction.MFA_FAILURE, status="failure"))
         await db.commit()
@@ -1118,7 +1376,7 @@ async def mfa_verify(
     # --- Setup flow ---
     if flow == "mfa_setup":
         user.mfa_enabled = True
-        clear_mfa_rate_limit(str(user.id), "setup")
+        await clear_mfa_rate_limit_async(redis, str(user.id), "setup")
         db.add(AuditLog(user_id=user.id, user_email=user.email,
                         action=AuditAction.MFA_ENABLED, status="success"))
         await db.commit()
@@ -1126,12 +1384,14 @@ async def mfa_verify(
 
     # --- Login flow ---
     client_ip = get_client_ip(request)
-    access_token, _ = create_access_token({"sub": str(user.id)}, ip_address=client_ip)
-    refresh_token, _ = create_refresh_token({"sub": str(user.id)}, ip_address=client_ip)
+    session_id = mfa_payload.get("sid", str(uuid.uuid4()))
+    access_token, _ = create_access_token({"sub": str(user.id), "sid": session_id}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(user.id), "sid": session_id}, ip_address=client_ip)
     session_mgr   = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(user.id), user_email=user.email,
                                      ip_address=client_ip,
-                                     user_agent=request.headers.get("user-agent", ""))
+                                     user_agent=request.headers.get("user-agent", ""),
+                                     session_id=session_id)
     db.add(AuditLog(user_id=user.id, user_email=user.email,
                     action=AuditAction.MFA_SUCCESS, status="success"))
     await db.commit()
@@ -1143,7 +1403,11 @@ async def mfa_verify(
     )
 
 
-@router.post("/mfa/enable")
+@router.post(
+    "/mfa/enable",
+    summary="Enable MFA",
+    description="Enables MFA on the account. Requires a valid TOTP verification code.",
+)
 async def mfa_enable(
     request:      Request,
     body:         MFAEnableRequest,
@@ -1162,7 +1426,11 @@ async def mfa_enable(
     return {"message": "MFA enabled."}
 
 
-@router.post("/mfa/disable")
+@router.post(
+    "/mfa/disable",
+    summary="Disable MFA",
+    description="Disables MFA. Requires a valid TOTP code. Non-OAuth users must also provide their password.",
+)
 async def mfa_disable(
     request:      Request,
     body:         MFADisableRequest,
@@ -1191,7 +1459,11 @@ async def mfa_disable(
     return {"message": "MFA disabled."}
 
 
-@router.post("/mfa/verify-backup-code")
+@router.post(
+    "/mfa/verify-backup-code",
+    summary="Verify MFA backup code",
+    description="Uses a one-time backup code for MFA authentication. Returns JWT tokens on success. The code is marked as used and cannot be reused.",
+)
 async def verify_backup_code(
     request:      Request,
     body:         dict,
@@ -1200,7 +1472,7 @@ async def verify_backup_code(
     redis         = Depends(get_redis),
 ):
     code = body.get("backup_code", "")
-    allowed, msg = check_mfa_rate_limit(str(current_user.id), "backup_code",
+    allowed, msg = await check_mfa_rate_limit_async(redis, str(current_user.id), "backup_code",
                                         max_attempts=3, window_minutes=60)
     if not allowed:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, msg)
@@ -1220,15 +1492,17 @@ async def verify_backup_code(
     codes.remove(normalized)
     current_user.mfa_backup_codes      = encrypt_backup_codes(codes)
     current_user.mfa_backup_codes_used = [*used, normalized]
-    clear_mfa_rate_limit(str(current_user.id), "backup_code")
+    await clear_mfa_rate_limit_async(redis, str(current_user.id), "backup_code")
 
     client_ip = get_client_ip(request)
-    access_token, _ = create_access_token({"sub": str(current_user.id)}, ip_address=client_ip)
-    refresh_token, _ = create_refresh_token({"sub": str(current_user.id)}, ip_address=client_ip)
+    session_id = str(uuid.uuid4())
+    access_token, _ = create_access_token({"sub": str(current_user.id), "sid": session_id}, ip_address=client_ip)
+    refresh_token, _ = create_refresh_token({"sub": str(current_user.id), "sid": session_id}, ip_address=client_ip)
     session_mgr   = get_session_manager(redis)
     await session_mgr.create_session(user_id=str(current_user.id), user_email=current_user.email,
                                      ip_address=client_ip,
-                                     user_agent=request.headers.get("user-agent", ""))
+                                     user_agent=request.headers.get("user-agent", ""),
+                                     session_id=session_id)
 
     db.add(AuditLog(user_id=current_user.id, user_email=current_user.email,
                     action=AuditAction.MFA_BACKUP_CODE_USED, status="success"))
