@@ -3,18 +3,19 @@ Security Service for Risk-Based Authentication
 
 This service provides risk-based authentication for different user actions,
 following enterprise security patterns used by Google, Microsoft, and GitHub.
+
+Verification codes and reauth tokens are stored in Redis for multi-worker safety.
 """
 
 from enum import Enum
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import secrets
+import json
 import logging
 
 from app.models.user import User
-from app.database import get_db
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.services.sendgrid_service import sendgrid_service
+from app.database import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,6 @@ class VerificationMethod(Enum):
 class SecurityService:
     """Enterprise-grade security service with risk-based authentication."""
     
-    # Risk level mappings for different actions
     ACTION_RISK_LEVELS = {
         "view_profile": RiskLevel.LOW,
         "update_profile": RiskLevel.MEDIUM,
@@ -48,7 +48,6 @@ class SecurityService:
         "api_access": RiskLevel.MEDIUM,
     }
     
-    # Verification methods by risk level and user type
     VERIFICATION_MATRIX = {
         RiskLevel.LOW: {
             "oauth_user": VerificationMethod.SESSION,
@@ -68,9 +67,20 @@ class SecurityService:
         }
     }
     
+    # Redis key prefixes
+    _VERIFICATION_CODE_PREFIX = "security:verification_code:"
+    _REAUTH_TOKEN_PREFIX = "security:reauth_token:"
+    _CODE_TTL_SECONDS = 600    # 10 minutes
+    _TOKEN_TTL_SECONDS = 300   # 5 minutes
+    
     def __init__(self):
-        self.verification_codes = {}  # In production, use Redis
-        self.reauth_tokens = {}      # In production, use Redis
+        self._redis: Optional[object] = None
+    
+    def _get_redis(self):
+        """Lazy-load Redis client."""
+        if self._redis is None:
+            self._redis = get_redis_client()
+        return self._redis
     
     def get_risk_level(self, action: str) -> RiskLevel:
         """Get risk level for an action."""
@@ -81,30 +91,31 @@ class SecurityService:
         risk_level = self.get_risk_level(action)
         user_type = "oauth_user" if user.gmail_credentials and user.gmail_email else "regular_user"
         
-        # If user has MFA enabled, require it for HIGH and CRITICAL actions
         if user.mfa_enabled and risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
             return VerificationMethod.MFA
         
         return self.VERIFICATION_MATRIX[risk_level][user_type]
     
-    def generate_email_code(self, user_id: str) -> str:
-        """Generate email verification code."""
+    async def generate_email_code(self, user_id: str) -> str:
+        """Generate email verification code stored in Redis."""
         code = f"{secrets.randbelow(1000000):06d}"
-        expiry = datetime.utcnow() + timedelta(minutes=10)
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=10)
         
-        self.verification_codes[user_id] = {
-            "code": code,
-            "expiry": expiry,
-            "type": "email"
-        }
+        redis_client = self._get_redis()
+        await redis_client.setex(
+            f"{self._VERIFICATION_CODE_PREFIX}{user_id}",
+            self._CODE_TTL_SECONDS,
+            json.dumps({"code": code, "expiry": expiry.isoformat(), "type": "email"})
+        )
         
         logger.info(f"Generated email verification code for user {user_id}")
         return code
     
     async def send_verification_email(self, user_email: str, code: str, action: str = "security_action") -> bool:
-        """Send verification email using SendGrid."""
+        """Send verification email using Brevo."""
         try:
-            success = await sendgrid_service.send_verification_code(user_email, code, action)
+            from app.services.brevo_service import brevo_service
+            success = await brevo_service.send_verification_code(user_email, code, action)
             if success:
                 logger.info(f"Verification email sent to {user_email}")
             else:
@@ -114,72 +125,80 @@ class SecurityService:
             logger.error(f"Error sending verification email: {e}")
             return False
     
-    def verify_email_code(self, user_id: str, code: str) -> bool:
-        """Verify email verification code."""
-        if user_id not in self.verification_codes:
+    async def send_verification_sms(self, user_phone: str, code: str, action: str = "security_action") -> bool:
+        """Send verification SMS using Brevo."""
+        try:
+            from app.services.sms_service import sms_service
+            success = await sms_service.send_otp(user_phone, code)
+            if success:
+                logger.info(f"Verification SMS sent to {user_phone}")
+            else:
+                logger.error(f"Failed to send verification SMS to {user_phone}")
+            return success
+        except Exception as e:
+            logger.error(f"Error sending verification SMS: {e}")
             return False
-        
-        stored = self.verification_codes[user_id]
-        if stored["type"] != "email":
-            return False
-        
-        if datetime.utcnow() > stored["expiry"]:
-            del self.verification_codes[user_id]
-            return False
-        
-        return stored["code"] == code
     
-    def generate_reauth_token(self, user_id: str) -> str:
-        """Generate OAuth re-authentication token."""
-        token = secrets.token_urlsafe(32)
-        expiry = datetime.utcnow() + timedelta(minutes=5)
+    async def verify_email_code(self, user_id: str, code: str) -> bool:
+        """Verify email verification code from Redis."""
+        redis_client = self._get_redis()
+        raw = await redis_client.get(f"{self._VERIFICATION_CODE_PREFIX}{user_id}")
         
-        self.reauth_tokens[user_id] = {
-            "token": token,
-            "expiry": expiry,
-            "type": "oauth_reauth"
-        }
+        if not raw:
+            return False
+        
+        stored = json.loads(raw)
+        if stored.get("type") != "email":
+            return False
+        
+        if stored.get("code") != code:
+            return False
+        
+        await redis_client.delete(f"{self._VERIFICATION_CODE_PREFIX}{user_id}")
+        return True
+    
+    async def delete_email_code(self, user_id: str) -> None:
+        """Delete email verification code from Redis."""
+        redis_client = self._get_redis()
+        await redis_client.delete(f"{self._VERIFICATION_CODE_PREFIX}{user_id}")
+    
+    async def generate_reauth_token(self, user_id: str) -> str:
+        """Generate OAuth re-authentication token stored in Redis."""
+        token = secrets.token_urlsafe(32)
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
+        
+        redis_client = self._get_redis()
+        await redis_client.setex(
+            f"{self._REAUTH_TOKEN_PREFIX}{user_id}",
+            self._TOKEN_TTL_SECONDS,
+            json.dumps({"token": token, "expiry": expiry.isoformat(), "type": "oauth_reauth"})
+        )
         
         logger.info(f"Generated OAuth re-auth token for user {user_id}")
         return token
     
-    def verify_reauth_token(self, user_id: str, token: str) -> bool:
-        """Verify OAuth re-authentication token."""
-        if user_id not in self.reauth_tokens:
+    async def verify_reauth_token(self, user_id: str, token: str) -> bool:
+        """Verify OAuth re-authentication token from Redis."""
+        redis_client = self._get_redis()
+        raw = await redis_client.get(f"{self._REAUTH_TOKEN_PREFIX}{user_id}")
+        
+        if not raw:
             return False
         
-        stored = self.reauth_tokens[user_id]
-        if stored["type"] != "oauth_reauth":
+        stored = json.loads(raw)
+        if stored.get("type") != "oauth_reauth":
             return False
         
-        if datetime.utcnow() > stored["expiry"]:
-            del self.reauth_tokens[user_id]
+        if stored.get("token") != token:
             return False
         
-        return stored["token"] == token
+        await redis_client.delete(f"{self._REAUTH_TOKEN_PREFIX}{user_id}")
+        return True
     
-    def cleanup_expired_tokens(self):
-        """Clean up expired verification codes and tokens."""
-        now = datetime.utcnow()
-        
-        # Clean verification codes
-        expired_codes = [
-            user_id for user_id, data in self.verification_codes.items()
-            if now > data["expiry"]
-        ]
-        for user_id in expired_codes:
-            del self.verification_codes[user_id]
-        
-        # Clean reauth tokens
-        expired_tokens = [
-            user_id for user_id, data in self.reauth_tokens.items()
-            if now > data["expiry"]
-        ]
-        for user_id in expired_tokens:
-            del self.reauth_tokens[user_id]
-        
-        if expired_codes or expired_tokens:
-            logger.info(f"Cleaned up {len(expired_codes)} expired codes and {len(expired_tokens)} expired tokens")
+    async def delete_reauth_token(self, user_id: str) -> None:
+        """Delete reauth token from Redis."""
+        redis_client = self._get_redis()
+        await redis_client.delete(f"{self._REAUTH_TOKEN_PREFIX}{user_id}")
     
     def get_security_requirements(self, user: User, action: str) -> Dict[str, Any]:
         """Get security requirements for an action."""
@@ -194,7 +213,6 @@ class SecurityService:
             "message": self._get_verification_message(method, action)
         }
         
-        # Add specific requirements based on method
         if method == VerificationMethod.EMAIL_CODE:
             requirements["email"] = user.email
         elif method == VerificationMethod.OAUTH_REAUTH:
@@ -214,5 +232,4 @@ class SecurityService:
         }
         return messages.get(method, "Verification required")
 
-# Global instance
 security_service = SecurityService()

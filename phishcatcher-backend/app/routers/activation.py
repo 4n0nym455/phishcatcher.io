@@ -12,7 +12,7 @@ lands directly on the dashboard.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr
@@ -27,7 +27,7 @@ from app.core.session_manager import get_session_manager
 from app.services.email_service import email_service
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["activation"])
+router = APIRouter(tags=["Activation"])
 
 
 # ── Schema ─────────────────────────────────────────────────────────────────────
@@ -47,7 +47,11 @@ class CompleteActivationRequest(BaseModel):
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
-@router.post("/activate/verify-token")
+@router.post(
+    "/activate/verify-token",
+    summary="Verify activation token",
+    description="Pre-flight check: validates whether an activation URL token is still valid.",
+)
 async def verify_activation_token(
     body: VerifyTokenRequest,
     db:   AsyncSession = Depends(get_db),
@@ -70,7 +74,11 @@ async def verify_activation_token(
     }
 
 
-@router.post("/activate/complete")
+@router.post(
+    "/activate/complete",
+    summary="Complete account activation",
+    description="Validates token + activation code + T&C acceptance, activates the account, and returns JWT tokens.",
+)
 async def complete_activation(
     body:  CompleteActivationRequest,
     db:    AsyncSession = Depends(get_db),
@@ -102,7 +110,7 @@ async def complete_activation(
     user.account_status = "active"
     user.is_verified    = True
     user.email_verified = True
-    user.updated_at     = datetime.utcnow()
+    user.updated_at     = datetime.now(timezone.utc)
     await db.commit()
 
     # Clean up Redis keys immediately
@@ -147,7 +155,11 @@ async def complete_activation(
     }
 
 
-@router.post("/activate/resend")
+@router.post(
+    "/activate/resend",
+    summary="Resend activation email",
+    description="Regenerates and resends the activation email with new token and code.",
+)
 async def resend_activation_email(
     body: VerifyTokenRequest,          # reuses {email, token} – token ignored here
     db:   AsyncSession = Depends(get_db),
@@ -174,7 +186,11 @@ async def resend_activation_email(
     return {"success": True, "email": user.email}
 
 
-@router.get("/activate/status/{email}")
+@router.get(
+    "/activate/status/{email}",
+    summary="Check activation status",
+    description="Returns the account status for a given email address (used by frontend polling).",
+)
 async def check_activation_status(email: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == email))
     user   = result.scalar_one_or_none()

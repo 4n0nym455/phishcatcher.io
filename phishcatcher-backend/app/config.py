@@ -7,7 +7,7 @@ Updated with MinIO-specific settings and production configurations.
 from functools import lru_cache
 from typing import Optional, List, Set
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, validator, field_validator
+from pydantic import Field, field_validator
 import secrets
 import json
 
@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     )
     
     # Application Settings
+    API_VERSION: str = Field(default="v1", description="Current API version")
     APP_NAME: str = Field(default="PhishCatcher API", description="Application name")
     APP_VERSION: str = Field(default="1.0.0", description="Application version")
     DEBUG: bool = Field(default=False, description="Debug mode")
@@ -31,6 +32,9 @@ class Settings(BaseSettings):
         default=None,
         description="External API URL for avatar URLs (e.g., http://192.168.1.100:8000). If not set, will use request host."
     )
+    
+    # ML Model Checksum (SHA-256 of phishing_detector.pkl for integrity verification)
+    ML_MODEL_CHECKSUM: Optional[str] = Field(default=None, description="Expected SHA-256 checksum of ML model file")
     
     # Security Settings
     SECRET_KEY: str = Field(
@@ -148,10 +152,13 @@ class Settings(BaseSettings):
     SMTP_TLS: bool = Field(default=True, description="Use TLS for SMTP")
     FROM_EMAIL: str = Field(default="noreply@phishcatcher.io", description="From email address")
     
-    # SendGrid Settings (Optional - falls back to SMTP settings)
-    SENDGRID_API_KEY: Optional[str] = Field(default=None, description="SendGrid API key (optional)")
-    SENDGRID_FROM_EMAIL: Optional[str] = Field(default=None, description="SendGrid from email (optional, falls back to FROM_EMAIL)")
-    SENDGRID_FROM_NAME: str = Field(default="PhishCatcher", description="SendGrid from name")
+    # Brevo Configuration
+    BREVO_API_KEY: Optional[str] = Field(default=None, description="Brevo API key for transactional email (xkeysib-...)")
+    BREVO_FROM_EMAIL: str = Field(default="noreply@phishcatcher.io", description="Brevo from email address")
+    BREVO_FROM_NAME: str = Field(default="PhishCatcher", description="Brevo from display name")
+    BREVO_SMS_API_KEY: Optional[str] = Field(default=None, description="Brevo API key for SMS (uses BREVO_API_KEY if not set)")
+    BREVO_SMS_SENDER: str = Field(default="PhishCatcher", description="SMS sender name (max 11 chars, truncated automatically)")
+    OTP_CHANNEL: str = Field(default="email", description="OTP delivery channel: 'email', 'sms', or 'both'")
     
     # Threat Intelligence API Settings
     VIRUSTOTAL_API_KEY: Optional[str] = Field(default=None, description="VirusTotal API key")
@@ -196,7 +203,7 @@ class Settings(BaseSettings):
     
     # Logging Settings
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
-    LOG_FORMAT: str = Field(default="json", description="Log format (json/text)")
+    LOG_FORMAT: str = Field(default="text", description="Log format (json/text)")
     
     # Data Retention Settings
     DATA_RETENTION_DAYS: int = Field(default=30, description="Data retention period in days")
@@ -218,30 +225,30 @@ class Settings(BaseSettings):
         description="Gmail OAuth redirect URI"
     )
     
-    @validator("SECRET_KEY", pre=True, always=True)
+    @field_validator("SECRET_KEY", mode="before")
+    @classmethod
     def validate_secret_key(cls, v):
         """Ensure secret key is sufficiently long for production."""
         if len(v) < 32:
             raise ValueError("SECRET_KEY must be at least 32 characters long")
         return v
     
-    @validator("REDIS_URL", pre=True)
+    @field_validator("REDIS_URL", mode="before")
+    @classmethod
     def validate_redis_url(cls, v):
         """Construct Redis URL from environment variables if needed."""
-        # If REDIS_URL is default, construct it from environment variables
         if v == "redis://localhost:6379/0":
             import os
             from urllib.parse import quote
             redis_password = os.getenv("REDIS_PASSWORD", "redis_secret")
-            # URL-encode the password to handle special characters
             encoded_password = quote(redis_password, safe='')
             v = f"redis://:{encoded_password}@localhost:6379/0"
         return v
     
-    @validator("DATABASE_URL", pre=True)
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
     def validate_database_url(cls, v):
         """Ensure async driver is used for PostgreSQL."""
-        # If DATABASE_URL is not provided or is default, construct it from environment variables
         if v == "postgresql+asyncpg://postgres:postgres@localhost:5432/phishcatcher":
             import os
             postgres_user = os.getenv("POSTGRES_USER", "phishcatcher")
@@ -249,15 +256,15 @@ class Settings(BaseSettings):
             postgres_db = os.getenv("POSTGRES_DB", "phishcatcher")
             v = f"postgresql+asyncpg://{postgres_user}:{postgres_password}@localhost:5432/{postgres_db}"
         
-        # Ensure async driver is used
         if v.startswith("postgresql://") and "asyncpg" not in v:
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
     
-    @validator("MINIO_ENDPOINT", pre=True)
+    @field_validator("MINIO_ENDPOINT", mode="before")
+    @classmethod
     def validate_minio_endpoint(cls, v):
         """Use localhost for local development when running outside Docker."""
-        if v and v.startswith("minio:"):
+        if v is not None and v.startswith("minio:"):
             return v.replace("minio:", "localhost:")
         return v
     
@@ -291,7 +298,8 @@ class Settings(BaseSettings):
     #             return [header.strip() for header in v.split(",")]
     #     return v
     
-    @validator("ALLOWED_FILE_EXTENSIONS", pre=True)
+    @field_validator("ALLOWED_FILE_EXTENSIONS", mode="before")
+    @classmethod
     def parse_allowed_extensions(cls, v):
         """Parse allowed extensions from string or list."""
         if isinstance(v, str):

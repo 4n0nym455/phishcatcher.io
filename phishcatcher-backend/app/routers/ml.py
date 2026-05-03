@@ -16,7 +16,7 @@ from app.routers.auth import get_current_active_user
 from app.ml.api import predict_email as ml_predict_email, get_phishing_api
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["ML"])
 
 
 class EmailPredictionRequest(BaseModel):
@@ -48,7 +48,15 @@ class ModelsStatusResponse(BaseModel):
     best_model: str
 
 
-@router.post("/predict", response_model=EmailPredictionResponse)
+@router.post(
+    "/predict",
+    response_model=EmailPredictionResponse,
+    summary="Predict phishing email",
+    description="Uses the trained ML model (SVM, 96.8% accuracy) to classify an email as phishing or safe based on subject and body text.",
+    responses={
+        503: {"description": "ML model not available"},
+    },
+)
 async def predict_phishing(
     request: EmailPredictionRequest,
     current_user: User = Depends(get_current_active_user)
@@ -89,7 +97,12 @@ async def predict_phishing(
         )
 
 
-@router.get("/models", response_model=ModelsStatusResponse)
+@router.get(
+    "/models",
+    response_model=ModelsStatusResponse,
+    summary="Get ML models status",
+    description="Returns information about available ML models including accuracy and F1 scores.",
+)
 async def get_models_status(
     current_user: User = Depends(get_current_active_user)
 ):

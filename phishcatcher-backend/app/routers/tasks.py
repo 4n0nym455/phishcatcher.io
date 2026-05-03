@@ -1,11 +1,12 @@
 """
 Task monitoring API endpoints.
 
-This module provides API endpoints for monitoring Celery tasks.
+Uses Celery's Redis result backend as the primary source for task status.
+MongoDB is used as a fallback for historical analytics data.
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 from app.routers.auth import get_current_active_user
@@ -19,9 +20,49 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     status: str
     result: Any = None
-    error: str | None = None
-    created_at: str | None = None
-    completed_at: str | None = None
+    error: Optional[str] = None
+    created_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+def _get_task_from_redis(task_id: str) -> Optional[TaskStatusResponse]:
+    """Get task status from Celery's Redis result backend."""
+    try:
+        result = celery_app.AsyncResult(task_id)
+        state = result.state
+        
+        if state in ("PENDING", "UNKNOWN"):
+            return None
+        
+        return TaskStatusResponse(
+            task_id=task_id,
+            status=state,
+            result=result.result if state == "SUCCESS" else None,
+            error=str(result.info) if state == "FAILURE" else None,
+        )
+    except Exception:
+        return None
+
+
+def _get_task_from_mongodb(task_id: str) -> Optional[TaskStatusResponse]:
+    """Fallback: get task status from MongoDB historical records."""
+    try:
+        from app.database import get_mongodb_database
+        mongodb = get_mongodb_database()
+        task_doc = mongodb.celery_tasks.find_one({"task_id": task_id})
+        
+        if task_doc:
+            return TaskStatusResponse(
+                task_id=task_doc["task_id"],
+                status=task_doc.get("status", "unknown"),
+                result=task_doc.get("result"),
+                error=task_doc.get("error"),
+                created_at=task_doc.get("created_at").isoformat() if task_doc.get("created_at") else None,
+                completed_at=task_doc.get("completed_at").isoformat() if task_doc.get("completed_at") else None
+            )
+    except Exception:
+        pass
+    return None
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)
@@ -29,39 +70,19 @@ async def get_task_status(
     task_id: str,
     current_user: User = Depends(get_current_active_user)
 ) -> TaskStatusResponse:
-    """Get the status of a Celery task."""
-    from app.database import get_mongodb_database
+    """Get the status of a Celery task. Checks Redis first, then MongoDB."""
+    task = _get_task_from_redis(task_id)
+    if task:
+        return task
     
-    # Try to get from MongoDB first
-    mongodb = get_mongodb_database()
-    task_doc = await mongodb.celery_tasks.find_one({"task_id": task_id})
+    task = _get_task_from_mongodb(task_id)
+    if task:
+        return task
     
-    if task_doc:
-        return TaskStatusResponse(
-            task_id=task_doc["task_id"],
-            status=task_doc.get("status", "unknown"),
-            result=task_doc.get("result"),
-            error=task_doc.get("error"),
-            created_at=task_doc.get("created_at").isoformat() if task_doc.get("created_at") else None,
-            completed_at=task_doc.get("completed_at").isoformat() if task_doc.get("completed_at") else None
-        )
-    
-    # Try to get from Celery result backend
-    try:
-        result = celery_app.AsyncResult(task_id)
-        state = result.state
-        
-        return TaskStatusResponse(
-            task_id=task_id,
-            status=state,
-            result=result.result if state == "SUCCESS" else None,
-            error=str(result.info) if state == "FAILURE" else None
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task {task_id} not found"
-        )
+    raise HTTPException(
+        status_code=404,
+        detail=f"Task {task_id} not found"
+    )
 
 
 @router.get("/user/{user_id}", response_model=List[TaskStatusResponse])
@@ -70,7 +91,7 @@ async def get_user_tasks(
     current_user: User = Depends(get_current_active_user),
     limit: int = 50
 ) -> List[TaskStatusResponse]:
-    """Get all tasks for a specific user."""
+    """Get all tasks for a specific user (from MongoDB historical records)."""
     from app.database import get_mongodb_database
     
     mongodb = get_mongodb_database()
@@ -110,7 +131,7 @@ async def revoke_task(
 @router.get("")
 async def list_tasks(
     current_user: User = Depends(get_current_active_user),
-    status: str | None = None,
+    status_filter: Optional[str] = None,
     limit: int = 50
 ) -> Dict[str, Any]:
     """List all tasks for the current user."""
@@ -120,8 +141,8 @@ async def list_tasks(
     mongodb = get_mongodb_database()
     
     query = {"user_id": str(current_user.id)}
-    if status:
-        query["status"] = status
+    if status_filter:
+        query["status"] = status_filter
     
     tasks = []
     async for task_doc in mongodb.celery_tasks.find(query).sort("created_at", -1).limit(limit):
@@ -143,7 +164,6 @@ async def list_tasks(
         for worker, task_list in active.items():
             for task in task_list:
                 if task.get("id"):
-                    # Check if this task belongs to the user
                     task_args = task.get("args", [])
                     if str(current_user.id) in str(task_args):
                         tasks.insert(0, {
@@ -155,7 +175,7 @@ async def list_tasks(
                             "completed_at": None
                         })
     except Exception:
-        pass  # Ignore Celery inspection errors
+        pass
     
     return {
         "tasks": tasks,

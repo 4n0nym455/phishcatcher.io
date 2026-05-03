@@ -31,10 +31,14 @@ from app.services.gmail_service import gmail_service
 from app.tasks.analysis import sync_gmail_task
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["Email Providers"])
 
 
-@router.get("/gmail/auth-url")
+@router.get(
+    "/gmail/auth-url",
+    summary="Get Gmail OAuth URL",
+    description="Returns the Google OAuth authorization URL for connecting a Gmail account.",
+)
 async def get_gmail_auth_url(
     current_user: User = Depends(get_current_active_user)
 ):
@@ -45,7 +49,12 @@ async def get_gmail_auth_url(
     return {"auth_url": auth_url}
 
 
-@router.post("/gmail/connect", response_model=EmailProviderResponse)
+@router.post(
+    "/gmail/connect",
+    response_model=EmailProviderResponse,
+    summary="Connect Gmail account",
+    description="Completes the Gmail OAuth flow and creates or updates an EmailProvider record.",
+)
 async def connect_gmail(
     connect_data: GmailConnectRequest,
     code: str,
@@ -122,7 +131,12 @@ async def connect_gmail(
         )
 
 
-@router.get("", response_model=EmailProviderList)
+@router.get(
+    "",
+    response_model=EmailProviderList,
+    summary="List connected providers",
+    description="Returns all active email providers connected to the current user.",
+)
 async def list_providers(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -157,7 +171,12 @@ async def list_providers(
     )
 
 
-@router.get("/{provider_id}", response_model=EmailProviderResponse)
+@router.get(
+    "/{provider_id}",
+    response_model=EmailProviderResponse,
+    summary="Get provider details",
+    description="Returns details for a specific email provider.",
+)
 async def get_provider(
     provider_id: str,
     db: AsyncSession = Depends(get_db),
@@ -181,7 +200,12 @@ async def get_provider(
     return provider
 
 
-@router.put("/{provider_id}", response_model=EmailProviderResponse)
+@router.put(
+    "/{provider_id}",
+    response_model=EmailProviderResponse,
+    summary="Update provider settings",
+    description="Updates sync settings, folder, and frequency for an email provider.",
+)
 async def update_provider(
     provider_id: str,
     update_data: EmailProviderUpdate,
@@ -222,7 +246,12 @@ async def update_provider(
     return provider
 
 
-@router.post("/{provider_id}/sync", response_model=SyncResponse)
+@router.post(
+    "/{provider_id}/sync",
+    response_model=SyncResponse,
+    summary="Trigger email sync",
+    description="Queues a Celery sync task for the specified provider.",
+)
 async def sync_provider(
     provider_id: str,
     sync_request: SyncRequest,
@@ -280,7 +309,12 @@ async def sync_provider(
     )
 
 
-@router.get("/{provider_id}/health", response_model=ProviderHealth)
+@router.get(
+    "/{provider_id}/health",
+    response_model=ProviderHealth,
+    summary="Check provider health",
+    description="Validates the provider's OAuth token and returns connection status.",
+)
 async def check_provider_health(
     provider_id: str,
     db: AsyncSession = Depends(get_db),
@@ -319,7 +353,12 @@ async def check_provider_health(
     )
 
 
-@router.delete("/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{provider_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Disconnect provider",
+    description="Soft-deletes the provider record and revokes Gmail credentials.",
+)
 async def disconnect_provider(
     provider_id: str,
     db: AsyncSession = Depends(get_db),

@@ -2,12 +2,13 @@
 Analysis Tasks
 
 This module contains Celery tasks for email analysis.
-Simplified and properly handling sync/async operations.
+Uses synchronous DB drivers (psycopg2, pymongo) to avoid
+asyncpg event-loop conflicts in Celery prefork workers.
 """
 
-import logging
 import asyncio
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from celery import Task
@@ -17,49 +18,37 @@ from app.tasks.celery_app import celery_app
 from app.ml.email_parser import EmailParser
 from app.ml.phishing_detector import get_phishing_detector
 from app.services.threat_intel import get_threat_intel_service, transform_ti_for_storage
-from app.database import get_mongodb_database
+from app.database import get_mongodb_database, get_sync_db_session, get_sync_mongodb_database
 from app.config import get_settings
 from app.models.analysis_job import AnalysisJob
+from sqlalchemy import select
+import uuid
 
 logger = logging.getLogger(__name__)
 
 
 def _update_job_status(job_id: str, status: str, **kwargs):
-    """Update job status in PostgreSQL."""
+    """Update job status in PostgreSQL (sync-safe for Celery workers)."""
     try:
-        from app.database import get_db_session
-        from sqlalchemy import select
-        import uuid
-        
-        async def _update():
-            async with get_db_session() as db:
-                result = await db.execute(
-                    select(AnalysisJob).where(AnalysisJob.id == uuid.UUID(job_id))
-                )
-                job = result.scalar_one_or_none()
-                if job:
-                    job.status = status
-                    for key, value in kwargs.items():
-                        if hasattr(job, key):
-                            setattr(job, key, value)
-                    await db.commit()
-        
-        asyncio.run(_update())
+        with get_sync_db_session() as db:
+            job = db.execute(
+                select(AnalysisJob).where(AnalysisJob.id == uuid.UUID(job_id))
+            ).scalar_one_or_none()
+            if job:
+                job.status = status
+                for key, value in kwargs.items():
+                    if hasattr(job, key):
+                        setattr(job, key, value)
+                db.commit()
     except Exception as e:
         logger.error(f"Failed to update job status: {e}")
 
 
 def _save_to_mongodb(collection_name: str, document: dict) -> str:
-    """Save document to MongoDB (sync wrapper)."""
-    mongodb = get_mongodb_database()
-    collection = mongodb[collection_name]
-    
-    if asyncio.get_event_loop().is_running():
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(collection.insert_one(document))
-    else:
-        result = asyncio.run(collection.insert_one(document))
-    
+    """Save document to MongoDB (sync-safe for Celery workers)."""
+    db = get_sync_mongodb_database()
+    collection = db[collection_name]
+    result = collection.insert_one(document)
     return str(result.inserted_id)
 
 
@@ -79,10 +68,24 @@ def analyze_email_task(self: Task, job_id: str, raw_email_bytes: bytes,
     settings = get_settings()
     
     try:
-        _update_job_status(job_id, "processing", progress_percent=5, 
+        raw_bytes = raw_email_bytes
+        if raw_bytes is None:
+            from app.services.storage import storage_service
+            with get_sync_db_session() as db:
+                job = db.execute(
+                    select(AnalysisJob).where(AnalysisJob.id == uuid.UUID(job_id))
+                ).scalar_one_or_none()
+                if not job or not job.storage_object_name:
+                    raise ValueError(f"No stored file for job {job_id}")
+                raw_bytes = storage_service.get_file(
+                    object_name=job.storage_object_name,
+                    bucket=job.storage_bucket or get_settings().MINIO_BUCKET_EMAILS,
+                )
+
+        _update_job_status(job_id, "processing", progress_percent=5,
                           current_step="Parsing email")
-        
-        parser = EmailParser(raw_email_bytes)
+
+        parser = EmailParser(raw_bytes)
         parsed_email = parser.parse()
         
         headers = parsed_email.get('headers', {})
@@ -163,14 +166,14 @@ def analyze_email_task(self: Task, job_id: str, raw_email_bytes: bytes,
             "findings": findings,
             "links_analyzed": links,
             "attachments_analyzed": attachments,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
         
         mongodb_result_id = _save_to_mongodb("analysis_results", detailed_result)
-        
+
         critical = sum(1 for f in findings if f.get('severity') == 'critical')
         high = sum(1 for f in findings if f.get('severity') == 'high')
-        
+
         _update_job_status(
             job_id=job_id,
             status="completed",
@@ -186,14 +189,43 @@ def analyze_email_task(self: Task, job_id: str, raw_email_bytes: bytes,
             ml_score=ml_score,
             ti_score=ti_score
         )
-        
+
+        try:
+            mongodb = get_sync_mongodb_database()
+            mongodb.gmail_analysis_queue.update_one(
+                {"job_id": job_id},
+                {"$set": {
+                    "status": "completed",
+                    "completed_at": datetime.now(timezone.utc),
+                    "analysis_id": mongodb_result_id,
+                    "risk_score": int(final_score * 100),
+                    "threat_category": category,
+                }}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update queue for job {job_id}: {e}")
+
         logger.info(f"Analysis completed for {job_id}. Score: {final_score:.2f}")
-        
+
         return {"job_id": job_id, "status": "completed", "risk_score": int(final_score * 100)}
         
     except Exception as exc:
         logger.error(f"Analysis failed for {job_id}: {exc}")
         _update_job_status(job_id, "failed", error_message=str(exc), retry_count=self.request.retries)
+
+        if self.request.retries >= self.max_retries:
+            try:
+                mongodb = get_sync_mongodb_database()
+                mongodb.gmail_analysis_queue.update_one(
+                    {"job_id": job_id},
+                    {"$set": {
+                        "status": "failed",
+                        "completed_at": datetime.now(timezone.utc),
+                        "error": str(exc),
+                    }}
+                )
+            except Exception:
+                pass
         
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
@@ -274,7 +306,7 @@ def analyze_gmail_task(self: Task, user_id: str, message_id: str):
             "ml_analysis": {"phishing_probability": ml_score},
             "threat_intelligence": transform_ti_for_storage(ti_result),
             "findings": findings,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
         
         result = await mongodb.analysis_results.insert_one(detailed_result)
@@ -282,7 +314,7 @@ def analyze_gmail_task(self: Task, user_id: str, message_id: str):
         
         await mongodb.gmail_analysis_queue.update_one(
             {"user_id": user_id, "message_id": message_id},
-            {"$set": {"status": "completed", "completed_at": datetime.utcnow(), "analysis_id": analysis_id}}
+            {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc), "analysis_id": analysis_id}}
         )
         
         logger.info(f"Gmail analysis done for {message_id}")
@@ -292,14 +324,14 @@ def analyze_gmail_task(self: Task, user_id: str, message_id: str):
         return asyncio.run(_analyze())
     except Exception as exc:
         logger.error(f"Gmail analysis failed for {message_id}: {exc}")
-        
+
         async def _handle_error():
             mongodb = get_mongodb_database()
             await mongodb.gmail_analysis_queue.update_one(
                 {"user_id": user_id, "message_id": message_id},
                 {"$set": {"status": "failed", "error": str(exc)}}
             )
-        
+
         try:
             asyncio.run(_handle_error())
         except Exception:
@@ -341,7 +373,8 @@ def _generate_findings(parsed_email: dict, ml_result: dict, ti_result: dict) -> 
             })
     
     if auth_results:
-        if 'fail' in auth_results.get('spf', '').lower():
+        spf = (auth_results.get('spf') or '').lower()
+        if 'fail' in spf:
             finding_id += 1
             findings.append({
                 'id': f'F{finding_id:03d}',
@@ -350,7 +383,8 @@ def _generate_findings(parsed_email: dict, ml_result: dict, ti_result: dict) -> 
                 'title': 'SPF Failed',
                 'description': 'Email failed SPF authentication'
             })
-        if 'fail' in auth_results.get('dkim', '').lower():
+        dkim = (auth_results.get('dkim') or '').lower()
+        if 'fail' in dkim:
             finding_id += 1
             findings.append({
                 'id': f'F{finding_id:03d}',
@@ -406,7 +440,7 @@ def sync_gmail_task(provider_id: str, user_id: str, max_emails: int = 50):
                         "user_id": user_id,
                         "message_id": msg['id'],
                         "status": "pending",
-                        "created_at": datetime.utcnow()
+                        "created_at": datetime.now(timezone.utc)
                     }},
                     upsert=True
                 )

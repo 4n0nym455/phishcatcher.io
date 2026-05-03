@@ -19,7 +19,7 @@ from app.models.notification import Notification, NotificationType
 from app.routers.auth import get_current_user, get_current_active_user
 from pydantic import BaseModel
 
-router = APIRouter()
+router = APIRouter(tags=["Notifications"])
 
 
 class NotificationSubscription(BaseModel):
@@ -48,7 +48,11 @@ class NotificationResponse(BaseModel):
 push_subscriptions = {}
 
 
-@router.post("/subscribe")
+@router.post(
+    "/subscribe",
+    summary="Subscribe to push notifications",
+    description="Registers a push notification subscription for the current user and initializes default preferences.",
+)
 async def subscribe_to_notifications(
     subscription: NotificationSubscription,
     current_user: User = Depends(get_current_active_user),
@@ -69,7 +73,11 @@ async def subscribe_to_notifications(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to subscribe: {str(e)}")
 
 
-@router.post("/unsubscribe")
+@router.post(
+    "/unsubscribe",
+    summary="Unsubscribe from push notifications",
+    description="Removes the current user's push notification subscription.",
+)
 async def unsubscribe_from_notifications(current_user: User = Depends(get_current_active_user)):
     try:
         push_subscriptions.pop(str(current_user.id), None)
@@ -78,7 +86,11 @@ async def unsubscribe_from_notifications(current_user: User = Depends(get_curren
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to unsubscribe: {str(e)}")
 
 
-@router.post("/preferences")
+@router.post(
+    "/preferences",
+    summary="Update notification preferences",
+    description="Sets the user's notification preferences (security alerts, phishing detections, etc.).",
+)
 async def update_notification_preferences(
     preferences: NotificationPreferences,
     current_user: User = Depends(get_current_active_user),
@@ -92,7 +104,11 @@ async def update_notification_preferences(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update preferences: {str(e)}")
 
 
-@router.get("/preferences")
+@router.get(
+    "/preferences",
+    summary="Get notification preferences",
+    description="Returns the current user's notification preference settings.",
+)
 async def get_notification_preferences(current_user: User = Depends(get_current_active_user)):
     try:
         preferences = current_user.notification_preferences or {
@@ -106,7 +122,11 @@ async def get_notification_preferences(current_user: User = Depends(get_current_
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get preferences: {str(e)}")
 
 
-@router.get("/notifications")
+@router.get(
+    "/notifications",
+    summary="Get user notifications",
+    description="Returns paginated in-app notifications. Supports `unread_only` filter.",
+)
 async def get_user_notifications(
     limit: int = 50,
     offset: int = 0,
@@ -140,7 +160,11 @@ async def get_user_notifications(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get notifications: {str(e)}")
 
 
-@router.post("/notifications/{notification_id}/read")
+@router.post(
+    "/notifications/{notification_id}/read",
+    summary="Mark notification as read",
+    description="Marks a single in-app notification as read.",
+)
 async def mark_notification_read(
     notification_id: int,
     current_user: User = Depends(get_current_active_user),
@@ -168,7 +192,11 @@ async def mark_notification_read(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to mark as read: {str(e)}")
 
 
-@router.post("/notifications/mark-all-read")
+@router.post(
+    "/notifications/mark-all-read",
+    summary="Mark all notifications as read",
+    description="Marks all unread in-app notifications for the current user as read.",
+)
 async def mark_all_notifications_read(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)

@@ -182,3 +182,28 @@ def sanitize_filename(filename: str) -> str:
         filename = name[:255 - len(ext) - 1] + '.' + ext if ext else name[:255]
     
     return filename
+
+
+E164_PATTERN = re.compile(r'^\+[1-9]\d{1,14}$')
+
+
+def validate_phone(phone: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validate phone number in E.164 format.
+    
+    Args:
+        phone: Phone number to validate
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not phone:
+        return True, None
+    
+    if not E164_PATTERN.match(phone):
+        return False, "Phone number must be in E.164 format (e.g., +1234567890)"
+    
+    if len(phone) > 16:
+        return False, "Phone number is too long"
+    
+    return True, None

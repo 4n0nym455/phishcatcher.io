@@ -7,8 +7,8 @@ This module handles database connections and session management for:
 - Redis (caching and sessions)
 """
 
-from typing import AsyncGenerator, Optional
-from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional, Generator
+from contextlib import asynccontextmanager, contextmanager
 import logging
 
 from sqlalchemy.ext.asyncio import (
@@ -17,9 +17,11 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy import create_engine, Engine
+from sqlalchemy.orm import declarative_base, Session, sessionmaker
 from sqlalchemy.pool import NullPool
 import motor.motor_asyncio
+import pymongo
 import redis.asyncio as redis
 
 from app.config import get_settings
@@ -29,11 +31,21 @@ logger = logging.getLogger(__name__)
 # SQLAlchemy Base for PostgreSQL models
 Base = declarative_base()
 
-# Global connection pools
+# Global connection pools (async)
 _engine: Optional[AsyncEngine] = None
 _async_session_maker: Optional[async_sessionmaker] = None
 _mongodb_client: Optional[motor.motor_asyncio.AsyncIOMotorClient] = None
 _redis_client: Optional[redis.Redis] = None
+
+# Global connection pools (sync) — used by Celery workers
+_sync_engine: Optional[Engine] = None
+_sync_session_maker: Optional[sessionmaker] = None
+_sync_mongodb_client: Optional[pymongo.MongoClient] = None
+
+
+def _to_sync_db_url(async_url: str) -> str:
+    """Convert asyncpg URL to psycopg2 URL."""
+    return async_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
 
 
 def get_engine() -> AsyncEngine:
@@ -41,12 +53,15 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
+        # Use NullPool for tests to avoid connection pool loop-binding issues
+        pool_class = NullPool if settings.ENVIRONMENT == "testing" else None
         _engine = create_async_engine(
             settings.DATABASE_URL,
-            pool_size=settings.DATABASE_POOL_SIZE,
-            max_overflow=settings.DATABASE_MAX_OVERFLOW,
-            pool_pre_ping=True,  # Verify connections before using
-            echo=settings.DEBUG,  # Log SQL queries in debug mode
+            pool_size=settings.DATABASE_POOL_SIZE if pool_class is None else None,
+            max_overflow=settings.DATABASE_MAX_OVERFLOW if pool_class is None else None,
+            pool_pre_ping=True,
+            poolclass=pool_class,
+            echo=settings.DEBUG,
             future=True
         )
     return _engine
@@ -94,6 +109,75 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+# ──────────────────────────────────────────────
+# Synchronous helpers (Celery worker safe)
+# ──────────────────────────────────────────────
+
+def get_sync_engine() -> Engine:
+    """Get or create synchronous PostgreSQL engine (psycopg2)."""
+    global _sync_engine
+    if _sync_engine is None:
+        settings = get_settings()
+        sync_url = _to_sync_db_url(settings.DATABASE_URL)
+        _sync_engine = create_engine(
+            sync_url,
+            pool_pre_ping=True,
+            poolclass=NullPool,
+        )
+    return _sync_engine
+
+
+def get_sync_session_maker() -> sessionmaker:
+    """Get or create synchronous session maker."""
+    global _sync_session_maker
+    if _sync_session_maker is None:
+        engine = get_sync_engine()
+        _sync_session_maker = sessionmaker(
+            engine,
+            class_=Session,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+    return _sync_session_maker
+
+
+@contextmanager
+def get_sync_db_session() -> Generator[Session, None, None]:
+    """Synchronous context manager for DB sessions (Celery-safe)."""
+    maker = get_sync_session_maker()
+    session = maker()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_sync_mongodb_client() -> pymongo.MongoClient:
+    """Get or create synchronous MongoDB client (pymongo)."""
+    global _sync_mongodb_client
+    if _sync_mongodb_client is None:
+        settings = get_settings()
+        _sync_mongodb_client = pymongo.MongoClient(
+            settings.MONGODB_URL,
+            maxPoolSize=50,
+            minPoolSize=10,
+            serverSelectionTimeoutMS=5000,
+        )
+    return _sync_mongodb_client
+
+
+def get_sync_mongodb_database() -> pymongo.database.Database:
+    """Get synchronous MongoDB database instance."""
+    client = get_sync_mongodb_client()
+    settings = get_settings()
+    return client[settings.MONGODB_DB_NAME]
 
 
 def get_mongodb_client() -> motor.motor_asyncio.AsyncIOMotorClient:

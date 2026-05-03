@@ -6,7 +6,7 @@ and sync settings for Gmail, Outlook, and IMAP providers.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, ForeignKey, Text, Index
@@ -80,6 +80,8 @@ class EmailProvider(Base):
         Index("idx_provider_user_type", "user_id", "provider_type"),
         Index("idx_provider_active", "is_active", "sync_enabled"),
         Index("idx_provider_sync", "last_sync_at"),
+        Index("idx_provider_user_email", "user_id", "email_address"),
+        Index("idx_provider_connected_active", "provider_type", "is_connected", "is_active"),
     )
     
     def __repr__(self) -> str:
@@ -90,7 +92,7 @@ class EmailProvider(Base):
         """Check if OAuth token is expired."""
         if self.token_expires_at is None:
             return True
-        return datetime.utcnow() >= self.token_expires_at
+        return datetime.now(timezone.utc) >= self.token_expires_at
     
     @property
     def needs_sync(self) -> bool:
@@ -101,7 +103,7 @@ class EmailProvider(Base):
         if self.last_sync_at is None:
             return True
         
-        minutes_since_sync = (datetime.utcnow() - self.last_sync_at).total_seconds() / 60
+        minutes_since_sync = (datetime.now(timezone.utc) - self.last_sync_at).total_seconds() / 60
         return minutes_since_sync >= self.sync_frequency_minutes
     
     def to_dict(self, include_tokens: bool = False) -> dict:

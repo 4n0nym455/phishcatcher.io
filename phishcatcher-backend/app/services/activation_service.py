@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import secrets
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.database import get_redis_client
 from app.services.email_service import email_service
@@ -164,7 +164,7 @@ def _render_activation_email(user_name: str, code: str, url: str) -> str:
     <hr style="border:none;border-top:1px solid #e5e7eb;margin:30px 0">
     <p style="font-size:12px;color:#999">
       If you did not create a PhishCatcher account, you can safely ignore this email.
-      © {datetime.utcnow().year} PhishCatcher
+      © {datetime.now(timezone.utc).year} PhishCatcher
     </p>
   </div>
 </body>

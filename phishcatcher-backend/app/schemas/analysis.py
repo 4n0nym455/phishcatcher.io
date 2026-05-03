@@ -6,7 +6,7 @@ Pydantic models for email analysis requests and responses.
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from enum import Enum
 
 
@@ -32,6 +32,7 @@ class SeverityLevel(str, Enum):
 class JobStatus(str, Enum):
     """Analysis job status enum."""
     PENDING = "pending"
+    QUEUED = "queued"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -183,8 +184,7 @@ class AnalysisResponse(BaseModel):
     completed_at: Optional[datetime] = None
     duration_seconds: Optional[float] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AnalysisStatus(BaseModel):

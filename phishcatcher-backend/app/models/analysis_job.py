@@ -94,6 +94,8 @@ class AnalysisJob(Base):
         Index("idx_job_risk_score", "risk_score"),
         Index("idx_job_threat_category", "threat_category"),
         Index("idx_job_file_hash", "file_hash"),
+        Index("idx_job_user_created", "user_id", "created_at"),
+        Index("idx_job_completed_at", "completed_at"),
     )
     
     def __repr__(self) -> str:

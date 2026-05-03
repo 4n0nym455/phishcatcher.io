@@ -4,14 +4,17 @@ Phishing Detector Module
 This module provides the main ML-based phishing detection functionality.
 It uses XGBoost as the primary classifier with support for model training,
 prediction, and persistence.
+
+Model integrity is verified via SHA-256 checksum on load.
 """
 
 import os
 import json
 import pickle
+import hashlib
 import logging
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
 
 from app.config import get_settings
@@ -72,14 +75,38 @@ class PhishingDetector:
         self.model = None
         self.model_version = self.settings.ML_MODEL_VERSION
         self.training_metadata = {}
+        self.model_checksum: Optional[str] = None
         
         # Load model if exists
         self._load_model()
+    
+    @staticmethod
+    def _compute_checksum(filepath: str) -> str:
+        """Compute SHA-256 checksum of a file."""
+        sha256 = hashlib.sha256()
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                sha256.update(chunk)
+        return sha256.hexdigest()
     
     def _load_model(self):
         """Load model from disk or initialize new model."""
         if os.path.exists(self.model_path):
             try:
+                # Verify model integrity via checksum
+                actual_checksum = self._compute_checksum(self.model_path)
+                self.model_checksum = actual_checksum
+                expected_checksum = self.settings.ML_MODEL_CHECKSUM
+                
+                if expected_checksum and actual_checksum != expected_checksum:
+                    logger.warning(
+                        "ML model checksum mismatch! Expected %s, got %s. "
+                        "Model may have been tampered with or retrained.",
+                        expected_checksum[:12], actual_checksum[:12]
+                    )
+                else:
+                    logger.info("ML model integrity verified (SHA-256: %s)", actual_checksum[:16])
+                
                 with open(self.model_path, 'rb') as f:
                     saved_data = pickle.load(f)
                     
@@ -334,7 +361,7 @@ class PhishingDetector:
         
         # Store training metadata
         self.training_metadata = {
-            'trained_at': datetime.utcnow().isoformat(),
+            'trained_at': datetime.now(timezone.utc).isoformat(),
             'metrics': metrics,
             'feature_names': self.feature_extractor.feature_names,
             'validation_split': validation_split
@@ -346,7 +373,7 @@ class PhishingDetector:
     
     def save_model(self, path: Optional[str] = None):
         """
-        Save model to disk.
+        Save model to disk and generate SHA-256 checksum for integrity verification.
         
         Args:
             path: Save path (optional, uses default if not provided)
@@ -366,7 +393,14 @@ class PhishingDetector:
         with open(save_path, 'wb') as f:
             pickle.dump(save_data, f)
         
-        logger.info(f"Model saved to {save_path}")
+        # Generate and save checksum
+        checksum = self._compute_checksum(save_path)
+        checksum_path = save_path + ".sha256"
+        with open(checksum_path, 'w') as f:
+            f.write(checksum)
+        
+        self.model_checksum = checksum
+        logger.info(f"Model saved to {save_path} (SHA-256: {checksum[:16]}...)")
     
     def get_feature_importance(self) -> Dict[str, float]:
         """
@@ -405,7 +439,8 @@ class PhishingDetector:
             'is_trained': self.is_trained(),
             'model_type': 'xgboost' if XGBOOST_AVAILABLE else 'random_forest',
             'feature_count': len(self.feature_extractor.feature_names),
-            'training_metadata': self.training_metadata
+            'training_metadata': self.training_metadata,
+            'checksum_sha256': self.model_checksum,
         }
 
 

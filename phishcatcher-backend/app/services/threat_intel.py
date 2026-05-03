@@ -16,7 +16,7 @@ import hashlib
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 import httpx
 
@@ -273,6 +273,9 @@ class ThreatIntelService:
         
         Weight: 10% of TI score
         """
+        # Clean domain - strip trailing '>' or other artifacts from email parsing
+        domain = domain.rstrip('>').strip()
+        
         cache_key = f"ti:domain_age:{domain}"
         cached = await self._get_from_cache(cache_key)
         if cached:
@@ -280,7 +283,7 @@ class ThreatIntelService:
             return cached
         
         try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
                     f'https://rdap.org/domain/{domain}',
                     headers={'Accept': 'application/rdap+json'}
@@ -298,7 +301,7 @@ class ThreatIntelService:
                     if created:
                         try:
                             created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                            age_days = (datetime.utcnow() - created_dt.replace(tzinfo=None)).days
+                            age_days = (datetime.now(timezone.utc) - created_dt.replace(tzinfo=None)).days
                         except Exception:
                             pass
                     
@@ -449,7 +452,7 @@ class ThreatIntelService:
         
         if self.settings.PHISHTANK_API_KEY and self.settings.PHISHTANK_API_KEY != 'your-phishtank-api-key':
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=5.0) as client:
                     response = await client.post(
                         'https://checkurl.phishtank.com/checkurl/',
                         data={'url': check_target},
@@ -586,7 +589,7 @@ class ThreatIntelService:
         try:
             # Use base64 encoding (without padding) as required by VT v3 API
             encoded_url = base64.urlsafe_b64encode(check_target.encode()).decode().rstrip('=')
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
                     f'https://www.virustotal.com/api/v3/urls/{encoded_url}',
                     headers={'x-apikey': self.settings.VIRUSTOTAL_API_KEY}
@@ -772,7 +775,7 @@ class ThreatIntelService:
             }
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     'https://urlscan.io/api/v1/scan/',
                     data=json.dumps({'url': check_target, 'visibility': 'public'}),
@@ -786,8 +789,8 @@ class ThreatIntelService:
                     data = response.json()
                     result_uuid = data.get('uuid')
                     
-                    max_retries = 5
-                    retry_delay = 2.0
+                    max_retries = 3
+                    retry_delay = 1.0
                     
                     for attempt in range(max_retries):
                         await asyncio.sleep(retry_delay)
@@ -928,13 +931,14 @@ class ThreatIntelService:
             initial_tasks.append(('virustotal_hash', self.check_hash_virustotal(hash_val)))
         
         task_results = {}
-        for key, task in initial_tasks:
-            try:
-                result = await task
-                task_results[key] = result
-            except Exception as e:
-                logger.error(f"Task {key} failed: {e}")
-                task_results[key] = {'success': False, 'error': str(e)}
+        if initial_tasks:
+            results = await asyncio.gather(*[task for _, task in initial_tasks], return_exceptions=True)
+            for (key, _), result in zip(initial_tasks, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Task {key} failed: {result}")
+                    task_results[key] = {'success': False, 'error': str(result)}
+                else:
+                    task_results[key] = result
         
         preliminary_score = 0.0
         preliminary_weight = 0.0
@@ -999,7 +1003,7 @@ class ThreatIntelService:
             'indicators': indicators,
             'warnings': warnings,
             'url_expansions': url_expansions,
-            'analysis_timestamp': datetime.utcnow().isoformat()
+            'analysis_timestamp': datetime.now(timezone.utc).isoformat()
         }
     
     async def _resolve_and_check_ip(self, domain: str) -> Dict[str, Any]:

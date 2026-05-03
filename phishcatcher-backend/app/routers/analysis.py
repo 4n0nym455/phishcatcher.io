@@ -11,8 +11,9 @@ This module handles email analysis endpoints including:
 import io
 import logging
 import os
+import mimetypes
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
@@ -34,7 +35,67 @@ from app.tasks.analysis import analyze_email_task
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["Analysis"])
+
+
+# ─── MIME type validation ──────────────────────────────────────────────────────
+
+_MAGIC_BYTES = {
+    "D0CF11E0": ".doc",
+    "504B0304": ".zip",
+    "25504446": ".pdf",
+    "89504E47": ".png",
+    "FFD8FF":   ".jpg",
+}
+
+_EML_SIGNATURES = [b"From:", b"Received:", b"Date:", b"Subject:", b"Message-ID:"]
+
+_ALLOWED_MIME_MAP = {
+    ".eml":  ("message/rfc822", "text/plain", "application/octet-stream"),
+    ".msg":  ("application/vnd.ms-outlook", "application/octet-stream"),
+    ".txt":  ("text/plain",),
+    ".pdf":  ("application/pdf",),
+    ".doc":  ("application/msword", "application/octet-stream"),
+    ".docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",),
+    ".xls":  ("application/vnd.ms-excel", "application/octet-stream"),
+    ".xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",),
+    ".zip":  ("application/zip", "application/octet-stream"),
+    ".png":  ("image/png",),
+    ".jpg":  ("image/jpeg",),
+    ".jpeg": ("image/jpeg",),
+    ".webp": ("image/webp",),
+}
+
+
+def _validate_mime_type(content: bytes, filename: str) -> tuple[bool, str]:
+    """Validate file content using magic bytes — prevents extension spoofing."""
+    file_ext = os.path.splitext(filename)[1].lower()
+    allowed_mimes = _ALLOWED_MIME_MAP.get(file_ext)
+
+    if not allowed_mimes:
+        return False, f"Unknown file extension: {file_ext}"
+
+    hex_prefix = content[:4].hex().upper()
+    for magic_sig, expected_ext in _MAGIC_BYTES.items():
+        if hex_prefix.startswith(magic_sig):
+            if expected_ext != file_ext:
+                return False, f"File content ({expected_ext}) does not match extension ({file_ext})"
+            return True, ""
+
+    if file_ext == ".eml":
+        header_sample = content[:512]
+        if any(sig in header_sample for sig in _EML_SIGNATURES):
+            return True, ""
+        return False, "File does not appear to be a valid email (.eml)"
+
+    if file_ext == ".msg":
+        return False, "File does not appear to be a valid MSG file"
+
+    guessed_mime, _ = mimetypes.guess_type(filename)
+    if guessed_mime and guessed_mime not in allowed_mimes:
+        return False, f"Content type mismatch: detected {guessed_mime}"
+
+    return True, ""
 
 
 async def _get_analysis_data_dict(
@@ -450,7 +511,13 @@ def _normalize_threat_intelligence(ti_data: dict) -> dict:
     }
 
 
-@router.post("/upload", response_model=AnalysisStatus, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/upload",
+    response_model=AnalysisStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload email for analysis",
+    description="Uploads an email file (.eml, .msg, .pdf, .doc, .docx, etc.) for phishing analysis. Uses magic-byte validation to prevent extension spoofing. If `queue_only=True`, adds to queue without starting analysis.",
+)
 async def upload_email(
     file: UploadFile = File(...),
     queue_only: bool = Query(False, description="Only add to queue without starting analysis"),
@@ -483,6 +550,14 @@ async def upload_email(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File too large. Max size: {settings.MAX_FILE_SIZE_MB}MB"
+        )
+    
+    # Validate MIME type (prevent extension spoofing)
+    is_valid, mime_err = _validate_mime_type(content, file.filename)
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file content: {mime_err}"
         )
     
     storage_result = None
@@ -553,7 +628,7 @@ async def upload_email(
     
     # Add to same queue as Gmail emails
     from app.database import get_mongodb_database
-    from datetime import datetime
+    from datetime import datetime, timezone
     mongodb = get_mongodb_database()
     
     queue_doc = {
@@ -563,7 +638,7 @@ async def upload_email(
         "source": "upload",
         "file_name": file.filename,
         "status": "pending",
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
         "subject": file.filename,
         "sender": "upload"
     }
@@ -579,7 +654,12 @@ async def upload_email(
     )
 
 
-@router.get("/history", response_model=AnalysisList)
+@router.get(
+    "/history",
+    response_model=AnalysisList,
+    summary="Get analysis history",
+    description="Returns paginated analysis history for the authenticated user. Supports filtering by status and threat category.",
+)
 async def get_analysis_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -634,7 +714,17 @@ async def get_analysis_history(
     )
 
 
-@router.get("/{analysis_id}", response_model=AnalysisResponse)
+@router.get(
+    "/{analysis_id}",
+    response_model=AnalysisResponse,
+    summary="Get analysis results",
+    description="Returns full analysis results by ID, including email metadata, threat intelligence, ML predictions, links, and attachments.",
+    responses={
+        200: {"description": "Analysis results"},
+        403: {"description": "Access denied"},
+        404: {"description": "Analysis not found"},
+    },
+)
 async def get_analysis(
     analysis_id: str,
     db: AsyncSession = Depends(get_db),
@@ -962,7 +1052,12 @@ async def get_analysis(
     )
 
 
-@router.get("/{analysis_id}/status", response_model=AnalysisStatus)
+@router.get(
+    "/{analysis_id}/status",
+    response_model=AnalysisStatus,
+    summary="Get analysis status",
+    description="Lightweight endpoint for polling analysis progress. Returns status, progress percent, and current step.",
+)
 async def get_analysis_status(
     analysis_id: str,
     db: AsyncSession = Depends(get_db),
@@ -1072,7 +1167,17 @@ async def get_analysis_status(
     )
 
 
-@router.delete("/{analysis_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{analysis_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete analysis",
+    description="Permanently deletes an analysis record and its MongoDB results.",
+    responses={
+        204: {"description": "Analysis deleted"},
+        403: {"description": "Access denied"},
+        404: {"description": "Analysis not found"},
+    },
+)
 async def delete_analysis(
     analysis_id: str,
     db: AsyncSession = Depends(get_db),
@@ -1163,7 +1268,16 @@ async def delete_analysis(
     logger.info(f"Analysis {analysis_id} deleted by {current_user.email}")
 
 
-@router.get("/{analysis_id}/download")
+@router.get(
+    "/{analysis_id}/download",
+    summary="Download analysis report",
+    description="Downloads an analysis report as a PDF file. Requires the analysis to be completed.",
+    responses={
+        200: {"description": "PDF report file"},
+        400: {"description": "Analysis not completed"},
+        404: {"description": "Analysis not found"},
+    },
+)
 async def download_report(
     analysis_id: str,
     format: ReportFormat = ReportFormat.PDF,
@@ -1275,8 +1389,8 @@ async def get_weekly_report(
         start_dt = week_start
         end_dt = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
     else:
-        start_dt = datetime.utcnow() - timedelta(days=7)
-        end_dt = datetime.utcnow()
+        start_dt = datetime.now(timezone.utc) - timedelta(days=7)
+        end_dt = datetime.now(timezone.utc)
     
     result = await db.execute(
         select(AnalysisJob)
@@ -1507,28 +1621,31 @@ async def download_summary_report(
             "sender": "Unknown",
         }
     
+    # Batch MongoDB lookups: 2 queries instead of N*3
+    mongo_ids = [j.mongodb_result_id for j in jobs if j.mongodb_result_id]
+    job_ids = [str(j.id) for j in jobs]
+    clean_ids = [jid.replace('-', '') for jid in job_ids]
+    
+    mongo_lookup = {}
+    
+    if mongo_ids:
+        cursor = mongodb.analysis_results.find({"_id": {"$in": mongo_ids}})
+        for doc in await cursor.to_list(length=len(mongo_ids)):
+            mongo_lookup[doc["_id"]] = doc
+    
+    if job_ids:
+        cursor = mongodb.analysis_results.find({"job_id": {"$in": job_ids + clean_ids}})
+        for doc in await cursor.to_list(length=len(job_ids) * 2):
+            jid = doc.get("job_id")
+            if jid and jid not in mongo_lookup:
+                mongo_lookup[jid] = doc
+    
     found_count = 0
     for j in jobs:
         jid = str(j.id)
-        mongo_id = j.mongodb_result_id
-        
-        if mongo_id:
-            doc = await mongodb.analysis_results.find_one({"_id": mongo_id})
-            if doc:
-                email_meta = doc.get('email_metadata', {})
-                sender = email_meta.get('sender', email_meta.get('from', ''))
-                subject = email_meta.get('subject', '')
-                if sender:
-                    job_data_map[jid]['sender'] = sender
-                if subject:
-                    job_data_map[jid]['subject'] = subject
-                found_count += 1
-                continue
-        
-        doc = await mongodb.analysis_results.find_one({"job_id": jid})
+        doc = mongo_lookup.get(j.mongodb_result_id) if j.mongodb_result_id else None
         if not doc:
-            clean_id = jid.replace('-', '')
-            doc = await mongodb.analysis_results.find_one({"job_id": clean_id})
+            doc = mongo_lookup.get(jid) or mongo_lookup.get(jid.replace('-', ''))
         
         if doc:
             email_meta = doc.get('email_metadata', {})
@@ -1776,6 +1893,13 @@ async def start_upload_analysis(
     
     job.status = "queued"
     await db.commit()
+    
+    from app.database import get_mongodb_database
+    mongodb = get_mongodb_database()
+    await mongodb.gmail_analysis_queue.update_one(
+        {"job_id": job_id},
+        {"$set": {"status": "processing", "started_at": datetime.now(timezone.utc)}}
+    )
     
     analyze_email_task.delay(str(job.id), None, str(current_user.id))
     

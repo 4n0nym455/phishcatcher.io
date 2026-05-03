@@ -12,7 +12,7 @@ import os
 import json
 import base64
 from typing import List, Dict, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -28,7 +28,7 @@ from sqlalchemy import select   # FIX: was missing entirely
 from app.config import get_settings
 from app.services.email_analyzer import analyze_email_content
 from app.models.user import User
-from app.database import get_db_session  # FIX: was importing get_db
+from app.database import get_db_session, get_redis_client  # FIX: was importing get_db
 from app.services.security import encrypt_oauth_token, decrypt_oauth_token, is_encrypted_token
 import logging
 
@@ -45,6 +45,7 @@ SCOPES = [
 class GmailService:
     def __init__(self):
         self.settings = get_settings()
+        self._redis: Optional[object] = None
         self.client_config = {
             "web": {
                 "client_id": self.settings.GMAIL_CLIENT_ID,
@@ -54,6 +55,41 @@ class GmailService:
                 "redirect_uris": [self.settings.GMAIL_REDIRECT_URI]
             }
         }
+
+    def _get_redis(self):
+        if self._redis is None:
+            try:
+                self._redis = get_redis_client()
+            except Exception:
+                self._redis = False
+        return self._redis if self._redis else None
+
+    async def _cache_credentials(self, user_id: str, provider_id: Optional[str], token_data: dict):
+        redis_client = self._get_redis()
+        if not redis_client:
+            return
+        key = f"gmail:credentials:{user_id}:{provider_id or 'legacy'}"
+        await redis_client.setex(key, 240, json.dumps(token_data))
+
+    async def _get_cached_credentials(self, user_id: str, provider_id: Optional[str]) -> Optional[dict]:
+        redis_client = self._get_redis()
+        if not redis_client:
+            return None
+        key = f"gmail:credentials:{user_id}:{provider_id or 'legacy'}"
+        try:
+            cached = await redis_client.get(key)
+            return json.loads(cached) if cached else None
+        except (json.JSONDecodeError, Exception):
+            return None
+
+    async def _invalidate_cache(self, user_id: str, provider_id: Optional[str] = None):
+        redis_client = self._get_redis()
+        if not redis_client:
+            return
+        if provider_id:
+            await redis_client.delete(f"gmail:credentials:{user_id}:{provider_id}")
+        await redis_client.delete(f"gmail:credentials:{user_id}:legacy")
+        await redis_client.delete(f"gmail:credentials:{user_id}:None")
 
     def get_auth_url(self, user_id: str, email: str = None, force_new: bool = False) -> str:
         flow = Flow.from_client_config(
@@ -145,7 +181,7 @@ class GmailService:
             credentials_json = json.dumps(credentials_data)
             existing.access_token = encrypt_oauth_token(credentials_json)
             existing.is_connected = True
-            existing.last_sync_at = datetime.utcnow()
+            existing.last_sync_at = datetime.now(timezone.utc)
             await db.commit()
             logger.info(f"Updated existing Gmail account {existing.id} for user {user_id}")
             return str(existing.id), False  # False = reconnected
@@ -191,6 +227,7 @@ class GmailService:
                 user.gmail_credentials = json.dumps(credentials_data)
                 await db.commit()
                 logger.info(f"Updated Gmail credentials in User table for user {user_id}")
+        await self._cache_credentials(user_id, None, credentials_data)
 
     async def _update_provider_credentials(self, user_id: str, credentials, provider_id):
         """Update stored credentials in EmailProvider table after refresh."""
@@ -212,9 +249,10 @@ class GmailService:
             provider = result.scalar_one_or_none()
             if provider:
                 provider.access_token = encrypt_oauth_token(json.dumps(credentials_data))
-                provider.last_sync_at = datetime.utcnow()
+                provider.last_sync_at = datetime.now(timezone.utc)
                 await db.commit()
                 logger.info(f"Updated Gmail credentials in EmailProvider table for provider {provider_id}")
+        await self._cache_credentials(user_id, provider_id, credentials_data)
 
     async def _invalidate_credentials(self, user_id: str):
         """Invalidate Gmail credentials for a user (legacy User table)."""
@@ -228,6 +266,7 @@ class GmailService:
                 user.gmail_connected_at = None
                 await db.commit()
                 logger.info(f"Invalidated Gmail credentials for user {user_id}")
+        await self._invalidate_cache(user_id)
 
     async def _invalidate_provider_credentials(self, provider_id: str):
         """Invalidate Gmail credentials in EmailProvider table."""
@@ -239,10 +278,12 @@ class GmailService:
             )
             provider = result.scalar_one_or_none()
             if provider:
+                user_id = str(provider.user_id)
                 provider.is_connected = False
                 provider.access_token = None
                 await db.commit()
                 logger.info(f"Invalidated Gmail credentials for provider {provider_id}")
+                await self._invalidate_cache(user_id, provider_id)
 
     async def disconnect_gmail(self, user_id: str) -> bool:
         try:
@@ -255,16 +296,37 @@ class GmailService:
                     user.gmail_email = None
                     user.gmail_connected_at = None
                     await db.commit()
+            await self._invalidate_cache(user_id)
             return True
         except Exception as e:
             logger.error(f"Error disconnecting Gmail: {e}")
             return False
 
     async def get_gmail_credentials(self, user_id: str, provider_id: str = None) -> Optional[Credentials]:
+        cached = await self._get_cached_credentials(user_id, provider_id)
+        if cached:
+            try:
+                creds = Credentials(
+                    token=cached.get('token'),
+                    refresh_token=cached.get('refresh_token'),
+                    token_uri=cached.get('token_uri'),
+                    client_id=cached.get('client_id'),
+                    client_secret=cached.get('client_secret'),
+                    scopes=cached.get('scopes', [])
+                )
+                if cached.get('expiry'):
+                    creds.expiry = datetime.fromisoformat(cached['expiry'])
+                if creds.expired or (creds.expiry and creds.expiry <= datetime.now(timezone.utc) + timedelta(minutes=5)):
+                    await self._invalidate_cache(user_id, provider_id)
+                else:
+                    logger.debug(f"Cache hit for Gmail credentials user={user_id} provider={provider_id}")
+                    return creds
+            except Exception:
+                await self._invalidate_cache(user_id, provider_id)
+
         try:
             import uuid
             async with get_db_session() as db:
-                # First check EmailProvider table (new multi-account system)
                 from app.models.email_provider import EmailProvider
                 base_query = select(EmailProvider).where(
                     EmailProvider.user_id == uuid.UUID(user_id),
@@ -277,10 +339,9 @@ class GmailService:
                     base_query = base_query.order_by(EmailProvider.is_default.desc().nullslast(), EmailProvider.created_at.desc())
                 provider_result = await db.execute(base_query.limit(1))
                 email_provider = provider_result.scalar_one_or_none()
-                
+
                 if email_provider and email_provider.access_token:
                     try:
-                        # Decrypt the token if it's encrypted
                         token_data = email_provider.access_token
                         if is_encrypted_token(token_data):
                             token_data = decrypt_oauth_token(token_data)
@@ -295,29 +356,31 @@ class GmailService:
                         )
                         if provider_creds.get('expiry'):
                             credentials.expiry = datetime.fromisoformat(provider_creds['expiry'])
-                        
-                        # Check if token is expired or will expire within 5 minutes
-                        if credentials.expired or (credentials.expiry and credentials.expiry <= datetime.utcnow() + timedelta(minutes=5)):
+
+                        if credentials.expired or (credentials.expiry and credentials.expiry <= datetime.now(timezone.utc) + timedelta(minutes=5)):
                             if credentials.refresh_token:
                                 try:
                                     logger.info(f"Refreshing expired Gmail credentials for user {user_id}")
                                     credentials.refresh(Request())
                                     await self._update_provider_credentials(user_id, credentials, str(email_provider.id))
+                                    await self._invalidate_cache(user_id, provider_id)
                                 except Exception as refresh_error:
                                     logger.error(f"Failed to refresh credentials: {refresh_error}")
                                     await self._invalidate_provider_credentials(str(email_provider.id))
+                                    await self._invalidate_cache(user_id, provider_id)
                                     return None
                             else:
                                 logger.warning(f"Credentials expired but no refresh token for user {user_id}")
                                 await self._invalidate_provider_credentials(str(email_provider.id))
+                                await self._invalidate_cache(user_id, provider_id)
                                 return None
-                        
+
+                        await self._cache_credentials(user_id, provider_id, provider_creds)
                         logger.info(f"Using Gmail credentials from EmailProvider table for user {user_id}")
                         return credentials
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.error(f"Failed to parse EmailProvider credentials: {e}")
-                
-                # Fallback to legacy User.gmail_credentials field
+
                 result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
                 user = result.scalar_one_or_none()
                 if not user or not user.gmail_credentials:
@@ -325,13 +388,13 @@ class GmailService:
                     return None
 
                 credentials_data = json.loads(user.gmail_credentials)
-                
+
                 required_fields = ['token', 'token_uri', 'client_id', 'client_secret']
                 missing = [f for f in required_fields if not credentials_data.get(f)]
                 if missing:
                     logger.error(f"Gmail credentials missing required fields: {missing}")
                     return None
-                
+
                 credentials = Credentials(
                     token=credentials_data['token'],
                     refresh_token=credentials_data.get('refresh_token'),
@@ -342,22 +405,24 @@ class GmailService:
                 )
                 if credentials_data.get('expiry'):
                     credentials.expiry = datetime.fromisoformat(credentials_data['expiry'])
-                
-                # Check if token is expired or will expire within 5 minutes
-                if credentials.expired or (credentials.expiry and credentials.expiry <= datetime.utcnow() + timedelta(minutes=5)):
+
+                if credentials.expired or (credentials.expiry and credentials.expiry <= datetime.now(timezone.utc) + timedelta(minutes=5)):
                     if credentials.refresh_token:
                         try:
                             logger.info(f"Refreshing expired Gmail credentials for user {user_id}")
                             credentials.refresh(Request())
                             await self._update_stored_credentials(user_id, credentials)
+                            await self._invalidate_cache(user_id, provider_id)
                         except Exception as refresh_error:
                             logger.error(f"Failed to refresh credentials: {refresh_error}")
                             await self._invalidate_credentials(user_id)
+                            await self._invalidate_cache(user_id, provider_id)
                             return None
                     else:
                         logger.warning(f"Credentials expired but no refresh token for user {user_id}")
                         return None
-                
+
+                await self._cache_credentials(user_id, provider_id, credentials_data)
                 logger.info(f"Using legacy Gmail credentials from User table for user {user_id}")
                 return credentials
         except Exception as e:

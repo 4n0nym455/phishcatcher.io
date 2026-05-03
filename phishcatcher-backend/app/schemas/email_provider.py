@@ -6,7 +6,7 @@ Pydantic models for email provider integration requests and responses.
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
 from enum import Enum
 
 
@@ -62,8 +62,7 @@ class EmailProviderResponse(EmailProviderBase):
     max_emails_per_sync: int
     created_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EmailProviderList(BaseModel):

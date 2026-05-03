@@ -11,7 +11,7 @@ This module provides security-related functions including:
 import secrets
 import string
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 from jose import JWTError, jwt
@@ -143,11 +143,11 @@ def create_password_reset_token(data: Dict[str, Any], expires_delta: Optional[ti
     settings = get_settings()
     to_encode = data.copy()
     
-    expire = datetime.utcnow() + (expires_delta or timedelta(hours=1))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=1))
     
     to_encode.update({
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
     })
     
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
@@ -168,13 +168,13 @@ def create_mfa_session_token(data: Dict[str, Any], expires_delta: Optional[timed
     to_encode = data.copy()
     
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     
     to_encode.update({
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
     })
     # Don't overwrite type if already set (e.g., "mfa_setup")
     to_encode.setdefault("type", "mfa_session")
@@ -198,15 +198,15 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     to_encode = data.copy()
     
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
     jti = secrets.token_urlsafe(16)
     
     to_encode.update({
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
         "type": "access",
         "jti": jti,
         "ip": ip_address,
@@ -228,14 +228,14 @@ def create_refresh_token(data: Dict[str, Any], ip_address: Optional[str] = None)
         Tuple of (JWT refresh token, token payload)
     """
     settings = get_settings()
-    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     
     jti = secrets.token_urlsafe(16)
     
     to_encode = {
         **data,
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
         "type": "refresh",
         "jti": jti,
         "ip": ip_address,
@@ -571,14 +571,15 @@ def decrypt_mfa_secret(encrypted_secret: str) -> str:
     return fernet.decrypt(encrypted_secret.encode()).decode()
 
 
-# Rate Limiting for MFA Operations
-_mfa_rate_limits = {}
+# Rate Limiting for MFA Operations (Redis-backed)
+_MFA_RATE_LIMIT_PREFIX = "mfa_rate_limit:"
 
-def check_mfa_rate_limit(user_id: str, operation: str, max_attempts: int = 5, window_minutes: int = 15) -> tuple[bool, str]:
+async def check_mfa_rate_limit_async(redis_client, user_id: str, operation: str, max_attempts: int = 5, window_minutes: int = 15) -> tuple[bool, str]:
     """
-    Check rate limit for MFA operations.
+    Async Redis-backed rate limit check for MFA operations.
     
     Args:
+        redis_client: Async Redis client instance
         user_id: User identifier
         operation: Operation type ('setup', 'verify', 'backup_code')
         max_attempts: Maximum attempts allowed
@@ -587,33 +588,65 @@ def check_mfa_rate_limit(user_id: str, operation: str, max_attempts: int = 5, wi
     Returns:
         Tuple of (allowed: bool, message: str)
     """
-    now = datetime.utcnow()
+    key = f"{_MFA_RATE_LIMIT_PREFIX}{user_id}:{operation}"
+    
+    current = await redis_client.get(key)
+    attempts = int(current) if current else 0
+    
+    if attempts >= max_attempts:
+        ttl = await redis_client.ttl(key)
+        remaining = max(ttl, 0)
+        return False, f"Too many {operation} attempts. Please wait {remaining} seconds before trying again."
+    
+    pipe = redis_client.pipeline()
+    pipe.incr(key)
+    if attempts == 0:
+        pipe.expire(key, window_minutes * 60)
+    await pipe.execute()
+    
+    return True, ""
+
+async def clear_mfa_rate_limit_async(redis_client, user_id: str, operation: str) -> None:
+    """
+    Async clear rate limit for a specific user and operation.
+    
+    Args:
+        redis_client: Async Redis client instance
+        user_id: User identifier
+        operation: Operation type
+    """
+    key = f"{_MFA_RATE_LIMIT_PREFIX}{user_id}:{operation}"
+    await redis_client.delete(key)
+
+# Deprecated: sync versions kept for backward compatibility — use async versions above
+_mfa_rate_limits = {}
+
+def check_mfa_rate_limit(user_id: str, operation: str, max_attempts: int = 5, window_minutes: int = 15) -> tuple[bool, str]:
+    """
+    Check rate limit for MFA operations (sync, in-memory — deprecated).
+    Use check_mfa_rate_limit_async for production deployments.
+    """
+    now = datetime.now(timezone.utc)
     key = f"{user_id}:{operation}"
     
     if key not in _mfa_rate_limits:
         _mfa_rate_limits[key] = []
     
-    # Clean old attempts outside the window
     _mfa_rate_limits[key] = [
         attempt_time for attempt_time in _mfa_rate_limits[key]
         if (now - attempt_time).total_seconds() < window_minutes * 60
     ]
     
-    # Check if rate limit exceeded
     if len(_mfa_rate_limits[key]) >= max_attempts:
         return False, f"Too many {operation} attempts. Please wait {window_minutes} minutes before trying again."
     
-    # Record this attempt
     _mfa_rate_limits[key].append(now)
     return True, ""
 
 def clear_mfa_rate_limit(user_id: str, operation: str):
     """
-    Clear rate limit for a specific user and operation.
-    
-    Args:
-        user_id: User identifier
-        operation: Operation type
+    Clear rate limit for a specific user and operation (sync, in-memory — deprecated).
+    Use clear_mfa_rate_limit_async for production deployments.
     """
     key = f"{user_id}:{operation}"
     if key in _mfa_rate_limits:
@@ -939,7 +972,7 @@ def calculate_lock_time(lock_minutes: int = 5) -> datetime:
         Lock expiration datetime
     """
     from datetime import timedelta
-    return datetime.utcnow() + timedelta(minutes=lock_minutes)
+    return datetime.now(timezone.utc) + timedelta(minutes=lock_minutes)
 
 
 def is_account_locked(locked_until: Optional[datetime]) -> bool:
@@ -954,4 +987,4 @@ def is_account_locked(locked_until: Optional[datetime]) -> bool:
     """
     if locked_until is None:
         return False
-    return datetime.utcnow() < locked_until
+    return datetime.now(timezone.utc) < locked_until

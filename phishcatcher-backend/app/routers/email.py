@@ -10,7 +10,7 @@ This router handles all email-related endpoints including:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from pydantic import BaseModel, EmailStr
 from typing import Optional
@@ -62,17 +62,19 @@ class CustomEmailRequest(BaseModel):
     html_content: str
 
 
-@router.post("/email/send-otp")
+@router.post(
+    "/email/send-otp",
+    summary="Send OTP verification",
+    description="Sends an OTP verification code to a user's email address.",
+)
 async def send_otp_verification(
     request: OTPRequest,
     current_user: User = Depends(get_current_active_user)
 ):
     """Send OTP verification code to user email."""
     try:
-        # Generate OTP code
-        code = security_service.generate_email_code(request.email)
+        code = await security_service.generate_email_code(request.email)
         
-        # Send email
         success = await email_service.send_otp_verification(
             to_email=request.email,
             user_name="User",  # You might want to fetch user name from DB
@@ -100,7 +102,11 @@ async def send_otp_verification(
         )
 
 
-@router.post("/email/send-welcome")
+@router.post(
+    "/email/send-welcome",
+    summary="Send welcome email",
+    description="Sends a welcome/onboarding email to a new user.",
+)
 async def send_welcome_email(
     request: WelcomeEmailRequest,
     current_user: User = Depends(get_current_active_user)
@@ -132,7 +138,11 @@ async def send_welcome_email(
         )
 
 
-@router.post("/email/request-password-reset")
+@router.post(
+    "/email/request-password-reset",
+    summary="Request password reset email",
+    description="Generates a reset code and sends a password reset email with a deep link.",
+)
 async def request_password_reset(
     request: PasswordResetRequest,
     current_user: User = Depends(get_current_active_user)
@@ -141,7 +151,7 @@ async def request_password_reset(
     try:
         # Generate reset code
         settings = get_settings()
-        code = security_service.generate_email_code(request.email)
+        code = await security_service.generate_email_code(request.email)
         frontend_url = settings.FRONTEND_URL.rstrip('/')
         reset_url = f"{frontend_url}/reset-password?email={request.email}&code={code}"
         
@@ -173,14 +183,18 @@ async def request_password_reset(
         )
 
 
-@router.post("/email/confirm-password-reset")
+@router.post(
+    "/email/confirm-password-reset",
+    summary="Confirm password reset",
+    description="Validates the reset code and updates the user's password. Checks password history to prevent reuse.",
+)
 async def confirm_password_reset(
     request: PasswordResetConfirm,
     db: AsyncSession = Depends(get_db)
 ):
     """Confirm password reset with code and update password."""
     try:
-        is_valid = security_service.verify_email_code(request.email, request.code)
+        is_valid = await security_service.verify_email_code(request.email, request.code)
         
         if not is_valid:
             raise HTTPException(
@@ -216,7 +230,7 @@ async def confirm_password_reset(
         
         await save_password_to_history(db, user, user.password_hash)
         user.password_hash = new_hash
-        user.password_changed_at = datetime.utcnow()
+        user.password_changed_at = datetime.now(timezone.utc)
         user.failed_login_attempts = 0
         
         audit_log = AuditLog(
@@ -229,7 +243,7 @@ async def confirm_password_reset(
         
         await db.commit()
         
-        del security_service.verification_codes[request.email]
+        await security_service.delete_email_code(request.email)
         
         return {
             "message": "Password reset successfully",
@@ -246,7 +260,11 @@ async def confirm_password_reset(
         )
 
 
-@router.post("/email/send-security-alert")
+@router.post(
+    "/email/send-security-alert",
+    summary="Send security alert email",
+    description="Sends a security alert notification (e.g., login from new device) to a user.",
+)
 async def send_security_alert(
     request: SecurityAlertRequest,
     current_user: User = Depends(get_current_active_user)
@@ -281,7 +299,11 @@ async def send_security_alert(
         )
 
 
-@router.post("/email/send-account-suspended")
+@router.post(
+    "/email/send-account-suspended",
+    summary="Send account suspension email",
+    description="Sends an account suspension/notification email. Admin access required.",
+)
 async def send_account_suspended(
     request: dict,
     current_user: User = Depends(get_current_active_user)
@@ -320,7 +342,11 @@ async def send_account_suspended(
         )
 
 
-@router.post("/email/send-custom")
+@router.post(
+    "/email/send-custom",
+    summary="Send custom email",
+    description="Sends a custom HTML email to any address. Admin access required.",
+)
 async def send_custom_email(
     request: CustomEmailRequest,
     current_user: User = Depends(get_current_active_user)
@@ -351,11 +377,15 @@ async def send_custom_email(
         )
 
 
-@router.get("/email/verify-otp/{email}/{code}")
+@router.get(
+    "/email/verify-otp/{email}/{code}",
+    summary="Verify OTP code (testing)",
+    description="Verifies an OTP code for a given email. Intended for testing purposes.",
+)
 async def verify_otp_code(email: str, code: str):
     """Verify OTP code (for testing purposes)."""
     try:
-        is_valid = security_service.verify_email_code(email, code)
+        is_valid = await security_service.verify_email_code(email, code)
         
         return {
             "email": email,

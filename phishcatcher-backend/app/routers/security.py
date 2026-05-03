@@ -16,10 +16,14 @@ from app.routers.auth import get_current_active_user
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["security"])
+router = APIRouter(tags=["Security"])
 
 
-@router.get("/me/security/requirements")
+@router.get(
+    "/me/security/requirements",
+    summary="Get security requirements",
+    description="Returns the security requirements (e.g., MFA, email verification) needed for a specific action.",
+)
 async def get_security_requirements(
     action: str,
     current_user: User = Depends(get_current_active_user)
@@ -28,7 +32,11 @@ async def get_security_requirements(
     return security_service.get_security_requirements(current_user, action)
 
 
-@router.post("/me/security/verify/email")
+@router.post(
+    "/me/security/verify/email",
+    summary="Send email verification code",
+    description="Sends a verification code to the user's email for sensitive operations. Returns expiry time.",
+)
 async def send_email_verification(
     action: str,
     current_user: User = Depends(get_current_active_user)
@@ -37,7 +45,7 @@ async def send_email_verification(
     security_reqs = security_service.get_security_requirements(current_user, action)
     
     if security_reqs["method"] == "email":
-        code = security_service.generate_email_code(current_user.id)
+        code = await security_service.generate_email_code(current_user.id)
         success = await security_service.send_verification_email(
             current_user.email, code, action
         )
@@ -59,7 +67,11 @@ async def send_email_verification(
         )
 
 
-@router.post("/auth/reauth/google")
+@router.post(
+    "/auth/reauth/google",
+    summary="Google OAuth re-authentication",
+    description="Endpoint for re-authenticating Google OAuth users before sensitive operations.",
+)
 async def reauth_google(
     current_user: User = Depends(get_current_active_user)
 ):

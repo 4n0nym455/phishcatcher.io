@@ -6,7 +6,7 @@ This module defines data models for threat intelligence API responses.
 
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class AbuseIPDBResponse(BaseModel):
@@ -120,7 +120,7 @@ class ThreatIntelResult(BaseModel):
     
     indicators: List[str] = Field(default_factory=list, description="List of detected indicators")
     warnings: List[str] = Field(default_factory=list, description="Warnings (e.g., API failures)")
-    analysis_timestamp: datetime = Field(default_factory=datetime.utcnow, description="Analysis timestamp")
+    analysis_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Analysis timestamp")
     cache_hit: bool = Field(default=False, description="Whether result was from cache")
 
 

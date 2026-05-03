@@ -28,7 +28,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/gmail", tags=["gmail"])
 
-@router.get("/auth/url")
+@router.get(
+    "/auth/url",
+    summary="Get Gmail OAuth URL",
+    description="Returns the Google OAuth authorization URL. Requires MFA to be enabled first.",
+)
 async def get_gmail_auth_url(
     current_user: User = Depends(get_current_active_user)
 ) -> Dict[str, str]:
@@ -49,7 +53,11 @@ async def get_gmail_auth_url(
             detail="Failed to generate Gmail authorization URL"
         )
 
-@router.get("/auth/url/reconnect/{account_id}")
+@router.get(
+    "/auth/url/reconnect/{account_id}",
+    summary="Get Gmail reconnect URL",
+    description="Returns an OAuth URL pre-filled with the account's email for reconnecting an existing Gmail account.",
+)
 async def get_gmail_reconnect_url(
     account_id: str,
     current_user: User = Depends(get_current_active_user),
@@ -105,7 +113,11 @@ async def get_gmail_reconnect_url(
             detail="Failed to generate Gmail authorization URL"
         )
 
-@router.post("/callback")
+@router.post(
+    "/callback",
+    summary="Gmail OAuth callback (JSON)",
+    description="Handles Gmail OAuth callback from the frontend via POST with code and state in the body.",
+)
 async def gmail_auth_callback_post(
     code: str = Body(...),
     state: str = Body(...),
@@ -128,7 +140,11 @@ async def gmail_auth_callback_post(
         logger.error(f"Gmail OAuth callback error: {e}")
         return {"success": False, "error": str(e)}
 
-@router.get("/callback")
+@router.get(
+    "/callback",
+    summary="Gmail OAuth callback (redirect)",
+    description="Handles the OAuth redirect from Google. Returns an HTML page that posts a message to the opener window and self-closes.",
+)
 async def gmail_auth_callback(
     code: str,
     state: str,
@@ -208,7 +224,11 @@ async def gmail_auth_callback(
         """
         return HTMLResponse(content=html, status_code=500)
 
-@router.get("/status")
+@router.get(
+    "/status",
+    summary="Get Gmail connection status",
+    description="Returns connected Gmail accounts, pending analysis queue, and threat counts.",
+)
 async def get_gmail_status(
     current_user: User = Depends(get_current_active_user)
 ) -> Dict[str, Any]:
@@ -280,7 +300,11 @@ async def get_gmail_status(
         "queued": queue
     }
 
-@router.get("/queue")
+@router.get(
+    "/queue",
+    summary="Get Gmail analysis queue",
+    description="Returns all queued, processing, and completed analysis items grouped by status.",
+)
 async def get_gmail_queue(
     current_user: User = Depends(get_current_active_user)
 ) -> Dict[str, Any]:
@@ -331,7 +355,11 @@ async def get_gmail_queue(
         }
     }
 
-@router.post("/queue/{message_id}/process")
+@router.post(
+    "/queue/{message_id}/process",
+    summary="Process queued email",
+    description="Analyzes a specific queued email synchronously. Use `?force=true` to bypass cache and re-analyze.",
+)
 async def process_queue_item(
     message_id: str,
     force: bool = False,
@@ -340,7 +368,7 @@ async def process_queue_item(
 ) -> Dict[str, Any]:
     """Process a specific queued email synchronously. Use ?force=true to bypass cache and re-analyze."""
     from app.database import get_mongodb_database
-    from datetime import datetime
+    from datetime import datetime, timezone
     
     mongodb = get_mongodb_database()
     
@@ -354,6 +382,45 @@ async def process_queue_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Email not found in queue"
         )
+    
+    source = existing.get("source", "gmail")
+    
+    if source == "upload":
+        job_id = existing.get("job_id")
+        if not job_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload queue item missing job_id"
+            )
+        from app.tasks.analysis import analyze_email_task
+        from app.models.analysis_job import AnalysisJob
+        from sqlalchemy import select
+        try:
+            job_uuid = uuid.UUID(job_id)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid job ID")
+        result = await db.execute(
+            select(AnalysisJob).where(
+                AnalysisJob.id == job_uuid,
+                AnalysisJob.user_id == current_user.id
+            )
+        )
+        job = result.scalar_one_or_none()
+        if not job:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        if job.status not in ("pending", "queued"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Job is not pending (current status: {job.status})"
+            )
+        job.status = "queued"
+        await db.commit()
+        await mongodb.gmail_analysis_queue.update_one(
+            {"user_id": str(current_user.id), "message_id": message_id},
+            {"$set": {"status": "processing", "started_at": datetime.now(timezone.utc)}}
+        )
+        analyze_email_task.delay(job_id, None, str(current_user.id))
+        return {"message": "Analysis started", "job_id": job_id}
     
     provider_id = existing.get("provider_id")
     
@@ -416,7 +483,7 @@ async def process_queue_item(
     
     await mongodb.gmail_analysis_queue.update_one(
         {"user_id": str(current_user.id), "message_id": message_id},
-        {"$set": {"status": "processing", "started_at": datetime.utcnow()}}
+        {"$set": {"status": "processing", "started_at": datetime.now(timezone.utc)}}
     )
     
     try:
@@ -426,7 +493,7 @@ async def process_queue_item(
             {"user_id": str(current_user.id), "message_id": message_id},
             {"$set": {
                 "status": "completed",
-                "completed_at": datetime.utcnow(),
+                "completed_at": datetime.now(timezone.utc),
                 "analysis_id": str(result.get("_id")),
                 "risk_score": result.get("risk_assessment", {}).get("overall_score"),
                 "threat_category": result.get("risk_assessment", {}).get("category")
@@ -442,7 +509,7 @@ async def process_queue_item(
             {"user_id": str(current_user.id), "message_id": message_id},
             {"$set": {
                 "status": "failed",
-                "completed_at": datetime.utcnow(),
+                "completed_at": datetime.now(timezone.utc),
                 "error": str(e)
             }}
         )
@@ -459,7 +526,7 @@ async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: s
     from app.ml.risk_scorer import get_risk_scorer
     from app.services.threat_intel import get_threat_intel_service
     from app.database import get_mongodb_database
-    from datetime import datetime
+    from datetime import datetime, timezone
     import base64
     import logging
     
@@ -550,7 +617,7 @@ async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: s
         "risk_factors": analysis_result.get("risk_factors", {}),
         "ml_prediction": analysis_result.get("ml_prediction", {}),
         "threat_intelligence": transform_ti_for_storage(ti_result),
-        "created_at": datetime.utcnow()
+        "created_at": datetime.now(timezone.utc)
     }
     
     # Generate 32-char hex ID BEFORE insert
@@ -563,7 +630,7 @@ async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: s
         await mongodb.analysis_results.insert_one(detailed_result)
     except Exception as e:
         logger.error(f"MongoDB insert failed: {e}")
-        analysis_id = f"fallback_{message_id}_{int(datetime.utcnow().timestamp())}"
+        analysis_id = f"fallback_{message_id}_{int(datetime.now(timezone.utc).timestamp())}"
         detailed_result["_id"] = analysis_id
         detailed_result["job_id"] = message_id
     
@@ -595,7 +662,7 @@ async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: s
                     critical_findings=sum(1 for f in analysis_result.get("findings", []) if f.get("severity") == "critical"),
                     high_findings=sum(1 for f in analysis_result.get("findings", []) if f.get("severity") == "high"),
                     mongodb_result_id=analysis_id,
-                    completed_at=datetime.utcnow()
+                    completed_at=datetime.now(timezone.utc)
                 )
                 db.add(job)
                 await db.commit()
@@ -604,7 +671,11 @@ async def process_gmail_email_sync(user_id: str, message_id: str, provider_id: s
     
     return detailed_result
 
-@router.post("/queue/clear")
+@router.post(
+    "/queue/clear",
+    summary="Clear completed queue items",
+    description="Removes all completed and failed items from the Gmail analysis queue.",
+)
 async def clear_completed_queue(
     current_user: User = Depends(get_current_active_user)
 ) -> Dict[str, Any]:
@@ -621,7 +692,11 @@ async def clear_completed_queue(
         "message": f"Cleared {result.deleted_count} items from queue"
     }
 
-@router.delete("/queue/{message_id}")
+@router.delete(
+    "/queue/{message_id}",
+    summary="Delete queue item",
+    description="Removes a specific item from the Gmail analysis queue.",
+)
 async def delete_queue_item(
     message_id: str,
     current_user: User = Depends(get_current_active_user)
@@ -643,7 +718,11 @@ async def delete_queue_item(
             detail="Item not found in queue"
         )
 
-@router.post("/disconnect")
+@router.post(
+    "/disconnect",
+    summary="Disconnect Gmail",
+    description="Disconnects the Gmail account and revokes OAuth credentials for the current user.",
+)
 async def disconnect_gmail(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
@@ -665,7 +744,11 @@ async def disconnect_gmail(
             detail="Failed to disconnect Gmail account"
         )
 
-@router.get("/emails")
+@router.get(
+    "/emails",
+    summary="List Gmail emails",
+    description="Fetches emails from connected Gmail account(s) with pagination. If `provider_id` is specified, fetches from that account only.",
+)
 async def list_gmail_emails(
     max_results: int = Query(default=20, ge=1, le=100),
     page: int = Query(default=1, ge=1),
@@ -739,7 +822,11 @@ async def list_gmail_emails(
             detail="Failed to fetch emails"
         )
 
-@router.get("/emails/search")
+@router.get(
+    "/emails/search",
+    summary="Search Gmail emails",
+    description="Searches emails using Gmail search syntax (e.g., `from:sender`, `has:attachment`). Requires a non-empty query.",
+)
 async def search_gmail_emails(
     q: str,
     max_results: int = 50,
@@ -810,7 +897,11 @@ async def search_gmail_emails(
             detail="Failed to search emails"
         )
 
-@router.get("/emails/filter")
+@router.get(
+    "/emails/filter",
+    summary="Filter Gmail emails",
+    description="Filters emails using predefined criteria (date range, sender, subject, attachments).",
+)
 async def filter_gmail_emails(
     filter_type: str = None,
     has_attachments: bool = None,
@@ -911,7 +1002,11 @@ async def filter_gmail_emails(
             detail="Failed to filter emails"
         )
 
-@router.get("/emails/query-builder")
+@router.get(
+    "/emails/query-builder",
+    summary="Get Gmail query suggestions",
+    description="Returns available Gmail search operators and example queries for building advanced searches.",
+)
 async def get_query_builder_suggestions(
     current_user: User = Depends(get_current_active_user)
 ) -> Dict[str, Any]:
@@ -942,7 +1037,11 @@ async def get_query_builder_suggestions(
         ]
     }
 
-@router.post("/emails/queue")
+@router.post(
+    "/emails/queue",
+    summary="Queue emails for analysis",
+    description="Adds emails to the analysis queue without starting analysis. Re-queues failed items.",
+)
 async def queue_gmail_emails(
     message_ids: List[str] = Body(..., embed=True),
     provider_id: str = Query(default=None, description="Specific email provider/account ID to queue from."),
@@ -984,20 +1083,26 @@ async def queue_gmail_emails(
         )
     
     from app.database import get_mongodb_database
-    from datetime import datetime
-    
+    from datetime import datetime, timezone
+
     mongodb = get_mongodb_database()
     gmail_svc = gmail_service
     queued = []
     skipped_deleted = 0
     effective_provider_id = str(gmail_provider.id) if gmail_provider else None
-    
+
+    user_id_str = str(current_user.id)
+    existing_docs = mongodb.gmail_analysis_queue.find({
+        "user_id": user_id_str,
+        "message_id": {"$in": message_ids}
+    })
+    existing_map = {}
+    async for doc in existing_docs:
+        existing_map[doc["message_id"]] = doc
+
     for msg_id in message_ids:
-        existing = await mongodb.gmail_analysis_queue.find_one({
-            "user_id": str(current_user.id),
-            "message_id": msg_id
-        })
-        
+        existing = existing_map.get(msg_id)
+
         if existing:
             if existing.get("status") in ["pending", "processing"]:
                 queued.append({"message_id": msg_id, "status": "already_queued"})
@@ -1006,7 +1111,6 @@ async def queue_gmail_emails(
                 queued.append({"message_id": msg_id, "status": "already_analyzed"})
                 continue
             elif existing.get("status") == "failed":
-                # Update failed entry instead of creating new one
                 await mongodb.gmail_analysis_queue.update_one(
                     {"_id": existing["_id"]},
                     {"$set": {
@@ -1018,9 +1122,9 @@ async def queue_gmail_emails(
                 )
                 queued.append({"message_id": msg_id, "status": "requeued"})
                 continue
-        
+
         try:
-            email_data = await gmail_svc.get_email_headers(str(current_user.id), msg_id, effective_provider_id)
+            email_data = await gmail_svc.get_email_headers(user_id_str, msg_id, effective_provider_id)
         except Exception as e:
             if "404" in str(e) or "Not Found" in str(e):
                 logger.warning(f"Skipping deleted message {msg_id} in queue scan")
@@ -1028,7 +1132,7 @@ async def queue_gmail_emails(
                 await asyncio.sleep(0.1)
                 continue
             raise
-        
+
         subject = ""
         sender = ""
         recipient = ""
@@ -1047,9 +1151,9 @@ async def queue_gmail_emails(
                     date = header.get('value', '')
             snippet = email_data.get('snippet', '')
             labels = email_data.get('labelIds', [])
-        
+
         queue_doc = {
-            "user_id": str(current_user.id),
+            "user_id": user_id_str,
             "message_id": msg_id,
             "provider_id": effective_provider_id,
             "subject": subject,
@@ -1059,7 +1163,7 @@ async def queue_gmail_emails(
             "snippet": snippet,
             "labels": labels,
             "status": "pending",
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
         await mongodb.gmail_analysis_queue.insert_one(queue_doc)
         queued.append({"message_id": msg_id, "status": "queued"})
@@ -1072,7 +1176,11 @@ async def queue_gmail_emails(
     }
 
 
-@router.post("/emails/analyze")
+@router.post(
+    "/emails/analyze",
+    summary="Analyze Gmail emails",
+    description="Synchronously analyzes selected emails from Gmail. Skips already-analyzed or currently-processing items.",
+)
 async def analyze_gmail_emails(
     message_ids: List[str] = Body(..., embed=True),
     provider_id: str = Query(default=None, description="Specific email provider/account ID to analyze from."),
@@ -1114,22 +1222,28 @@ async def analyze_gmail_emails(
         )
     
     effective_provider_id = str(gmail_provider.id) if gmail_provider else None
-    
+
     try:
         from app.database import get_mongodb_database
-        from datetime import datetime
-        
+        from datetime import datetime, timezone
+
         mongodb = get_mongodb_database()
-        
+
         gmail_svc = gmail_service
         results = []
+        user_id_str = str(current_user.id)
+
+        existing_docs = mongodb.gmail_analysis_queue.find({
+            "user_id": user_id_str,
+            "message_id": {"$in": message_ids}
+        })
+        existing_map = {}
+        async for doc in existing_docs:
+            existing_map[doc["message_id"]] = doc
+
         for msg_id in message_ids:
-            # Check for existing queue entry
-            existing = await mongodb.gmail_analysis_queue.find_one({
-                "user_id": str(current_user.id),
-                "message_id": msg_id
-            })
-            
+            existing = existing_map.get(msg_id)
+
             if existing:
                 if existing.get("status") in ["pending", "processing"]:
                     results.append({"message_id": msg_id, "status": "already_queued"})
@@ -1142,14 +1256,13 @@ async def analyze_gmail_emails(
                     })
                     continue
                 elif existing.get("status") == "failed":
-                    # Update failed entry and proceed
                     await mongodb.gmail_analysis_queue.update_one(
                         {"_id": existing["_id"]},
                         {"$set": {
                             "status": "processing",
                             "provider_id": effective_provider_id,
                             "error": None,
-                            "started_at": datetime.utcnow()
+                            "started_at": datetime.now(timezone.utc)
                         }}
                     )
             
@@ -1162,7 +1275,7 @@ async def analyze_gmail_emails(
                         {"$set": {
                             "status": "failed",
                             "error": "Message deleted from Gmail",
-                            "completed_at": datetime.utcnow()
+                            "completed_at": datetime.now(timezone.utc)
                         }}
                     )
                     results.append({"message_id": msg_id, "status": "skipped", "reason": "deleted from Gmail"})
@@ -1186,8 +1299,8 @@ async def analyze_gmail_emails(
                     "subject": subject,
                     "from": sender,
                     "status": "processing",
-                    "created_at": datetime.utcnow(),
-                    "started_at": datetime.utcnow()
+                    "created_at": datetime.now(timezone.utc),
+                    "started_at": datetime.now(timezone.utc)
                 }
                 await mongodb.gmail_analysis_queue.insert_one(queue_doc)
             
@@ -1198,7 +1311,7 @@ async def analyze_gmail_emails(
                     {"user_id": str(current_user.id), "message_id": msg_id},
                     {"$set": {
                         "status": "completed",
-                        "completed_at": datetime.utcnow(),
+                        "completed_at": datetime.now(timezone.utc),
                         "analysis_id": str(result.get("_id")),
                         "risk_score": result.get("risk_assessment", {}).get("overall_score"),
                         "threat_category": result.get("risk_assessment", {}).get("category")
@@ -1215,7 +1328,7 @@ async def analyze_gmail_emails(
                     {"user_id": str(current_user.id), "message_id": msg_id},
                     {"$set": {
                         "status": "failed",
-                        "completed_at": datetime.utcnow(),
+                        "completed_at": datetime.now(timezone.utc),
                         "error": str(email_err)
                     }}
                 )
@@ -1237,7 +1350,11 @@ async def analyze_gmail_emails(
             detail="Failed to analyze emails"
         )
 
-@router.post("/emails/{message_id}/safe")
+@router.post(
+    "/emails/{message_id}/safe",
+    summary="Mark email as safe",
+    description="Marks a Gmail email as safe (not phishing).",
+)
 async def mark_email_safe(
     message_id: str,
     current_user: User = Depends(get_current_active_user)
@@ -1259,7 +1376,11 @@ async def mark_email_safe(
             detail="Failed to mark email as safe"
         )
 
-@router.post("/emails/{message_id}/phishing")
+@router.post(
+    "/emails/{message_id}/phishing",
+    summary="Report email as phishing",
+    description="Reports a Gmail email as phishing via the Gmail API.",
+)
 async def report_phishing(
     message_id: str,
     current_user: User = Depends(get_current_active_user)
@@ -1284,7 +1405,11 @@ async def report_phishing(
 
 # ─── Multi-Account Endpoints ──────────────────────────────────────────────────
 
-@router.get("/accounts")
+@router.get(
+    "/accounts",
+    summary="Get connected email accounts",
+    description="Returns all connected Gmail accounts for the current user with sync status.",
+)
 async def get_email_accounts(
     current_user: User = Depends(get_current_active_user)
 ) -> Dict[str, Any]:

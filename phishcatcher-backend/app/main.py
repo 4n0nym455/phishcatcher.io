@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(env_path)
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,13 +23,18 @@ from fastapi.exceptions import RequestValidationError
 from app.config import get_settings
 from app.database import init_databases, close_databases, check_database_health
 from app.routers import auth, analysis, providers, admin, health, gmail, notifications, security, email, activation, session, ml
+from app.core.logging import setup_logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# Configure structured logging
+settings = get_settings()
+setup_logging(
+    level=settings.LOG_LEVEL,
+    format_type=settings.LOG_FORMAT,
 )
 logger = logging.getLogger(__name__)
+
+# Centralized API version prefix
+API_PREFIX = f"/api/{settings.API_VERSION}"
 
 
 @asynccontextmanager
@@ -65,8 +70,7 @@ def create_application() -> FastAPI:
     _add_middleware(app)
     
     # Add exception handlers
-    _add_exception_handlers(app)
-    
+    _add_exception_handlers(app)    
     # Include routers
     _include_routers(app)
     
@@ -88,7 +92,7 @@ def _add_middleware(app: FastAPI):
         allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
         allow_methods=cors_methods,
         allow_headers=cors_headers,
-        expose_headers=["X-Request-ID"]
+        expose_headers=["X-Request-ID", "X-Idempotency-Replayed"]
     )
     
     # Trusted hosts
@@ -97,14 +101,50 @@ def _add_middleware(app: FastAPI):
         allowed_hosts=["*"] if settings.DEBUG else ["*.phishcatcher.io", "phishcatcher.io"]
     )
     
+    # API version header
+    from starlette.types import ASGIApp, Scope, Receive, Send
+    from starlette.responses import Response
+
+    class APIVersionMiddleware:
+        """Injects X-API-Version header into every response."""
+        def __init__(self, app: ASGIApp):
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            async def send_with_header(message):
+                if message["type"] == "http.response.start":
+                    headers = dict(message.get("headers", []))
+                    headers[b"x-api-version"] = settings.API_VERSION.encode()
+                    message["headers"] = list(headers.items())
+                await send(message)
+
+            await self.app(scope, receive, send_with_header)
+
+    app.add_middleware(APIVersionMiddleware)
+    
+    # Request ID (must be first to tag all subsequent middleware/logs)
+    from app.middleware.session_middleware import (
+        RequestIDMiddleware,
+        PureRedisSessionMiddleware,
+        PureRedisActivityMiddleware,
+    )
+    app.add_middleware(RequestIDMiddleware)
+    
     # Session management middleware (added after CORS and trusted hosts)
     from app.database import get_redis_client
-    from app.middleware.session_middleware import PureRedisSessionMiddleware, PureRedisActivityMiddleware
     
     # Add pure Redis-based session validation middleware
     redis_client = get_redis_client()
     app.add_middleware(PureRedisSessionMiddleware, redis_client=redis_client)
     app.add_middleware(PureRedisActivityMiddleware, redis_client=redis_client)
+    
+    # Idempotency middleware (must run after session middleware for user_id)
+    from app.middleware.idempotency_middleware import IdempotencyMiddleware
+    app.add_middleware(IdempotencyMiddleware)
 
 
 def _add_exception_handlers(app: FastAPI):
@@ -155,83 +195,80 @@ def _include_routers(app: FastAPI):
         tags=["Health"]
     )
     
-    # API v1 routes
-    api_prefix = "/api/v1"
-    
     # Authentication
     app.include_router(
         auth.router,
-        prefix=f"{api_prefix}/auth",
+        prefix=f"{API_PREFIX}/auth",
         tags=["Authentication"]
     )
     
     # Session Management
     app.include_router(
         session.router,
-        prefix=f"{api_prefix}/session",
+        prefix=f"{API_PREFIX}/session",
         tags=["Session Management"]
     )
     
     # Analysis
     app.include_router(
         analysis.router,
-        prefix=f"{api_prefix}/analysis",
+        prefix=f"{API_PREFIX}/analysis",
         tags=["Analysis"]
     )
     
     # ML Predictions
     app.include_router(
         ml.router,
-        prefix=f"{api_prefix}/ml",
+        prefix=f"{API_PREFIX}/ml",
         tags=["ML Prediction"]
     )
     
     # Email Providers
     app.include_router(
         providers.router,
-        prefix=f"{api_prefix}/providers",
+        prefix=f"{API_PREFIX}/providers",
         tags=["Email Providers"]
     )
     
     # Admin
     app.include_router(
         admin.router,
-        prefix=f"{api_prefix}/admin",
+        prefix=f"{API_PREFIX}/admin",
         tags=["Admin"]
     )
     
     # Gmail Integration
     app.include_router(
         gmail.router,
-        prefix=f"{api_prefix}",
+        prefix=f"{API_PREFIX}",
         tags=["Gmail"]
     )
     
     # Security
     app.include_router(
         security.router,
-        prefix=f"{api_prefix}",
+        prefix=f"{API_PREFIX}",
         tags=["Security"]
     )
     
     # Email Services
     app.include_router(
         email.router,
-        prefix=f"{api_prefix}",
+        prefix=f"{API_PREFIX}",
         tags=["Email"]
     )
     
     # Account Activation
     app.include_router(
         activation.router,
-        prefix=f"{api_prefix}",
+        prefix=f"{API_PREFIX}",
         tags=["Activation"]
     )
     
     # Notifications
     app.include_router(
         notifications.router,
-        prefix=f"{api_prefix}/notifications",
+        prefix=f"{API_PREFIX}/notifications",
         tags=["Notifications"]
     )
     
@@ -239,7 +276,7 @@ def _include_routers(app: FastAPI):
     from app.routers import tasks as task_router
     app.include_router(
         task_router.router,
-        prefix=f"{api_prefix}",
+        prefix=f"{API_PREFIX}",
         tags=["Tasks"]
     )
 
@@ -255,8 +292,10 @@ async def root():
     return {
         "name": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "api_version": settings.API_VERSION,
         "status": "operational",
-        "documentation": "/docs"
+        "documentation": "/docs" if settings.DEBUG else "disabled in production",
+        "environment": settings.ENVIRONMENT,
     }
 
 
@@ -270,7 +309,8 @@ async def health_check():
     return {
         "status": "healthy" if all_healthy else "unhealthy",
         "databases": db_health,
-        "timestamp": datetime.utcnow().isoformat()
+        "api_version": settings.API_VERSION,
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 

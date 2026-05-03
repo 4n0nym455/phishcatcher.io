@@ -1,155 +1,212 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 # PhishCatcher Quick Start Script
-# Backend & Frontend run locally, Services run in Docker
+# Backend & Frontend run locally, Services run in Docker.
 
 set -e
 
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+COMPOSE_FILE="$PROJECT_DIR/phishcatcher-backend/docker-compose.yml"
+ENV_FILE="$PROJECT_DIR/phishcatcher-backend/.env"
+COMPOSE="docker compose"
+
+# ── Cleanup on exit ──────────────────────────────────────────────────────────────
+
+PIDS=()
+
+cleanup() {
+  echo ""
+  echo "🛑 Shutting down..."
+  for pid in "${PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down >/dev/null 2>&1 || true
+  exit 0
+}
+
+trap cleanup SIGINT SIGTERM
+
+compose() {
+  $COMPOSE "$@"
+}
+
+# ── Pre-flight ───────────────────────────────────────────────────────────────────
+
+if ! docker info >/dev/null 2>&1; then
+  echo "❌ Docker is not running."
+  exit 1
+fi
+
+if ! command -v docker compose &>/dev/null; then
+  echo "❌ docker compose (v2) is not installed."
+  exit 1
+fi
+
+if ! command -v python3 &>/dev/null; then
+  echo "❌ python3 not found."
+  exit 1
+fi
+
+if ! command -v npm &>/dev/null; then
+  echo "❌ npm not found."
+  exit 1
+fi
+
 echo "🚀 Starting PhishCatcher Development Environment..."
 
-# Check if Docker is running
-if ! docker info > /dev/null 2>&1; then
-    echo "❌ Docker is not running. Please start Docker first."
-    exit 1
+# Load env variables for local commands (compose already gets them via --env-file)
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
 fi
 
-# Check if docker-compose is available
-if ! command -v docker-compose &> /dev/null; then
-    echo "❌ docker-compose is not installed. Please install it first."
-    exit 1
-fi
+# ── Docker infrastructure ────────────────────────────────────────────────────────
 
-# Create necessary directories
-echo "📁 Creating necessary directories..."
-mkdir -p phishcatcher-backend/models
-mkdir -p phishcatcher-backend/uploads
+echo "📁 Creating directories..."
 mkdir -p phishcatcher-backend/logs
 
-# Stop any existing containers
-echo "🛑 Stopping existing containers..."
-docker-compose down 2>/dev/null || true
+echo "🐳 Starting Docker services..."
+compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d postgres mongodb redis minio
 
-# Start infrastructure services in Docker (no backend/frontend)
-echo "🐳 Starting Docker services (PostgreSQL, MongoDB, Redis, MinIO)..."
-docker-compose up -d postgres mongodb redis minio minio-init
-
-# Wait for services to be ready
-echo "⏳ Waiting for services to be ready..."
-sleep 20
-
-# Check if services are healthy
-echo "🔍 Checking Docker service health..."
-for service in postgres mongodb redis minio; do
-    if docker ps | grep -q "phishcatcher-$service"; then
-        echo "✅ $service is running"
-    else
-        echo "⚠️  $service may not be running"
+# Wait for services with health checks
+echo "⏳ Waiting for services..."
+wait_for_postgres() {
+  for i in $(seq 1 30); do
+    if docker exec phishcatcher-postgres pg_isready -U "${POSTGRES_USER:-phishcatcher}" >/dev/null 2>&1; then
+      return 0
     fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_mongo() {
+  for i in $(seq 1 30); do
+    if docker exec phishcatcher-mongodb mongosh --quiet --eval "db.runCommand({ping:1})" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_redis() {
+  for i in $(seq 1 30); do
+    if docker exec phishcatcher-redis redis-cli -a "${REDIS_PASSWORD:-redis_secret}" --no-auth-warning ping 2>/dev/null | grep -q PONG; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_postgres && echo "  ✅ PostgreSQL ready" || echo "  ⚠️  PostgreSQL timed out"
+wait_for_redis   && echo "  ✅ Redis ready"     || echo "  ⚠️  Redis timed out"
+wait_for_mongo   && echo "  ✅ MongoDB ready"   || echo "  ⚠️  MongoDB timed out"
+
+# Create MinIO buckets
+echo "🪣 Creating MinIO buckets..."
+docker exec phishcatcher-minio mc alias set local http://localhost:9000 "${MINIO_ACCESS_KEY:-minioadmin}" "${MINIO_SECRET_KEY:-minioadmin}" 2>/dev/null || true
+for bucket in "${MINIO_BUCKET_EMAILS:-phishcatcher-emails}" \
+              "${MINIO_BUCKET_REPORTS:-phishcatcher-reports}" \
+              "${MINIO_BUCKET_MODELS:-phishcatcher-models}" \
+              "${MINIO_BUCKET_AVATARS:-phishcatcher-avatars}"; do
+  docker exec phishcatcher-minio mc mb "local/$bucket" 2>/dev/null || true
 done
 
-# Setup backend environment (local)
-echo "🔧 Setting up backend environment..."
+# ── Backend ──────────────────────────────────────────────────────────────────────
 
+echo "🔧 Setting up backend..."
 cd phishcatcher-backend
 
-# Check if .env exists in backend
-if [ ! -f .env ]; then
-    if [ -f ../.env ]; then
-        cp ../.env .env
-        echo "✅ Copied .env from project root"
-    else
-        echo "⚠️  No .env file found. Please create one:"
-        echo "   cp env-template .env && nano .env"
-        echo "   Then run this script again."
-        exit 1
-    fi
-else
-    echo "✅ .env file found"
+if [ ! -f ".env" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    cp "$ENV_FILE" .env
+    echo "  ✅ Copied .env"
+  else
+    echo "❌ No .env file. Create phishcatcher-backend/.env first."
+    exit 1
+  fi
 fi
 
-# Activate virtual environment
 if [ ! -d ".venv" ]; then
-    echo "🐍 Creating virtual environment..."
-    python3 -m venv .venv
+  echo "🐍 Creating virtual environment..."
+  python3 -m venv .venv
 fi
 
-echo "📦 Activating virtual environment..."
 source .venv/bin/activate
 
-# Install dependencies
 echo "📦 Installing Python dependencies..."
-pip install -r requirements.txt 2>/dev/null || true
+pip install -q -r requirements.txt
 
-# Run database migrations
-echo "🗃️  Running database migrations..."
-alembic upgrade head
+echo "🗃️  Running migrations..."
+alembic upgrade head 2>/dev/null || {
+  echo "  ⚠️  Schema exists without alembic tracking — resetting..."
+  docker exec phishcatcher-postgres psql -U "${POSTGRES_USER:-phishcatcher}" -d "${POSTGRES_DB:-phishcatcher}" -c "
+    DROP SCHEMA public CASCADE;
+    CREATE SCHEMA public;
+  " >/dev/null 2>&1
+  alembic upgrade head
+}
 
-# Create admin user (will prompt for input)
-echo "👤 Creating admin user..."
-echo "   You can skip this step if admin already exists."
-PYTHONPATH=. python scripts/create_admin.py || echo "Admin creation skipped or failed"
+echo "👤 Creating admin user (skip if exists)..."
+PYTHONPATH=. python scripts/create_admin.py || echo "  Admin creation skipped"
 
-# Start backend server (local)
-echo "🚀 Starting backend server locally..."
-source .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-BACKEND_PID=$!
+# ── Start backend ────────────────────────────────────────────────────────────────
 
-# Start celery worker (local)
-echo "🚀 Starting Celery worker locally..."
-celery -A app.tasks.celery_app worker --loglevel=info &
-CELERY_PID=$!
+echo "🚀 Starting backend (port 8000)..."
+source .venv/bin/activate
+PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload &
+PIDS+=($!)
 
-# Setup frontend (local)
+echo "🚀 Starting Celery worker..."
+celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4 &
+PIDS+=($!)
+
+# ── Frontend ─────────────────────────────────────────────────────────────────────
+
 echo "🎨 Setting up frontend..."
-cd ../phishcatcher-frontend/app
+cd "$PROJECT_DIR/phishcatcher-frontend/app"
 
-# Install Node.js dependencies
 if [ ! -d "node_modules" ]; then
-    echo "📦 Installing Node.js dependencies..."
-    npm install
+  echo "📦 Installing Node.js dependencies..."
+  npm install
 fi
 
-# Create frontend environment file
 if [ ! -f ".env.local" ]; then
-    echo "📝 Creating frontend environment file..."
-    cat > .env.local << EOF
-REACT_APP_API_URL=http://localhost:8000/api/v1
-REACT_APP_WS_URL=ws://localhost:8000/ws
+  echo "📝 Creating .env.local..."
+  cat > .env.local << 'EOF'
+VITE_API_URL=https://phishcatcher.dpdns.org/api/v1
+VITE_WS_URL=wss://phishcatcher.dpdns.org/ws
 EOF
 fi
 
-# Start frontend server (local)
-echo "🚀 Starting frontend server locally..."
-npm run dev &
-FRONTEND_PID=$!
+echo "🚀 Building frontend..."
+npm run build
 
-# Wait for servers to start
-echo "⏳ Waiting for servers to start..."
-sleep 10
+echo "🚀 Starting frontend preview (port 4173)..."
+npm run preview -- --host &
+PIDS+=($!)
+
+# ── Ready ────────────────────────────────────────────────────────────────────────
 
 echo ""
 echo "🎉 PhishCatcher is ready!"
 echo ""
-echo "📋 Services running:"
-echo "   🔵 Docker (Infrastructure):"
-echo "      • PostgreSQL: localhost:5432"
-echo "      • MongoDB: localhost:27017"
-echo "      • Redis: localhost:6379"
-echo "      • MinIO Console: http://localhost:9001"
-echo "      • MinIO API: http://localhost:9000"
+echo "📋 Services:"
+echo "   Docker infrastructure:"
+echo "     • PostgreSQL : localhost:5432"
+echo "     • MongoDB    : localhost:27017"
+echo "     • Redis      : localhost:6379"
+echo "     • MinIO API  : http://localhost:9000"
+echo "     • MinIO UI   : http://localhost:9001"
 echo ""
-echo "   🟢 Local (Development):"
-echo "      • Frontend: http://localhost:5173"
-echo "      • Backend API: http://localhost:8000"
-echo "      • API Docs: http://localhost:8000/docs"
-echo "      • Celery Worker: celery -A app.tasks.celery_app worker --loglevel=info"
+echo "   Local development:"
+echo "     • Frontend  : http://localhost:4173"
+echo "     • Backend   : http://localhost:8000"
+echo "     • API Docs  : http://localhost:8000/docs"
 echo ""
-echo "🔑 Default admin:"
-echo "   • Email: (set during admin creation or check .env)"
-echo "   • Password: (set during admin creation)"
-echo ""
-echo "🛑 To stop all services:"
-echo "   • Docker: docker-compose down"
-echo "   • Backend: kill $BACKEND_PID"
-echo "   • Celery: kill $CELERY_PID"
-echo "   • Frontend: kill $FRONTEND_PID"
+echo "🛑 Press Ctrl+C to stop all services"
+
+# Wait for any process to exit
+wait

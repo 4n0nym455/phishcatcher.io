@@ -347,8 +347,8 @@ class TextClassifier:
     @staticmethod
     def _get_timestamp() -> str:
         """Get current timestamp."""
-        from datetime import datetime
-        return datetime.utcnow().isoformat()
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
     
     def save_model(self, model_path: Optional[str] = None, vectorizer_path: Optional[str] = None):
         """
