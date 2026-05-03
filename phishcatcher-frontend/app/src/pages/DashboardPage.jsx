@@ -11,7 +11,7 @@ import {
   FileText, ChevronRight, Mail, Clock, RefreshCw, BarChart3,
 } from 'lucide-react';
 import { analysisApi, authApi } from '@/lib/api';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,

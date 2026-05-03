@@ -99,6 +99,7 @@ export default function RegisterPage() {
     fullName:        '',
     email:           '',
     company:         '',
+    phone:           '',
     password:        '',
     confirmPassword: '',
   });
@@ -116,6 +117,9 @@ export default function RegisterPage() {
   const allAgreed      = termsOk && privacyOk;
   const canSubmit      = allAgreed && !loading && (!confirmDirty || passwordsMatch);
 
+  const phoneDigits = form.phone.replace(/[^+\d]/g, '');
+  const phoneValid = phoneDigits === '' || /^\+\d{7,15}$/.test(phoneDigits);
+
   const handleSubmit = async e => {
     e.preventDefault();
     setError('');
@@ -124,6 +128,8 @@ export default function RegisterPage() {
       return setError('Passwords do not match.');
     if (!allAgreed)
       return setError('You must accept both the Terms of Service and Privacy Policy to create an account.');
+    if (form.phone && !phoneValid)
+      return setError('Phone number must be in E.164 format (e.g., +254876543210).');
 
     setLoading(true);
     try {
@@ -132,6 +138,7 @@ export default function RegisterPage() {
         password:              form.password,
         fullName:              form.fullName,
         company:               form.company || undefined,
+        phone:                 form.phone || undefined,
         acceptTermsAndPrivacy: true,
       });
       toast.success('Account created! Check your email to activate it.');
@@ -226,6 +233,46 @@ export default function RegisterPage() {
                 autoComplete="off"
                 className="input-base"
               />
+            </div>
+
+            {/* Phone (optional) */}
+            <div>
+              <label className="form-label">
+                Phone number
+                <span
+                  className="ml-1.5 normal-case tracking-normal text-xs font-400"
+                  style={{ color: 'var(--text-muted)' }}
+                >(optional)</span>
+              </label>
+              <input
+                type="tel"
+                value={form.phone}
+                onChange={e => {
+                  const raw = e.target.value;
+                  const digits = raw.replace(/[^+\d]/g, '');
+                  set('phone')({ target: { value: digits } });
+                }}
+                placeholder="+254876543210"
+                autoComplete="tel"
+                className="input-base"
+                style={!phoneValid && form.phone ? {
+                  borderColor: 'var(--danger)',
+                  boxShadow: '0 0 0 3px rgba(239,68,68,0.12)',
+                } : {}}
+              />
+              {form.phone && !phoneValid && (
+                <p className="text-xs mt-1.5 font-500 flex items-center gap-1" style={{ color: 'var(--danger)' }}>
+                  <XCircle className="w-3.5 h-3.5" /> E.164 format required (e.g., +254876543210)
+                </p>
+              )}
+              {form.phone && phoneValid && (
+                <p className="text-xs mt-1.5 font-500 flex items-center gap-1" style={{ color: 'var(--success)' }}>
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Valid format
+                </p>
+              )}
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Used for SMS OTP during login. We'll send a verification code.
+              </p>
             </div>
 
             {/* Password */}

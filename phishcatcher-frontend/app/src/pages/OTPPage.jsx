@@ -10,7 +10,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { ArrowLeft, Mail, RefreshCw, Loader2, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 
 const OTP_LEN    = 6;
 const RESEND_SEC = 60;

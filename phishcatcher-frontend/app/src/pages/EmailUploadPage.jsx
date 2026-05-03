@@ -203,7 +203,7 @@ export default function EmailUploadPage() {
       const result = await analysisApi.uploadEmail(file);
       clearInterval(iv);
       setProgress(100);
-      toast.success('Analysis complete!');
+      toast.success('Analysis started! Redirecting…');
       setTimeout(() => navigate(`/analysis/${result.id ?? result.analysis_id}`), 300);
     } catch (err) {
       clearInterval(iv);

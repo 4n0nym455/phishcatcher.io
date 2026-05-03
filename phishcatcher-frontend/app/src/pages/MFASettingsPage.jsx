@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 
 export default function MFASettingsPage() {
   const { refreshUser } = useAuth();

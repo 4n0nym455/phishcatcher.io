@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 
 /* ══════════════════════════════════════════════════════
    ActivateAccountPage

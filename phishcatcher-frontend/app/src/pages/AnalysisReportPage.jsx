@@ -3,7 +3,7 @@
  * Full threat report for a single analysis: score, indicators, links, headers, recommendations.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { 
@@ -108,7 +108,44 @@ export default function AnalysisReportPage() {
   const [expandedFinding, setExpandedFinding] = useState(null);
   const [analysisList, setAnalysisList] = useState([]);
 
-  // Fetch analysis list for dropdown
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const fetchAnalysis = async (analysisId, isInitial = false) => {
+    if (!analysisId || analysisId === 'None' || analysisId === 'null' || analysisId === 'undefined' || analysisId.startsWith('fallback_') || analysisId.length < 8) {
+      if (isInitial) {
+        setError('Invalid analysis ID');
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (isInitial) {
+      setLoading(true);
+      setError('');
+    }
+
+    try {
+      const data = await analysisApi.getAnalysis(analysisId);
+      if (mountedRef.current) {
+        setAnalysis(data);
+      }
+    } catch (err) {
+      if (mountedRef.current) {
+        console.error('Failed to load analysis:', err);
+        setError(err.message ?? 'Failed to load analysis report.');
+      }
+    } finally {
+      if (isInitial && mountedRef.current) {
+        setLoading(false);
+      }
+    }
+  };
+
   useEffect(() => {
     const fetchAnalysisList = async () => {
       try {
@@ -124,34 +161,18 @@ export default function AnalysisReportPage() {
   }, []);
 
   useEffect(() => {
-    // Validate ID - be permissive since IDs can come in various formats
-    const isValidId = (id) => {
-      if (!id || typeof id !== 'string') return false;
-      if (id === 'None' || id === 'null' || id === 'undefined') return false;
-      if (id.startsWith('fallback_')) return false;
-      return id.length >= 8;
-    };
-    
-    if (!isValidId(id)) {
-      setError('Invalid analysis ID');
-      setLoading(false);
-      return;
-    }
-    
-    (async () => {
-      setLoading(true);
-      setError('');
-      try {
-        const data = await analysisApi.getAnalysis(id);
-        setAnalysis(data);
-      } catch (err) {
-        console.error('Failed to load analysis:', err);
-        setError(err.message ?? 'Failed to load analysis report.');
-      } finally {
-        setLoading(false);
-      }
-    })();
+    fetchAnalysis(id, true);
   }, [id]);
+
+  useEffect(() => {
+    if (!analysis?.status || analysis.status !== 'processing' || !id) return;
+
+    const interval = setInterval(() => {
+      fetchAnalysis(id);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [analysis?.status, id]);
 
   const handleAnalysisSelect = (newId) => {
     if (newId && newId !== id) {
@@ -196,6 +217,20 @@ export default function AnalysisReportPage() {
         <div className="text-center">
           <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3" style={{ color: 'var(--brand)' }} />
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading report…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (analysis && analysis.status === 'processing') {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3" style={{ color: 'var(--brand)' }} />
+          <p className="text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Analysis in progress…</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {analysis.current_step || 'Processing email'} • {analysis.progress_percent ?? 0}%
+          </p>
         </div>
       </div>
     );

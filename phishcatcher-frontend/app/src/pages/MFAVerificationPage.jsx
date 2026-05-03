@@ -9,7 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, ShieldCheck, Loader2, Key } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 
 export default function MFAVerificationPage() {
   const navigate = useNavigate();
