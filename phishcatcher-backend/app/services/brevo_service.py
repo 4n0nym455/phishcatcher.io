@@ -1,34 +1,38 @@
 """
-SendGrid Email Service for PhishCatcher
+Brevo Email Service for PhishCatcher
 
-Consolidated email service with consistent dark theme styling.
+Drop-in replacement for SendGridService. Uses Brevo's SMTP API (v3/smtp/email)
+to send transactional emails with the same dark-theme HTML templates.
 """
 
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+from typing import Optional
+from datetime import datetime, timedelta, timezone
+
+import httpx
+
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-class SendGridService:
-    """Enterprise-grade email service using SendGrid with consistent dark theme."""
+class BrevoService:
+    """Enterprise-grade email service using Brevo with consistent dark theme."""
+
+    API_URL = "https://api.brevo.com/v3/smtp/email"
 
     def __init__(self):
         self.settings = get_settings()
 
-        api_key = getattr(self.settings, 'SENDGRID_API_KEY', None) or getattr(self.settings, 'SMTP_PASSWORD', None)
-        if api_key and api_key.startswith('SG.'):
-            self.client = SendGridAPIClient(api_key=api_key)
+        api_key = getattr(self.settings, 'BREVO_API_KEY', None)
+        if api_key and api_key.startswith('xkeysib-'):
+            self.api_key = api_key
         else:
-            self.client = None
-            logger.warning("SendGrid API key not configured or invalid format")
+            self.api_key = None
+            logger.warning("Brevo API key not configured or invalid format")
 
-        self.from_email = getattr(self.settings, 'SENDGRID_FROM_EMAIL', None) or getattr(self.settings, 'FROM_EMAIL', 'noreply@phishcatcher.io')
-        self.from_name = getattr(self.settings, 'SENDGRID_FROM_NAME', 'PhishCatcher')
+        self.from_email = getattr(self.settings, 'BREVO_FROM_EMAIL', None) or getattr(self.settings, 'FROM_EMAIL', 'noreply@phishcatcher.io')
+        self.from_name = getattr(self.settings, 'BREVO_FROM_NAME', 'PhishCatcher')
 
     def _build_email(self, subject: str, title: str, message: str,
                      action_url: Optional[str] = None, action_text: Optional[str] = None,
@@ -216,7 +220,7 @@ class SendGridService:
     <div class="email-container">
         <div class="header">
             <div class="logo">
-                <div class="logo-icon">🛡️</div>
+                <div class="logo-icon">&#128737;&#65039;</div>
                 <span class="logo-text">PhishCatcher</span>
             </div>
         </div>
@@ -239,7 +243,7 @@ class SendGridService:
 ''' if action_url else '') + f'''
 ''' + (f'''
             <div class="security-info">
-                <div class="security-title">🔒 Security Information</div>
+                <div class="security-title">&#128274; Security Information</div>
                 <div class="security-text">{security_info}</div>
             </div>
 ''' if security_info else '') + '''
@@ -250,56 +254,65 @@ class SendGridService:
                 This email was sent by PhishCatcher. If you didn't request this, please
                 contact support.
                 <br><br>
-                © 2026 PhishCatcher. All rights reserved.
+                &copy; 2026 PhishCatcher. All rights reserved.
             </div>
         </div>
     </div>
 </body>
 </html>'''
 
-    def send_email(self, to_email: str, subject: str, html_content: str) -> bool:
-        """Send email using SendGrid."""
-        if not self.client:
-            logger.error("SendGrid client not initialized")
+    async def send_email(self, to_email: str, subject: str, html_content: str) -> bool:
+        """Send email using Brevo SMTP API."""
+        if not self.api_key:
+            logger.error("Brevo API key not initialized")
             return False
 
         try:
-            message = Mail(
-                from_email=self.from_email,
-                to_emails=to_email,
-                subject=subject,
-                html_content=html_content
-            )
+            payload = {
+                "sender": {"name": self.from_name, "email": self.from_email},
+                "to": [{"email": to_email}],
+                "subject": subject,
+                "htmlContent": html_content,
+            }
 
-            response = self.client.send(message)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.API_URL,
+                    json=payload,
+                    headers={
+                        "api-key": self.api_key,
+                        "content-type": "application/json",
+                        "accept": "application/json",
+                    },
+                )
 
-            if response.status_code == 202:
+            if response.status_code == 201:
                 logger.info(f"Email sent successfully to {to_email}")
                 return True
             else:
-                logger.error(f"Failed to send email to {to_email}: {response.status_code} {response.body}")
+                logger.error(f"Failed to send email to {to_email}: HTTP {response.status_code} {response.text}")
                 return False
 
         except Exception as e:
             logger.error(f"Error sending email to {to_email}: {e}")
             return False
 
-    def send_verification_code(self, to_email: str, code: str, action: str = "security_action") -> bool:
+    async def send_verification_code(self, to_email: str, code: str, action: str = "security_action") -> bool:
         """Send email verification code."""
-        expiry_time = (datetime.utcnow() + timedelta(minutes=10)).strftime('%I:%M %p UTC')
+        expiry_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime('%I:%M %p UTC')
 
         html = self._build_email(
             subject=f"PhishCatcher - Verification Code",
             title="Verify Your Email",
             message=f"You requested to perform <strong>{action.replace('_', ' ').title()}</strong> on your PhishCatcher account. Use the code below to verify:",
             action_text=code,
-            security_info=f"🔐 This code expires in <strong>10 minutes</strong> ({expiry_time})<br>Never share this code with anyone. PhishCatcher will never ask for your password via email.",
+            security_info=f"&#128274; This code expires in <strong>10 minutes</strong> ({expiry_time})<br>Never share this code with anyone. PhishCatcher will never ask for your password via email.",
             status="default"
         )
 
-        return self.send_email(to_email, f"PhishCatcher - Verification Code for {action.replace('_', ' ').title()}", html)
+        return await self.send_email(to_email, f"PhishCatcher - Verification Code for {action.replace('_', ' ').title()}", html)
 
-    def send_password_reset(self, to_email: str, reset_url: str) -> bool:
+    async def send_password_reset(self, to_email: str, reset_url: str) -> bool:
         """Send password reset email."""
         html = self._build_email(
             subject="PhishCatcher - Password Reset Request",
@@ -311,11 +324,11 @@ class SendGridService:
             status="warning"
         )
 
-        return self.send_email(to_email, "PhishCatcher - Password Reset Request", html)
+        return await self.send_email(to_email, "PhishCatcher - Password Reset Request", html)
 
-    def send_password_changed(self, to_email: str) -> bool:
+    async def send_password_changed(self, to_email: str) -> bool:
         """Send password changed notification."""
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
 
         html = self._build_email(
             subject="PhishCatcher - Password Changed",
@@ -325,15 +338,15 @@ class SendGridService:
             status="success"
         )
 
-        return self.send_email(to_email, "PhishCatcher - Password Changed", html)
+        return await self.send_email(to_email, "PhishCatcher - Password Changed", html)
 
-    def send_security_alert(self, to_email: str, action: str, ip_address: str = None, user_agent: str = None) -> bool:
+    async def send_security_alert(self, to_email: str, action: str, ip_address: str = None, user_agent: str = None) -> bool:
         """Send security alert email."""
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
 
         html = self._build_email(
             subject=f"PhishCatcher - Security Alert",
-            title="⚠️ Security Alert",
+            title="&#9888;&#65039; Security Alert",
             message=f"A sensitive action was performed on your PhishCatcher account.",
             security_info=f'''<strong>Action:</strong> {action.replace('_', ' ').title()}<br>
 <strong>Time:</strong> {timestamp}<br>
@@ -342,11 +355,11 @@ class SendGridService:
             status="error"
         )
 
-        return self.send_email(to_email, f"PhishCatcher - Security Alert: {action.replace('_', ' ').title()}", html)
+        return await self.send_email(to_email, f"PhishCatcher - Security Alert: {action.replace('_', ' ').title()}", html)
 
-    def send_account_deletion(self, to_email: str) -> bool:
+    async def send_account_deletion(self, to_email: str) -> bool:
         """Send account deletion notification."""
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
 
         html = self._build_email(
             subject="PhishCatcher - Account Deleted",
@@ -356,13 +369,13 @@ class SendGridService:
             status="error"
         )
 
-        return self.send_email(to_email, "PhishCatcher - Account Deleted", html)
+        return await self.send_email(to_email, "PhishCatcher - Account Deleted", html)
 
-    def send_welcome(self, to_email: str, login_url: str) -> bool:
+    async def send_welcome(self, to_email: str, login_url: str) -> bool:
         """Send welcome email."""
         html = self._build_email(
             subject="Welcome to PhishCatcher",
-            title="🎉 Welcome to PhishCatcher",
+            title="&#127881; Welcome to PhishCatcher",
             message="Your account has been created successfully. Start analyzing emails for phishing threats today!",
             action_url=login_url,
             action_text="Go to Dashboard",
@@ -370,7 +383,7 @@ class SendGridService:
             status="success"
         )
 
-        return self.send_email(to_email, "Welcome to PhishCatcher", html)
+        return await self.send_email(to_email, "Welcome to PhishCatcher", html)
 
 
-sendgrid_service = SendGridService()
+brevo_service = BrevoService()

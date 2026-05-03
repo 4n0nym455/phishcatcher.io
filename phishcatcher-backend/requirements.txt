@@ -8,6 +8,7 @@ passlib[bcrypt]
 # Database
 sqlalchemy[asyncio]
 asyncpg
+psycopg2-binary
 alembic
 motor
 redis
@@ -36,7 +37,6 @@ google-api-python-client
 # Email Processing
 mail-parser
 python-dateutil
-sendgrid
 jinja2
 beautifulsoup4
 
