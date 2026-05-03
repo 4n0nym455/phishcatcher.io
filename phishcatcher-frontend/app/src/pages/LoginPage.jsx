@@ -6,13 +6,20 @@
  * Google OAuth via popup → oauthService.initiateGoogleOAuth()
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Eye, EyeOff, ArrowRight, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, ArrowRight, Loader2, ShieldAlert, Clock, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { authApi } from '@/lib/api';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/stores/authStore';
 import { oauthService } from '@/lib/oauthService';
+
+const LOGOUT_MESSAGES = {
+  session_expired: { icon: Clock, text: 'Your session has expired. Please sign in again.' },
+  session_revoked: { icon: ShieldAlert, text: 'Your session has been revoked. Please sign in again.' },
+  session_invalidated: { icon: Ban, text: 'Your session was invalidated. Please sign in again.' },
+  ip_mismatch: { icon: ShieldAlert, text: 'Your session was invalidated due to a location change. Please sign in again.' },
+};
 
 function GoogleIcon() {
   return (
@@ -30,7 +37,6 @@ export default function LoginPage() {
   const location  = useLocation();
   const { loginWithTokens } = useAuth();
 
-  // Where to redirect after successful login (supports PrivateRoute redirect)
   const from = location.state?.from?.pathname ?? '/dashboard';
 
   const [email,         setEmail]         = useState('');
@@ -39,6 +45,13 @@ export default function LoginPage() {
   const [loading,       setLoading]       = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error,         setError]         = useState('');
+
+  // Read and display logout reason if present
+  const [logoutReason, setLogoutReason] = useState(() => {
+    const reason = localStorage.getItem('phishcatcher_logout_reason');
+    if (reason) localStorage.removeItem('phishcatcher_logout_reason');
+    return reason;
+  });
 
   /* ── Email + password submit ── */
   const handleSubmit = async (e) => {
@@ -132,6 +145,18 @@ export default function LoginPage() {
               Sign in to your PhishCatcher account
             </p>
           </div>
+
+          {/* Logout reason banner */}
+          {logoutReason && LOGOUT_MESSAGES[logoutReason] && (() => {
+            const msg = LOGOUT_MESSAGES[logoutReason];
+            const Icon = msg.icon;
+            return (
+              <div className="mb-5 p-3 rounded-lg flex items-start gap-3" style={{ background: 'var(--warning-dim)', border: '1px solid var(--warning)' }}>
+                <Icon className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--warning)' }} />
+                <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>{msg.text}</p>
+              </div>
+            );
+          })()}
 
           {/* Error banner */}
           {error && <div className="alert-error mb-5">{error}</div>}
